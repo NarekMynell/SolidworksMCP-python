@@ -652,9 +652,13 @@ class InsertComponentInput(CompatInput):
 
     Attributes:
         file_path (str): Path to the part or sub-assembly.
-        x (float): X of the component's centre (its bounding box's middle, not its origin), in mm.
-        y (float): Y of the component's centre (its bounding box's middle, not its origin), in mm.
-        z (float): Z of the component's centre (its bounding box's middle, not its origin), in mm.
+        x (float): X of the point, mm.
+        y (float): Y of the point, mm.
+        z (float): Z of the point, mm.
+        rx (float): Degrees about the assembly's x axis.
+        ry (float): Degrees about its y axis.
+        rz (float): Degrees about its z axis.
+        anchor (str): ``center`` (bounding-box middle) or ``origin``.
     """
 
     file_path: str = Field(
@@ -662,15 +666,23 @@ class InsertComponentInput(CompatInput):
     )
     x: float = Field(
         default=0.0,
-        description="X of the component's centre (its bounding box's middle, not its origin), in mm",
+        description="X of the point, mm: the part's bounding-box middle, or its origin with anchor 'origin'",
     )
-    y: float = Field(
-        default=0.0,
-        description="Y of the component's centre (its bounding box's middle, not its origin), in mm",
+    y: float = Field(default=0.0, description="Y of the point, mm")
+    z: float = Field(default=0.0, description="Z of the point, mm")
+    rx: float = Field(
+        default=0.0, description="Degrees about the assembly's x axis, applied first"
     )
-    z: float = Field(
-        default=0.0,
-        description="Z of the component's centre (its bounding box's middle, not its origin), in mm",
+    ry: float = Field(
+        default=0.0, description="Degrees about the assembly's y axis, applied second"
+    )
+    rz: float = Field(
+        default=0.0, description="Degrees about the assembly's z axis, applied last"
+    )
+    anchor: Literal["center", "origin"] = Field(
+        default="center",
+        description="'center' puts the middle of the part's bounding box on the "
+        "point; 'origin' puts the part's origin there (as add_components does)",
     )
 
     def model_post_init(self, __context: Any) -> None:
@@ -900,13 +912,20 @@ class SetComponentStateInput(CompatInput):
     """Input schema for fixing, floating and flexing a component.
 
     Attributes:
-        component (str): Component instance name.
+        component (str | None): Component instance name.
+        components (list[str] | None): Several instance names.
         fixed (bool | None): True fixes it, False floats it.
         flexible (bool | None): True flexible, False rigid.
     """
 
-    component: str = Field(
-        description="Component instance name, as reported by list_components"
+    component: str | None = Field(
+        default=None,
+        description="Component instance name, as reported by list_components",
+    )
+    components: list[str] | None = Field(
+        default=None,
+        description="Several instance names changed together in one call (every "
+        "column, every purlin); give this or component",
     )
     fixed: bool | None = Field(
         default=None,
@@ -932,13 +951,20 @@ class SetComponentStateInput(CompatInput):
     )
 
     def model_post_init(self, __context: Any) -> None:
-        if not self.component.strip():
-            raise ValueError("component is required")
+        if self.component is not None and self.components is not None:
+            raise ValueError("give component or components, not both")
+        if not self.names():
+            raise ValueError("component is required (or components)")
         if all(
             v is None
             for v in (self.fixed, self.flexible, self.visible, self.transparent)
         ):
             raise ValueError("give fixed, flexible, visible or transparent")
+
+    def names(self) -> list[str]:
+        """The instance names to change, blanks dropped."""
+        given = [self.component] if self.component is not None else self.components
+        return [n.strip() for n in given or [] if n and n.strip()]
 
 
 class CreateReferencePlaneInput(CompatInput):
@@ -2213,24 +2239,35 @@ async def register_modeling_tools(
 
     @mcp.tool()
     async def insert_component(input_data: InsertComponentInput) -> dict[str, Any]:
-        """Insert a part or sub-assembly file into the active assembly at a position in mm.
+        """Insert one part or sub-assembly file into the active assembly at a point in mm, optionally turned.
 
-        Use it after `create_assembly`, then position components with `add_mate`. The
-        file must contain solid geometry; an empty or missing file is an error. Needs:
-        an open, active assembly and the file on disk. Changes: adds a component.
-        Returns: `component` with its instance name (`component`, which `add_mate`
-        takes), `file_path`, `position` and the counts before and after.
+        By default the middle of the part's bounding box lands on `x`, `y`, `z`;
+        `anchor` 'origin' puts the part's origin there. `rx`, `ry`, `rz` turn it
+        (degrees about the assembly's x, then y, then z axis). For several parts
+        use `add_components`, one call for all of them. The file must hold solid
+        geometry. Needs: an open, active assembly and the file on disk. Changes:
+        adds a component (the part opens without a window). Returns: `component`
+        with its instance name (`component`), `file_path`, `position`, `anchor`,
+        `origin_mm`, `rotation_deg` and the counts before and after.
 
         Args:
             input_data: The component. `file_path` is required; `x`, `y`, `z` (mm
-                from the assembly origin) default to 0.
+                from the assembly origin), `rx`, `ry`, `rz` (degrees) default to 0
+                and `anchor` to 'center'.
 
         Returns:
             dict[str, Any]: The inserted component.
         """
         input_data = normalize_input(input_data, InsertComponentInput)
         result = await adapter.insert_component(
-            input_data.file_path, input_data.x, input_data.y, input_data.z
+            input_data.file_path,
+            input_data.x,
+            input_data.y,
+            input_data.z,
+            input_data.rx,
+            input_data.ry,
+            input_data.rz,
+            input_data.anchor,
         )
         require_success(result, context="Failed to insert component")
         data = result.data if isinstance(result.data, dict) else {}
@@ -2294,37 +2331,45 @@ async def register_modeling_tools(
 
     @mcp.tool()
     async def set_component_state(input_data: SetComponentStateInput) -> dict[str, Any]:
-        """Fix or float an assembly component, make a sub-assembly flexible, or hide it or make it transparent.
+        """Fix or float assembly components, make a sub-assembly flexible, or hide them or make them transparent.
 
         Float a part so mates can position it (the first part inserted is fixed); fix
-        one to hold it still. Make a sub-assembly flexible so its own mates move in
-        this assembly (a crank whose knob turns). Hide a component (`visible` false)
-        or make it `transparent` to see the parts inside. Only what you pass changes:
-        the component's suppression, configuration and other states are kept. Needs:
-        an open assembly. Changes: the states you pass. Returns: `state` with
-        `component`, `before` and `after` (`fixed`, `flexible`, `visible` and the
-        properties kept), and `appearance` (`visible`, `transparent`) when you
-        changed it.
+        one to hold it still. Give `components` to change many in one call (fixing
+        50 members is one selection and one fix). Make a sub-assembly flexible so its
+        own mates move in this assembly. Hide a component (`visible` false) or make it
+        `transparent` to see inside. Only what you pass changes: suppression,
+        configuration and other states are kept. Needs: an open assembly. Changes: the
+        states you pass. Returns: `state` with `component`, `before` and `after`
+        (`fixed`, `flexible`, `visible` and the properties kept) and `appearance` when
+        you changed it; with `components`, `state.components` holds one such entry each.
 
         Args:
-            input_data: The component and what to change: `fixed`, `flexible`,
-                `visible`, `transparent`, any of them.
+            input_data: `component` (or `components`) and what to change: `fixed`,
+                `flexible`, `visible`, `transparent`, any of them.
 
         Returns:
             dict[str, Any]: The state before and after.
         """
         input_data = normalize_input(input_data, SetComponentStateInput)
-        data: dict[str, Any] = {"component": input_data.component}
+        names = input_data.names()
+        single = input_data.component is not None
+        target: str | list[str] = names[0] if single else names
+        data: dict[str, Any] = (
+            {"component": names[0]}
+            if single
+            else {"components": [{"component": n} for n in names]}
+        )
         words = []
         execution_time = 0.0
         if input_data.fixed is not None or input_data.flexible is not None:
             result = await adapter.set_component_state(
-                input_data.component, input_data.fixed, input_data.flexible
+                target, input_data.fixed, input_data.flexible
             )
             require_success(result, context="Failed to set the component state")
             data = result.data if isinstance(result.data, dict) else data
             execution_time = result.execution_time or 0.0
-            after = data.get("after", {})
+            entries = [data] if single else data.get("components", [])
+            after = entries[0].get("after", {}) if entries else {}
             if input_data.fixed is not None:
                 words.append("fixed" if after.get("fixed") else "floating")
             if input_data.flexible is not None:
@@ -2335,20 +2380,25 @@ async def register_modeling_tools(
                 "set_component_appearance",
                 "Active adapter can't hide components or make them transparent",
             )
-            shown = await adapter.set_component_appearance(
-                input_data.component, input_data.visible, input_data.transparent
-            )
-            require_success(shown, context="Failed to set the component state")
-            appearance = shown.data or {}
-            data = {**data, "appearance": appearance}
-            execution_time += shown.execution_time or 0.0
+            appearances: dict[str, Any] = {}
+            for name in names:
+                shown = await adapter.set_component_appearance(
+                    name, input_data.visible, input_data.transparent
+                )
+                require_success(shown, context="Failed to set the component state")
+                appearances[name] = shown.data or {}
+                execution_time += shown.execution_time or 0.0
+            appearance = appearances[names[0]]
+            data = {**data, "appearance": appearance if single else appearances}
             if input_data.visible is not None:
                 words.append("shown" if appearance.get("visible") else "hidden")
             if input_data.transparent is not None:
                 words.append("transparent" if input_data.transparent else "opaque")
+        subject = names[0] if single else f"{len(names)} components"
+        verb = "is" if single else "are"
         return {
             "status": "success",
-            "message": f"{input_data.component} is now {' and '.join(words)}",
+            "message": f"{subject} {verb} now {' and '.join(words)}",
             "state": data,
             "execution_time": execution_time,
         }

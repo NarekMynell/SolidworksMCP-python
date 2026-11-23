@@ -842,16 +842,22 @@ Loft a solid through two or more closed profile sketches, in order (Insert > Bos
 
 ### `insert_component`
 
-Insert a part or sub-assembly file into the active assembly at a position in mm.
+Insert one part or sub-assembly file into the active assembly at a point in mm, optionally turned. For several parts use `add_components`.
+
+**SolidWorks automation note:** One item through `IAssemblyDoc.AddComponents3`: the file loads without a window of its own. With `anchor` `center` the component is then moved (`IComponent2.Transform2`) so the middle of its bounding box lands on the point, where `AddComponent4` used to put it.
 
 **Parameters:**
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `file_path` | `str` | ✅ |  | Absolute path to the .sldprt or .sldasm to insert |
-| `x` | `float` | — | `0.0` | X of the component's centre (its bounding box's middle, not its origin), in mm |
-| `y` | `float` | — | `0.0` | Y of the component's centre (its bounding box's middle, not its origin), in mm |
-| `z` | `float` | — | `0.0` | Z of the component's centre (its bounding box's middle, not its origin), in mm |
+| `x` | `float` | — | `0.0` | X of the point, mm: the part's bounding-box middle, or its origin with anchor `origin` |
+| `y` | `float` | — | `0.0` | Y of the point, mm |
+| `z` | `float` | — | `0.0` | Z of the point, mm |
+| `rx` | `float` | — | `0.0` | Degrees about the assembly's x axis, applied first |
+| `ry` | `float` | — | `0.0` | Degrees about the assembly's y axis, applied second |
+| `rz` | `float` | — | `0.0` | Degrees about the assembly's z axis, applied last |
+| `anchor` | `str` | — | `center` | `center` puts the middle of the part's bounding box on the point; `origin` puts the part's origin there |
 
 **Sample call:**
 
@@ -890,13 +896,14 @@ Mate two components of the active assembly: coincident, concentric, parallel, pe
 
 ### `set_component_state`
 
-Fix or float a component of the active assembly, or make a sub-assembly rigid or flexible.
+Fix or float components of the active assembly, or make a sub-assembly rigid or flexible; hide them or make them transparent. `components` changes many in one call: fixing is one selection and one `IAssemblyDoc.FixComponent`, with no rebuild.
 
 **Parameters:**
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `component` | `str` | ✅ |  | Component instance name, as reported by list_components |
+| `component` | `str?` | — | `null` | Component instance name, as reported by list_components |
+| `components` | `list[str]?` | — | `null` | Several instance names changed together in one call; give this or `component` |
 | `fixed` | `bool?` | — | `null` | true fixes the component in place; false floats it so mates can move it; leave it out to keep it as it is |
 | `flexible` | `bool?` | — | `null` | For a sub-assembly: true lets its own mates move inside this assembly (a crank that turns); false makes it rigid; leave it out to keep it as it is |
 | `visible` | `bool?` | — | `null` | false hides the component (to see inside), true shows it (`IComponent2.Visible`) |
@@ -905,7 +912,7 @@ Fix or float a component of the active assembly, or make a sub-assembly rigid or
 **Sample call:**
 
 ```json
-{"component": "pin-1", "fixed": false}
+{"components": ["HEB400-1", "HEB400-2"], "fixed": true}
 ```
 
 ---

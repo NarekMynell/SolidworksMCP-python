@@ -140,7 +140,10 @@ class SolidWorksFeaturesMixin:
 
         The tree is listed before and after with ``list_features``, the read
         path that works on SolidWorks, and the names that disappeared become
-        ``removed_features``: the named feature and its dependents.
+        ``removed_features``: the named feature and its dependents. Only the
+        document's own tree is listed (``max_assembly_depth=-1``): walking
+        every component's features of a 50-part assembly twice took minutes
+        a delete (field report, SolidWorks 2025).
 
         Args:
             name: The feature or sketch to delete.
@@ -150,11 +153,13 @@ class SolidWorksFeaturesMixin:
             ``removed_features`` in tree order (just ``name`` when the tree
             can't be listed).
         """
-        before = await self.list_features(include_suppressed=True)
+        before = await self.list_features(
+            include_suppressed=True, max_assembly_depth=-1
+        )
         result = _delete_feature_impl(self, name)
         if not result.is_success:
             return result
-        after = await self.list_features(include_suppressed=True)
+        after = await self.list_features(include_suppressed=True, max_assembly_depth=-1)
         data = dict(result.data or {})
         data["removed_features"] = _removed_names(before, after) or [
             name.split("@", 1)[0]

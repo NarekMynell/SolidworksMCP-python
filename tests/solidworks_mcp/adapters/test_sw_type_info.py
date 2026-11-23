@@ -6,6 +6,10 @@ import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
+from solidworks_mcp.adapters import sw_type_info
+
 
 def test_import_handles_missing_pywin32(monkeypatch) -> None:
     """Import should handle missing win32com gracefully."""
@@ -275,3 +279,75 @@ def test_library_name_is_none_without_the_wrapper(monkeypatch) -> None:
 
     assert sw_type_info.type_library_name() is None
     assert sw_type_info.all_interface_methods() == {}
+
+
+class _CountingIDispatch:
+    """A raw IDispatch: fixed DISPIDs, and a count of the lookups asked."""
+
+    def __init__(self, dispids: dict[str, int]) -> None:
+        self.dispids = dispids
+        self.asked: list[str] = []
+
+    def GetIDsOfNames(self, _lcid: int, name: str) -> int:
+        self.asked.append(name)
+        if name not in self.dispids:
+            raise Exception("Unknown name.")
+        return self.dispids[name]
+
+
+def _dispatch(raw: _CountingIDispatch) -> object:
+    """A real pywin32 ``CDispatch`` around ``raw``."""
+    dynamic = pytest.importorskip("win32com.client.dynamic")
+    build = pytest.importorskip("win32com.client.build")
+    return dynamic.CDispatch(raw, build.DispatchItem(), "Fake")
+
+
+@pytest.fixture
+def one_interface(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The type library holds one interface of three methods."""
+    monkeypatch.setattr(sw_type_info, "_wrapper_module", object())
+    monkeypatch.setattr(
+        sw_type_info, "_interface_methods", {"IThing": frozenset({"A", "B", "C"})}
+    )
+    monkeypatch.setattr(sw_type_info, "_flag_cache", {})
+    monkeypatch.setattr(sw_type_info, "_dispid_cache", {})
+
+
+def test_dispids_are_learnt_once_per_interface(one_interface) -> None:
+    """The second dispatch is checked with two lookups, not one per method."""
+    first_raw = _CountingIDispatch({"A": 1, "B": 2, "C": 3})
+    second_raw = _CountingIDispatch({"A": 1, "B": 2, "C": 3})
+    first, second = _dispatch(first_raw), _dispatch(second_raw)
+
+    assert sw_type_info.flag_methods(first, "IThing") == 3
+    assert sw_type_info.flag_methods(second, "IThing") == 3
+
+    assert sorted(first_raw.asked) == ["A", "B", "C"]
+    assert sorted(second_raw.asked) == ["A", "C"]
+    entries = second._olerepr_.mapFuncs  # type: ignore[attr-defined]
+    assert {name: entries[name].dispid for name in "ABC"} == {"A": 1, "B": 2, "C": 3}
+
+
+def test_a_dispatch_laid_out_differently_is_looked_up_in_full(one_interface) -> None:
+    first = _dispatch(_CountingIDispatch({"A": 1, "B": 2, "C": 3}))
+    other_raw = _CountingIDispatch({"A": 10, "B": 20})
+    other = _dispatch(other_raw)
+
+    sw_type_info.flag_methods(first, "IThing")
+    flagged = sw_type_info.flag_methods(other, "IThing")
+
+    assert flagged == 2
+    entries = other._olerepr_.mapFuncs  # type: ignore[attr-defined]
+    assert (entries["A"].dispid, entries["B"].dispid) == (10, 20)
+    assert "C" not in entries
+    # The first object's numbers stay the cache's.
+    assert sw_type_info._dispid_cache["IThing"] == {"A": 1, "B": 2, "C": 3}
+
+
+def test_a_dispatch_that_refuses_the_check_is_looked_up_in_full(one_interface) -> None:
+    sw_type_info.flag_methods(_dispatch(_CountingIDispatch({"A": 1, "C": 3})), "IThing")
+    raw = _CountingIDispatch({"B": 2})
+    later = _dispatch(raw)
+
+    assert sw_type_info.flag_methods(later, "IThing") == 1
+    assert later._olerepr_.mapFuncs["B"].dispid == 2  # type: ignore[attr-defined]

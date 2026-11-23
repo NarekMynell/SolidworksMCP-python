@@ -156,6 +156,28 @@ def test_assembly_without_components_lists_nothing(adapter) -> None:
     )
 
 
+def test_a_negative_depth_lists_the_assembly_tree_only(adapter, monkeypatch) -> None:
+    """``max_assembly_depth=-1`` skips every component's features (gap §6)."""
+    selector = adapter._feature_selector
+    adapter.currentModel = SimpleNamespace(GetType=lambda: 2)
+    monkeypatch.setattr(
+        selector, "_list_document_features", lambda doc, suppressed: [{"name": "Mates"}]
+    )
+    walked: list[int] = []
+    monkeypatch.setattr(
+        selector,
+        "_list_assembly_component_features",
+        lambda *args: walked.append(args[2]) or [{"name": "Boss-Extrude1"}],
+    )
+
+    own = selector.list_features(True, -1)
+    flattened = selector.list_features(True, 2)
+
+    assert own == [{"name": "Mates"}]
+    assert flattened == [{"name": "Mates"}, {"name": "Boss-Extrude1"}]
+    assert walked == [1]
+
+
 @pytest.mark.asyncio
 async def test_screenshot_replaces_an_existing_file_without_prompting(
     adapter, tmp_path, monkeypatch
@@ -688,7 +710,6 @@ class TestPyWin32AdapterAdditionalCoverage:
 
 #: Capabilities added on this branch.
 CAPABILITIES = [
-    "insert_component",
     "list_components",
     "add_mate",
 ]
@@ -730,6 +751,20 @@ CAPABILITIESFeatureEditingCapability = [
     "rename_feature",
     "undo",
 ]
+
+
+@pytest.mark.parametrize(
+    "capability", ["insert_component", "add_components", "set_component_position"]
+)
+def test_component_placement_resolves_to_the_assembly_mixin(capability: str) -> None:
+    """Placing components is ``SolidWorksAssemblyMixin``'s, through ``AddComponents3``."""
+    pytest.importorskip("win32com", reason="pywin32 is Windows-only")
+    from solidworks_mcp.adapters.pywin32_adapter import PyWin32Adapter
+
+    owner = next(
+        (k.__name__ for k in PyWin32Adapter.__mro__ if capability in vars(k)), None
+    )
+    assert owner == "SolidWorksAssemblyMixin"
 
 
 @pytest.mark.parametrize("capability", CAPABILITIESFeatureEditingCapability)

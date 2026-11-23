@@ -172,6 +172,8 @@ TOOL_HINTS: dict[str, ToolHints] = {
     "mirror_components": _adds("Mirror Components"),
     "replace_component": _overwrites("Replace Component"),
     "add_balloons": _adds("Add Balloons"),
+    "add_components": _adds("Add Components"),
+    "set_component_position": _sets("Set Component Position"),
     "list_equations": _reads("List Equations"),
     "set_equation": _sets("Set Equation"),
     "delete_equation": _discards("Delete Equation"),

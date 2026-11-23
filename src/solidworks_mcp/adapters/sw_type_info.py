@@ -242,6 +242,14 @@ def flag_methods(obj: Any, *interfaces: str) -> int:
     if not new_interfaces:
         return 0
 
+    if _is_dispatch(obj):
+        flagged = sum(
+            _flag_interface(obj, iface, _interface_methods.get(iface, ()))
+            for iface in new_interfaces
+        )
+        already.update(new_interfaces)
+        return flagged
+
     names: set[str] = set()
     for iface in new_interfaces:
         names.update(_interface_methods.get(iface, ()))
@@ -257,6 +265,80 @@ def flag_methods(obj: Any, *interfaces: str) -> int:
 
     already.update(new_interfaces)
     return flagged
+
+
+#: Method DISPIDs learnt per interface, ``{interface: {name: dispid}}``.
+#: SolidWorks' dispatches carry no type information (``GetTypeInfo`` answers
+#: "Invalid index"), so pywin32 learns a DISPID only by asking for it, one
+#: ``GetIDsOfNames`` round trip of about 2 ms per name. Flagging a fresh
+#: ``IComponent2`` (146 methods) cost 342 ms that way and an ``IModelDoc2``
+#: (758) about 1.7 s, on every new dispatch (measured live, SolidWorks 2025).
+#: An interface's DISPIDs are the same on every object, so they are learnt
+#: from the first one and copied into each later one, which takes 0.1 ms.
+_dispid_cache: dict[str, dict[str, int]] = {}
+
+
+def _is_dispatch(obj: Any) -> bool:
+    """Whether ``obj`` is a pywin32 late-bound ``CDispatch``."""
+    try:
+        from win32com.client.dynamic import CDispatch
+    except ImportError:
+        return False
+    return isinstance(obj, CDispatch)
+
+
+def _learn(obj: Any, names: frozenset[str] | tuple[str, ...]) -> dict[str, int]:
+    """Ask ``obj`` for each name's DISPID; names it doesn't have are left out."""
+    found: dict[str, int] = {}
+    for name in sorted(names):
+        try:
+            found[name] = obj._oleobj_.GetIDsOfNames(0, name)
+        except Exception:
+            # Not on this dispatch's real interface: skip silently.
+            continue
+    return found
+
+
+def _matches(obj: Any, known: dict[str, int]) -> bool:
+    """Whether ``obj`` gives the cached DISPIDs for two of the names.
+
+    The first and the last name are asked again (about 4 ms). An object whose
+    dispatch is laid out differently (another kind of document answering for
+    the same interface name) gives other numbers, and is looked up in full.
+    """
+    picks = sorted(known)
+    for name in {picks[0], picks[-1]}:
+        try:
+            if obj._oleobj_.GetIDsOfNames(0, name) != known[name]:
+                return False
+        except Exception:
+            return False
+    return True
+
+
+def _flag_interface(
+    obj: Any, interface: str, names: frozenset[str] | tuple[str, ...]
+) -> int:
+    """Flag one interface's methods on a ``CDispatch``, from the DISPID cache.
+
+    Does what ``CDispatch._FlagAsMethod`` does for each name (a method
+    ``MapEntry`` in ``_olerepr_.mapFuncs``) without asking SolidWorks for
+    the DISPIDs it already gave for the same interface.
+
+    Returns:
+        int: Number of methods flagged.
+    """
+    from win32com.client import build
+
+    known = _dispid_cache.get(interface)
+    if not (known and _matches(obj, known)):
+        known = _learn(obj, names)
+        if known and interface not in _dispid_cache:
+            _dispid_cache[interface] = known
+    functions = obj._olerepr_.mapFuncs
+    for name, dispid in known.items():
+        functions[name] = build.MapEntry(dispid, (name,))
+    return len(known)
 
 
 def flag_members(obj: Any, *names: str) -> int:

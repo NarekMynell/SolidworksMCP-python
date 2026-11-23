@@ -254,6 +254,12 @@ SUPPORT_LEVELS: dict[str, Support] = {
     "mirror_components": _STABLE,
     "replace_component": _STABLE,
     "add_balloons": _STABLE,
+    "add_components": Support(
+        SupportLevel.EXPERIMENTAL, "no live test has checked it yet."
+    ),
+    "set_component_position": Support(
+        SupportLevel.EXPERIMENTAL, "no live test has checked it yet."
+    ),
     # equations
     "list_equations": _STABLE,
     "set_equation": _STABLE,

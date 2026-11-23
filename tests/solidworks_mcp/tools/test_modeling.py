@@ -2300,6 +2300,8 @@ async def test_add_mate_tool_passes_faces_and_defaults_the_planes(
     ("kwargs", "message"),
     [
         ({"component": " ", "fixed": True}, "component is required"),
+        ({"components": [], "fixed": True}, "component is required"),
+        ({"component": "a-1", "components": ["b-1"], "fixed": True}, "not both"),
         ({"component": "a-1"}, "give fixed"),
     ],
 )
@@ -2463,3 +2465,69 @@ def test_configurations_must_name_one(configurations: list[str]) -> None:
         SuppressFeatureInput(name="Fillet1", configurations=configurations)
     with pytest.raises(ValueError, match="'this', 'all' or a list"):
         SetDimensionInput(name="D1@Sketch1", value=5, configurations=configurations)
+
+
+@pytest.mark.asyncio
+async def test_set_component_state_changes_many_components_in_one_call(
+    mcp_server, mock_adapter
+) -> None:
+    await register_modeling_tools(mcp_server, mock_adapter, {})
+    tool = next(
+        t.fn for t in await mcp_server.list_tools() if t.name == "set_component_state"
+    )
+
+    reply = await tool({"components": ["col-1", "col-2", " "], "fixed": True})
+
+    assert reply["message"] == "2 components are now fixed"
+    assert [e["component"] for e in reply["state"]["components"]] == ["col-1", "col-2"]
+    assert all(e["after"]["fixed"] for e in reply["state"]["components"])
+
+
+@pytest.mark.asyncio
+async def test_set_component_state_hides_many_one_by_one(mcp_server) -> None:
+    adapter = Mock()
+    adapter.set_component_appearance = AsyncMock(
+        return_value=AdapterResult(
+            status=AdapterResultStatus.SUCCESS, data={"visible": False}
+        )
+    )
+    await register_modeling_tools(mcp_server, adapter, {})
+    tool = next(
+        t.fn for t in await mcp_server.list_tools() if t.name == "set_component_state"
+    )
+
+    reply = await tool({"components": ["a-1", "b-1"], "visible": False})
+
+    assert adapter.set_component_appearance.await_count == 2
+    assert reply["message"] == "2 components are now hidden"
+    assert set(reply["state"]["appearance"]) == {"a-1", "b-1"}
+
+
+@pytest.mark.asyncio
+async def test_insert_component_passes_the_turn_and_anchor(mcp_server) -> None:
+    adapter = Mock()
+    adapter.insert_component = AsyncMock(
+        return_value=AdapterResult(
+            status=AdapterResultStatus.SUCCESS, data={"component": "col-1"}
+        )
+    )
+    await register_modeling_tools(mcp_server, adapter, {})
+    tool = next(
+        t.fn for t in await mcp_server.list_tools() if t.name == "insert_component"
+    )
+
+    reply = await tool(
+        {"file_path": "C:/p/col.sldprt", "x": 9000, "rz": 90, "anchor": "origin"}
+    )
+
+    assert adapter.insert_component.await_args.args == (
+        "C:/p/col.sldprt",
+        9000.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        90.0,
+        "origin",
+    )
+    assert reply["message"] == "Inserted col-1"

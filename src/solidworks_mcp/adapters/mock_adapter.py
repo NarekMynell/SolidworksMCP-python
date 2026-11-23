@@ -34,6 +34,7 @@ from .mock_drawing_pack import MockDrawingPackMixin
 from .mock_equations import MockEquationsMixin
 from .mock_sheet_metal import MockSheetMetalMixin
 from .mock_templates import MockTemplatesMixin
+from .solidworks import placement as _placement
 from .solidworks.documentation import MATERIAL_PROPERTIES
 from .solidworks.drawing_standard import gtol_problem
 from .solidworks.features import _AXIS_PLANE_PAIRS
@@ -220,6 +221,7 @@ class MockSolidWorksAdapter(
         # Assembly components inserted via insert_component, keyed by
         # insertion order. See insert_component/list_components/add_mate.
         self._components: list[str] = []
+        self._component_positions: dict[str, dict[str, list[float]]] = {}
         # Mates added via add_mate, in order, so the geometry summary can
         # report a mate count without real geometry.
         self._mates: list[dict[str, Any]] = []
@@ -3189,37 +3191,178 @@ class MockSolidWorksAdapter(
         )
 
     async def insert_component(
-        self, file_path: str, x: float = 0.0, y: float = 0.0, z: float = 0.0
+        self,
+        file_path: str,
+        x: float = 0.0,
+        y: float = 0.0,
+        z: float = 0.0,
+        rx: float = 0.0,
+        ry: float = 0.0,
+        rz: float = 0.0,
+        anchor: str = "center",
     ) -> AdapterResult[dict[str, Any]]:
         """Mock inserting a component into the active assembly.
 
         Records the component in ``self._components`` so repeated inserts
-        accumulate and ``list_components`` reflects them.
+        accumulate and ``list_components`` reflects them. The mock has no
+        geometry, so a centred part's origin is reported at the point.
 
         Args:
             file_path (str): Path to the part or sub-assembly to insert.
-            x (float): X position in millimetres. Defaults to 0.0.
-            y (float): Y position in millimetres. Defaults to 0.0.
-            z (float): Z position in millimetres. Defaults to 0.0.
+            x (float): X of the point, mm.
+            y (float): Y of the point, mm.
+            z (float): Z of the point, mm.
+            rx (float): Degrees about x.
+            ry (float): Degrees about y.
+            rz (float): Degrees about z.
+            anchor (str): ``center`` or ``origin``.
 
         Returns:
             AdapterResult[dict[str, Any]]: The result produced by the operation.
         """
         await asyncio.sleep(self._delays["model_operation"])
         self._operation_count += 1
-
-        self._components.append(f"component-{len(self._components) + 1}")
-
+        name = self._place_component([x, y, z], [rx, ry, rz])
         return AdapterResult(
             status=AdapterResultStatus.SUCCESS,
             data={
-                "component": self._components[-1],
+                "component": name,
                 "file_path": file_path,
                 "position": {"x": x, "y": y, "z": z},
+                "anchor": anchor,
+                **self._component_positions[name],
                 "components_before": len(self._components) - 1,
                 "components_after": len(self._components),
             },
             execution_time=self._delays["model_operation"],
+        )
+
+    def _place_component(self, point: list[float], turn: list[float]) -> str:
+        """Record a new component at a point and rotation; return its name."""
+        name = f"component-{len(self._components) + 1}"
+        self._components.append(name)
+        matrix = _placement.rotation(*turn)
+        self._component_positions[name] = _placement.placement(
+            _placement.to_array(point, matrix)
+        )
+        return name
+
+    async def add_components(
+        self, items: list[dict[str, Any]], fix: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock inserting many components: an item with no file fails alone.
+
+        Args:
+            items (list[dict[str, Any]]): ``file_path`` and the placement.
+            fix (bool): Record the new components as fixed.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``added``, ``failed``, ``fixed`` and
+            the counts, as the real adapter reports them.
+        """
+        if error := self._no_assembly("add_components"):
+            return error
+        self._operation_count += 1
+        before = len(self._components)
+        added: list[dict[str, Any]] = []
+        failed: list[dict[str, Any]] = []
+        for index, item in enumerate(items):
+            path = str(item.get("file_path") or "")
+            if not path.strip():
+                failed.append(
+                    {"index": index, "file_path": path, "error": "file not found"}
+                )
+                continue
+            point = [float(item.get(k) or 0.0) for k in ("x", "y", "z")]
+            turn = [float(item.get(k) or 0.0) for k in ("rx", "ry", "rz")]
+            name = self._place_component(point, turn)
+            if fix:
+                self._component_states[name] = {"fixed": True, "flexible": False}
+            added.append(
+                {
+                    "index": index,
+                    "component": name,
+                    "file_path": path,
+                    **self._component_positions[name],
+                }
+            )
+        if not added:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error="No component could be added: every item has no file_path",
+            )
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "added": added,
+                "failed": failed,
+                "fixed": fix,
+                "components_before": before,
+                "components_after": len(self._components),
+            },
+        )
+
+    async def set_component_position(
+        self,
+        components: list[str],
+        x: float | None = None,
+        y: float | None = None,
+        z: float | None = None,
+        rx: float | None = None,
+        ry: float | None = None,
+        rz: float | None = None,
+        relative: bool = False,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock moving components, with the real adapter's placement maths.
+
+        Args:
+            components (list[str]): Instance names.
+            x (float | None): X, mm.
+            y (float | None): Y, mm.
+            z (float | None): Z, mm.
+            rx (float | None): Degrees about x.
+            ry (float | None): Degrees about y.
+            rz (float | None): Degrees about z.
+            relative (bool): Shift and turn instead of placing.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``moved`` and ``relative``.
+        """
+        if error := self._no_assembly("set_component_position"):
+            return error
+        missing = [c for c in components if c not in self._components]
+        if missing:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error=f"Component(s) not found: {', '.join(missing)}. "
+                f"The assembly holds: {', '.join(self._components)}.",
+            )
+        self._operation_count += 1
+        shift, turn = (x, y, z), (rx, ry, rz)
+        moved = []
+        for name in components:
+            before = self._component_positions.get(
+                name, {"origin_mm": [0.0, 0.0, 0.0], "rotation_deg": [0.0, 0.0, 0.0]}
+            )
+            origin, angles = before["origin_mm"], before["rotation_deg"]
+            if relative:
+                matrix = _placement.multiply(
+                    _placement.rotation(turn[0] or 0.0, turn[1] or 0.0, turn[2] or 0.0),
+                    _placement.rotation(*angles),
+                )
+                point = [origin[i] + (shift[i] or 0.0) for i in range(3)]
+            else:
+                matrix = _placement.rotation(*_placement.merge(turn, angles))
+                point = [
+                    origin[i] if shift[i] is None else float(shift[i] or 0.0)
+                    for i in range(3)
+                ]
+            after = _placement.placement(_placement.to_array(point, matrix))
+            self._component_positions[name] = after
+            moved.append({"component": name, "before": before, "after": after})
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={"moved": moved, "relative": relative},
         )
 
     async def list_components(self) -> AdapterResult[list[str]]:
@@ -3821,21 +3964,22 @@ class MockSolidWorksAdapter(
 
     async def set_component_state(
         self,
-        component: str,
+        component: str | list[str],
         fixed: bool | None = None,
         flexible: bool | None = None,
     ) -> AdapterResult[dict[str, Any]]:
-        """Mock fixing, floating and flexing a component.
+        """Mock fixing, floating and flexing components.
 
         Tracks each component's state on ``self._component_states``.
 
         Args:
-            component (str): Instance name.
+            component (str | list[str]): Instance name, or several.
             fixed (bool | None): True fixes it, False floats it.
             flexible (bool | None): True flexible, False rigid.
 
         Returns:
-            AdapterResult[dict[str, Any]]: The state before and after.
+            AdapterResult[dict[str, Any]]: The state before and after; for a
+            list, ``components`` with one entry each.
         """
         if fixed is None and flexible is None:
             return AdapterResult(
@@ -3843,16 +3987,19 @@ class MockSolidWorksAdapter(
                 error="Nothing to change: give fixed, flexible or both.",
             )
         states = self._component_states
-        before = dict(states.get(component, {"fixed": False, "flexible": False}))
-        after = dict(before)
-        if fixed is not None:
-            after["fixed"] = fixed
-        if flexible is not None:
-            after["flexible"] = flexible
-        states[component] = after
+        entries = []
+        for name in [component] if isinstance(component, str) else component:
+            before = dict(states.get(name, {"fixed": False, "flexible": False}))
+            after = dict(before)
+            if fixed is not None:
+                after["fixed"] = fixed
+            if flexible is not None:
+                after["flexible"] = flexible
+            states[name] = after
+            entries.append({"component": name, "before": before, "after": after})
         return AdapterResult(
             status=AdapterResultStatus.SUCCESS,
-            data={"component": component, "before": before, "after": after},
+            data=entries[0] if isinstance(component, str) else {"components": entries},
         )
 
     async def add_mate(

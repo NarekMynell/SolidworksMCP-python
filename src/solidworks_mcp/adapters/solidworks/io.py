@@ -371,31 +371,45 @@ def _find_components(adapter: Any, assembly: Any, names: list[str]) -> dict[str,
     if not isinstance(components, (list, tuple)):
         raise Exception("Could not read the assembly's components")
 
+    # ``Name2`` is a property, so reading it needs no method flags; only the
+    # components asked for are flagged. Flagging every component's whole
+    # interface cost ~27 ms each, seconds per call on a 50-part assembly.
+    wanted = set(names)
     found: dict[str, Any] = {}
+    available: list[str] = []
     for component in components:
-        wrapped = _as_com(adapter, component, "IComponent2")
+        wrapped = _wrap_component(adapter, component)
         if wrapped is None:
             continue
-        name = adapter._attempt(lambda w=wrapped: w.Name2, default=None)
-        if name and str(name) in names:
-            found[str(name)] = wrapped
+        name = str(adapter._attempt(lambda w=wrapped: w.Name2, default="?") or "?")
+        available.append(name)
+        if name in wanted and name not in found:
+            adapter._attempt(
+                lambda w=wrapped: _sw_type_info.flag_methods(w, "IComponent2"),
+                default=None,
+            )
+            found[name] = wrapped
 
     missing = [n for n in names if n not in found]
     if missing:
-        available = [
-            str(
-                adapter._attempt(
-                    lambda c=c: _as_com(adapter, c, "IComponent2").Name2,
-                    default="?",
-                )
-            )
-            for c in components
-        ]
         raise Exception(
             f"Component(s) not found: {', '.join(missing)}. "
             f"The assembly holds: {', '.join(available)}."
         )
     return found
+
+
+def _wrap_component(adapter: Any, component: Any) -> Any:
+    """A component handed back in an array, wrapped but not flagged.
+
+    Args:
+        adapter: The connected adapter.
+        component: A raw ``PyIDispatch`` from ``GetComponents``.
+
+    Returns:
+        Any: The late-bound wrapper (properties readable), or ``None``.
+    """
+    return adapter._attempt(lambda: _dynamic.Dispatch(component), default=None)
 
 
 def _component_state(adapter: Any, component: Any) -> dict[str, Any]:
@@ -658,7 +672,8 @@ def _component_pairs(adapter: Any, assembly: Any) -> list[tuple[str, Any]]:
 
     pairs: list[tuple[str, Any]] = []
     for component in components:
-        wrapped = _as_com(adapter, component, "IComponent2")
+        # Callers read properties only (Name2, Transform2): no method flags.
+        wrapped = _wrap_component(adapter, component)
         if wrapped is None:
             pairs.append(("<unnamed>", None))
             continue
@@ -2725,148 +2740,6 @@ class SolidWorksIOMixin:
             execution_time=result.execution_time,
         )
 
-    async def insert_component(
-        self, file_path: str, x: float = 0.0, y: float = 0.0, z: float = 0.0
-    ) -> AdapterResult[dict[str, Any]]:
-        """Insert a part or sub-assembly into the active assembly.
-
-        Wraps ``IAssemblyDoc::AddComponent4(CompName, ConfigName, X, Y, Z)``,
-        falling back to ``AddComponent5``.  Position is in **millimetres**.
-
-        **The component file must contain solid geometry.**  SolidWorks
-        silently refuses to insert an empty part — every overload returns
-        ``None`` and the component count stays put.  That behaviour is what
-        made this look unimplementable until the ``save_file`` bug that was
-        writing empty parts got fixed.
-
-        Success is confirmed by the assembly's component count going up, since
-        ``AddComponent*`` gives no usable failure signal.
-
-        Args:
-            file_path (str): Absolute path to the ``.sldprt`` or ``.sldasm``.
-            x (float): X position in millimetres.
-            y (float): Y position in millimetres.
-            z (float): Z position in millimetres.
-
-        Returns:
-            AdapterResult[dict[str, Any]]: Component name and before/after
-            counts.  ``ERROR`` when the active document is not an assembly, the
-            file is missing, or nothing was inserted.
-
-        Raises:
-            Exception: Propagated through ``_handle_com_operation``.
-
-        Example::
-
-            await adapter.insert_component(r"C:\\parts\\bracket.sldprt", 0, 0, 0)
-        """
-        adapter = self._adapter(self)
-        if not adapter.currentModel:
-            return AdapterResult(
-                status=AdapterResultStatus.ERROR, error="No active model"
-            )
-
-        path = os.path.abspath(file_path)
-        if not os.path.exists(path):
-            return AdapterResult(
-                status=AdapterResultStatus.ERROR,
-                error=f"Component file not found: {file_path}",
-            )
-
-        doc_type = _doc_type(adapter)
-        if doc_type != 2:
-            return AdapterResult(
-                status=AdapterResultStatus.ERROR,
-                error=(
-                    "insert_component requires an assembly document "
-                    f"(active document type is {doc_type!r}, expected 2). "
-                    "Call create_assembly first."
-                ),
-            )
-
-        def _insert() -> dict[str, Any]:
-            assembly = _sw_type_info.flagged(adapter.currentModel, "IAssemblyDoc")
-            before = _component_names(adapter, assembly)
-
-            # The document has to be loaded before it can be inserted, and the
-            # errors/warnings out-parameters must be byref VARIANTs: with
-            # pythoncom.Missing OpenDoc6 returns None and the part stays
-            # unloaded, after which every AddComponent overload does nothing.
-            app = adapter.swApp
-            opened = adapter._attempt(
-                lambda: app.OpenDoc6(
-                    path,
-                    2 if path.lower().endswith(".sldasm") else 1,
-                    1,
-                    "",
-                    _byref_int(),
-                    _byref_int(),
-                ),
-                default=None,
-            )
-            if not opened:
-                raise Exception(
-                    f"Could not load '{file_path}' - OpenDoc6 returned nothing."
-                )
-
-            title = adapter._attempt(
-                lambda: _sw_type_info.flagged(
-                    adapter.currentModel, "IModelDoc2"
-                ).GetTitle(),
-                default=None,
-            )
-            if title:
-                adapter._attempt(
-                    lambda: app.ActivateDoc3(title, False, 0, _byref_int()),
-                    default=None,
-                )
-
-            component = adapter._attempt(
-                lambda: assembly.AddComponent4(
-                    path, "", x / 1000.0, y / 1000.0, z / 1000.0
-                ),
-                default=None,
-            )
-            if component is None:
-                component = adapter._attempt(
-                    lambda: assembly.AddComponent5(
-                        path,
-                        0,
-                        "",
-                        False,
-                        "",
-                        x / 1000.0,
-                        y / 1000.0,
-                        z / 1000.0,
-                    ),
-                    default=None,
-                )
-
-            adapter._attempt(lambda: assembly.EditRebuild3(), default=None)
-
-            after = _component_names(adapter, assembly)
-            if len(after) <= len(before):
-                raise Exception(
-                    f"Component was not inserted - the assembly still has "
-                    f"{len(after)} component(s). The most common cause is a "
-                    f"part with no solid geometry: SolidWorks refuses those "
-                    f"silently. Check '{file_path}' opens with a body."
-                )
-
-            added = [n for n in after if n not in before]
-            return {
-                "component": added[-1] if added else after[-1],
-                "file_path": path,
-                "position": {"x": x, "y": y, "z": z},
-                "components_before": len(before),
-                "components_after": len(after),
-            }
-
-        return cast(
-            AdapterResult[dict[str, Any]],
-            adapter._handle_com_operation("insert_component", _insert),
-        )
-
     async def add_mate(
         self,
         component_a: str,
@@ -3056,26 +2929,30 @@ class SolidWorksIOMixin:
 
     async def set_component_state(
         self,
-        component: str,
+        component: str | list[str],
         fixed: bool | None = None,
         flexible: bool | None = None,
     ) -> AdapterResult[dict[str, Any]]:
-        """Fix or float a component, and make a sub-assembly rigid or flexible.
+        """Fix or float components, and make a sub-assembly rigid or flexible.
 
-        Fixing selects the component and calls ``IAssemblyDoc::FixComponent``
-        or ``UnfixComponent``. Solving goes through
-        ``IAssemblyDoc::CompConfigProperties5``, which also sets suppression,
-        visibility, configuration, BOM and envelope for the selected
-        component: each is read from the component first and passed back, so
-        only solving changes.
+        Fixing selects every named component and calls
+        ``IAssemblyDoc::FixComponent`` or ``UnfixComponent`` once for all of
+        them, with no rebuild. Solving goes through
+        ``IAssemblyDoc::CompConfigProperties5`` one component at a time: it
+        also sets suppression, visibility, configuration, BOM and envelope for
+        the selection, so each is read from that component first and passed
+        back, and only solving changes. The assembly is rebuilt only then.
 
         Args:
-            component (str): Instance name, as ``list_components`` reports it.
-            fixed (bool | None): True fixes it, False floats it.
+            component (str | list[str]): An instance name, or several, as
+                ``list_components`` reports them.
+            fixed (bool | None): True fixes them, False floats them.
             flexible (bool | None): True flexible, False rigid (sub-assemblies).
 
         Returns:
-            AdapterResult[dict[str, Any]]: The state before and after.
+            AdapterResult[dict[str, Any]]: For one name, ``component`` with
+            ``before`` and ``after``; for a list, ``components`` holding one
+            such entry per name.
         """
         adapter = self._adapter(self)
         if _doc_type(adapter) != 2:
@@ -3088,58 +2965,74 @@ class SolidWorksIOMixin:
                 status=AdapterResultStatus.ERROR,
                 error="Nothing to change: give fixed, flexible or both.",
             )
+        names = [component] if isinstance(component, str) else list(component)
 
         def _state() -> dict[str, Any]:
             model = adapter.currentModel
             assembly = _sw_type_info.flagged(model, "IAssemblyDoc")
-            target = _find_components(adapter, assembly, [component])[component]
-            before = _component_state(adapter, target)
+            found = _find_components(adapter, assembly, names)
+            before = {name: _component_state(adapter, found[name]) for name in names}
             sel_mgr = _sw_type_info.flagged(model.SelectionManager, "ISelectionMgr")
 
-            def select() -> None:
+            def select(targets: list[str]) -> None:
                 adapter._attempt(lambda: model.ClearSelection2(True), default=None)
                 data = adapter._attempt(
                     lambda: sel_mgr.CreateSelectData(), default=None
                 )
-                if not adapter._attempt(
-                    lambda: target.Select4(False, data, False), default=False
-                ):
-                    raise Exception(f"Failed to select {component}")
+                for name in targets:
+                    if not adapter._attempt(
+                        lambda c=found[name]: c.Select4(True, data, False),
+                        default=False,
+                    ):
+                        raise Exception(f"Failed to select {name}")
 
             if fixed is not None:
-                select()
+                select(names)
                 call = assembly.FixComponent if fixed else assembly.UnfixComponent
                 adapter._attempt(call, default=None)
             if flexible is not None:
-                select()
-                config = before["referenced_configuration"] or ""
-                applied = adapter._attempt(
-                    lambda: assembly.CompConfigProperties5(
-                        before["suppression"],
-                        1 if flexible else 0,  # swComponentSolvingOption_e
-                        bool(before["visible"]),
-                        bool(config),
-                        config,
-                        bool(before["exclude_from_bom"]),
-                        bool(before["envelope"]),
-                    ),
-                    default=False,
-                )
-                if not applied:
-                    raise Exception(
-                        f"SolidWorks refused to make {component} "
-                        f"{'flexible' if flexible else 'rigid'}; only a "
-                        "sub-assembly can be flexible."
+                for name in names:
+                    select([name])
+                    state = before[name]
+                    config = state["referenced_configuration"] or ""
+                    applied = adapter._attempt(
+                        lambda s=state, c=config: assembly.CompConfigProperties5(
+                            s["suppression"],
+                            1 if flexible else 0,  # swComponentSolvingOption_e
+                            bool(s["visible"]),
+                            bool(c),
+                            c,
+                            bool(s["exclude_from_bom"]),
+                            bool(s["envelope"]),
+                        ),
+                        default=False,
                     )
+                    if not applied:
+                        raise Exception(
+                            f"SolidWorks refused to make {name} "
+                            f"{'flexible' if flexible else 'rigid'}; only a "
+                            "sub-assembly can be flexible."
+                        )
             adapter._attempt(lambda: model.ClearSelection2(True), default=None)
-            adapter._attempt(lambda: model.EditRebuild3(), default=None)
-            after = _component_state(adapter, target)
-            if fixed is not None and after["fixed"] is not fixed:
+            if flexible is not None:
+                adapter._attempt(lambda: model.EditRebuild3(), default=None)
+            after = {name: _component_state(adapter, found[name]) for name in names}
+            unchanged = [
+                name
+                for name in names
+                if fixed is not None and after[name]["fixed"] is not fixed
+            ]
+            if unchanged:
+                verb = "is" if len(unchanged) == 1 else "are"
                 raise Exception(
-                    f"{component} is still {'floating' if fixed else 'fixed'} "
-                    "after the change."
+                    f"{', '.join(unchanged)} {verb} still "
+                    f"{'floating' if fixed else 'fixed'} after the change."
                 )
-            return {"component": component, "before": before, "after": after}
+            entries = [
+                {"component": name, "before": before[name], "after": after[name]}
+                for name in names
+            ]
+            return entries[0] if isinstance(component, str) else {"components": entries}
 
         return cast(
             AdapterResult[dict[str, Any]],

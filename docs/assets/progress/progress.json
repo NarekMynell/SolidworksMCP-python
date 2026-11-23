@@ -1,10 +1,10 @@
 {
  "tools": {
-  "total": 157,
+  "total": 159,
   "by_level": {
    "stable": 149,
    "beta": 0,
-   "experimental": 0,
+   "experimental": 2,
    "planned": 0,
    "deprecated": 8
   },
@@ -57,6 +57,13 @@
     "level": "stable",
     "reason": "",
     "summary": "Draw a circle in the open sketch from its centre and radius, in mm."
+   },
+   {
+    "name": "add_components",
+    "family": "assembly",
+    "level": "experimental",
+    "reason": "no live test has checked it yet.",
+    "summary": "Insert many parts or sub-assemblies into the active assembly in one call, each placed by its origin and turned."
    },
    {
     "name": "add_cosmetic_thread",
@@ -693,7 +700,7 @@
     "family": "modeling",
     "level": "stable",
     "reason": "",
-    "summary": "Insert a part or sub-assembly file into the active assembly at a position in mm."
+    "summary": "Insert one part or sub-assembly file into the active assembly at a point in mm, optionally turned."
    },
    {
     "name": "insert_model_dimensions",
@@ -941,11 +948,18 @@
     "summary": "Select a feature, sketch, plane or component by name in the active document."
    },
    {
+    "name": "set_component_position",
+    "family": "assembly",
+    "level": "experimental",
+    "reason": "no live test has checked it yet.",
+    "summary": "Move or turn assembly components: place one at a point and angle, or shift and turn several."
+   },
+   {
     "name": "set_component_state",
     "family": "modeling",
     "level": "stable",
     "reason": "",
-    "summary": "Fix or float an assembly component, make a sub-assembly flexible, or hide it or make it transparent."
+    "summary": "Fix or float assembly components, make a sub-assembly flexible, or hide them or make them transparent."
    },
    {
     "name": "set_construction_geometry",
@@ -1113,7 +1127,7 @@
  "com": {
   "type_library": "83A33D31-27C5-11CE-BFD4-00400513BB57x0x34x0",
   "core": {
-   "covered": 281,
+   "covered": 280,
    "total": 2838
   },
   "api": {
@@ -1290,8 +1304,7 @@
    {
     "name": "IAssemblyDoc",
     "covered": [
-     "AddComponent4",
-     "AddComponent5",
+     "AddComponents3",
      "AddMate5",
      "AutoExplode",
      "CompConfigProperties5",

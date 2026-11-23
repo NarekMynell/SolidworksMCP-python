@@ -149,6 +149,124 @@ class ReplaceComponentInput(CompatInput):
     )
 
 
+class ComponentItem(CompatInput):
+    """One component to insert: a file, where its origin goes, and its turn.
+
+    Attributes:
+        file_path (str): The part or sub-assembly.
+        x (float): X of the part's origin, mm.
+        y (float): Y, mm.
+        z (float): Z, mm.
+        rx (float): Degrees about the assembly's x axis.
+        ry (float): Degrees about its y axis.
+        rz (float): Degrees about its z axis.
+        anchor (str): ``origin`` or ``center``.
+    """
+
+    file_path: str = Field(
+        min_length=1, description="Absolute path to the .sldprt or .sldasm"
+    )
+    x: float = Field(default=0.0, description="X of the part's origin, mm")
+    y: float = Field(default=0.0, description="Y of the part's origin, mm")
+    z: float = Field(default=0.0, description="Z of the part's origin, mm")
+    rx: float = Field(
+        default=0.0, description="Degrees about the assembly's x axis, applied first"
+    )
+    ry: float = Field(
+        default=0.0, description="Degrees about the assembly's y axis, applied second"
+    )
+    rz: float = Field(
+        default=0.0, description="Degrees about the assembly's z axis, applied last"
+    )
+    anchor: Literal["origin", "center"] = Field(
+        default="origin",
+        description="'origin' puts the part's origin on x, y, z; 'center' puts "
+        "the middle of its bounding box there",
+    )
+
+
+class AddComponentsInput(CompatInput):
+    """Input schema for inserting many components in one call.
+
+    Attributes:
+        items (list[ComponentItem]): The components.
+        fix (bool): Fix them where they are.
+    """
+
+    items: list[ComponentItem] = Field(
+        min_length=1,
+        max_length=1000,
+        description="The components, each a file and where its origin goes; a "
+        "file may repeat (39 purlins are 39 items of one file)",
+    )
+    fix: bool = Field(
+        default=False,
+        description="true fixes every new component where it is (a frame "
+        "positioned by coordinates, with no mates)",
+    )
+
+
+class SetComponentPositionInput(CompatInput):
+    """Input schema for moving or turning components.
+
+    Attributes:
+        components (list[str]): Instance names.
+        x (float | None): X of the origin, or the shift when relative, mm.
+        y (float | None): Y, mm.
+        z (float | None): Z, mm.
+        rx (float | None): Degrees about the assembly's x axis.
+        ry (float | None): Degrees about its y axis.
+        rz (float | None): Degrees about its z axis.
+        relative (bool): Shift and turn instead of placing.
+    """
+
+    components: list[ComponentName] = Field(
+        min_length=1, description="Instance names, as list_components reports them"
+    )
+    x: float | None = Field(
+        default=None,
+        description="X of the part's origin, mm (with relative: how far to shift it)",
+    )
+    y: float | None = Field(
+        default=None, description="Y of the origin, or the shift, mm"
+    )
+    z: float | None = Field(
+        default=None, description="Z of the origin, or the shift, mm"
+    )
+    rx: float | None = Field(
+        default=None,
+        description="Degrees about the assembly's x axis (with relative: an extra turn)",
+    )
+    ry: float | None = Field(
+        default=None, description="Degrees about the assembly's y axis"
+    )
+    rz: float | None = Field(
+        default=None, description="Degrees about the assembly's z axis"
+    )
+    relative: bool = Field(
+        default=False,
+        description="true shifts and turns each component from where it is; "
+        "false places it, keeping any value left out",
+    )
+
+    @model_validator(mode="after")
+    def _something_to_do(self) -> SetComponentPositionInput:
+        """A move needs a value, and an absolute point fits one component."""
+        values = (self.x, self.y, self.z, self.rx, self.ry, self.rz)
+        if all(v is None for v in values):
+            raise ValueError("give x, y, z, rx, ry or rz")
+        if (
+            not self.relative
+            and len(self.components) > 1
+            and any(v is not None for v in (self.x, self.y, self.z))
+        ):
+            raise ValueError(
+                "an absolute position would put every component on the same "
+                "spot: give one component, or relative true"
+            )
+        return self
+
+
 async def register_assembly_tools(
     mcp: FastMCP, adapter: SolidWorksAdapter, config: Any
 ) -> int:
@@ -340,4 +458,97 @@ async def register_assembly_tools(
             "execution_time": result.execution_time,
         }
 
-    return 5
+    @mcp.tool()
+    async def add_components(input_data: AddComponentsInput) -> dict[str, Any]:
+        """Insert many parts or sub-assemblies into the active assembly in one call, each placed by its origin and turned.
+
+        Use it for a structure with many members (columns, trusses, purlins): one
+        call and one SolidWorks operation for all of them, instead of
+        `insert_component` per part. Each item puts the file's origin at `x`, `y`,
+        `z` (mm) and turns it `rx`, `ry`, `rz` degrees about the assembly's x, then
+        y, then z axis; `anchor` 'center' centres its bounding box there instead.
+        `fix` fixes them all. A missing file fails its own item and the rest go in.
+        Needs: an open assembly and the files on disk. Changes: adds components (no
+        windows open). Returns: `components` with `added` (`index`, `component`,
+        `file_path`, `origin_mm`, `rotation_deg`), `failed` (`index`, `file_path`,
+        `error`), `fixed` and the counts before and after.
+
+        Args:
+            input_data: `items` (each `file_path`, with `x`, `y`, `z`, `rx`, `ry`,
+                `rz` and `anchor` defaulting to the origin, unturned) and `fix`.
+
+        Returns:
+            dict[str, Any]: The components added and any that failed.
+        """
+        input_data = normalize_input(input_data, AddComponentsInput)
+        require_capability(
+            adapter, "add_components", "Active adapter can't insert components"
+        )
+        items = [item.model_dump() for item in input_data.items]
+        result = await adapter.add_components(items, input_data.fix)
+        require_success(result, context="Failed to add the components")
+        data = result.data or {}
+        added, failed = data.get("added", []), data.get("failed", [])
+        reply: dict[str, Any] = {
+            "status": "success",
+            "message": f"Added {len(added)} of {len(items)} component(s)"
+            + (" and fixed them" if input_data.fix else ""),
+            "components": data,
+            "execution_time": result.execution_time,
+        }
+        if failed:
+            reply["warning"] = f"{len(failed)} item(s) failed: " + "; ".join(
+                f"#{f.get('index')} {f.get('file_path')}: {f.get('error')}"
+                for f in failed
+            )
+        return reply
+
+    @mcp.tool()
+    async def set_component_position(
+        input_data: SetComponentPositionInput,
+    ) -> dict[str, Any]:
+        """Move or turn assembly components: place one at a point and angle, or shift and turn several.
+
+        Use it to correct a placement instead of deleting and re-inserting.
+        Absolute (the default): `x`, `y`, `z` place the component's origin (mm) and
+        `rx`, `ry`, `rz` set its angles (degrees about the assembly's x, then y,
+        then z axis); a value left out is kept. `relative` true shifts each
+        component by `x`, `y`, `z` and turns it about its own origin. The new
+        placement is read back. Needs: an open assembly with the components.
+        Changes: their positions. Returns: `moved`, each with `component`, `before`
+        and `after` (`origin_mm`, `rotation_deg`).
+
+        Args:
+            input_data: `components` and at least one of `x`, `y`, `z`, `rx`,
+                `ry`, `rz`; `relative` is off.
+
+        Returns:
+            dict[str, Any]: Each component's placement before and after.
+        """
+        input_data = normalize_input(input_data, SetComponentPositionInput)
+        require_capability(
+            adapter,
+            "set_component_position",
+            "Active adapter can't move components",
+        )
+        result = await adapter.set_component_position(
+            input_data.components,
+            input_data.x,
+            input_data.y,
+            input_data.z,
+            input_data.rx,
+            input_data.ry,
+            input_data.rz,
+            input_data.relative,
+        )
+        require_success(result, context="Failed to move the components")
+        moved = (result.data or {}).get("moved", [])
+        how = "Shifted" if input_data.relative else "Placed"
+        return {
+            "status": "success",
+            "message": f"{how} {len(moved)} component(s)",
+            "position": result.data,
+            "execution_time": result.execution_time,
+        }
+
+    return 7

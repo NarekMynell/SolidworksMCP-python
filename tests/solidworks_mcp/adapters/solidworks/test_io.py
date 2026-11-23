@@ -1385,69 +1385,6 @@ class TestComponentPairsHelper:
         assert result == [("C:/parts/a.sldprt", component)]
 
 
-class TestInsertComponentMoreErrors:
-    @pytest.mark.asyncio
-    async def test_errors_when_no_active_model(self, monkeypatch) -> None:
-        adapter = _build_adapter(monkeypatch)
-        adapter.currentModel = None
-        result = await adapter.insert_component("C:/parts/a.sldprt", 0, 0, 0)
-        assert result.is_error
-        assert "No active model" in (result.error or "")
-
-    @pytest.mark.asyncio
-    async def test_errors_when_file_not_found(self, monkeypatch, tmp_path) -> None:
-        adapter = _build_adapter(monkeypatch)
-        adapter.currentModel = MagicMock()
-        result = await adapter.insert_component(
-            str(tmp_path / "does-not-exist.sldprt"), 0, 0, 0
-        )
-        assert result.is_error
-        assert "Component file not found" in (result.error or "")
-
-    @pytest.mark.asyncio
-    async def test_errors_when_not_an_assembly(self, monkeypatch) -> None:
-        adapter = _build_adapter(monkeypatch)
-        adapter.currentModel = MagicMock()
-        adapter.currentModel.GetType.return_value = 1
-
-        result = await adapter.insert_component(__file__, 0, 0, 0)
-
-        assert result.is_error
-        assert "requires an assembly document" in (result.error or "")
-
-    @pytest.mark.asyncio
-    async def test_errors_when_opendoc6_returns_nothing(self, monkeypatch) -> None:
-        adapter = _build_adapter(monkeypatch)
-        adapter.currentModel = MagicMock()
-        adapter.currentModel.GetType.return_value = 2
-        adapter.swApp = MagicMock()
-        adapter.swApp.OpenDoc6.return_value = None
-
-        result = await adapter.insert_component(__file__, 0, 0, 0)
-
-        assert result.is_error
-        assert "OpenDoc6 returned nothing" in (result.error or "")
-
-    @pytest.mark.asyncio
-    async def test_falls_back_to_add_component5_and_still_fails(
-        self, monkeypatch
-    ) -> None:
-        adapter = _build_adapter(monkeypatch)
-        adapter.currentModel = MagicMock()
-        adapter.currentModel.GetType.return_value = 2
-        adapter.currentModel.GetComponents.return_value = []
-        adapter.swApp = MagicMock()
-        adapter.swApp.OpenDoc6.return_value = MagicMock()
-        adapter.currentModel.AddComponent4.return_value = None
-        adapter.currentModel.AddComponent5.return_value = None
-
-        result = await adapter.insert_component(__file__, 0, 0, 0)
-
-        assert result.is_error
-        adapter.currentModel.AddComponent5.assert_called_once()
-        assert "Component was not inserted" in (result.error or "")
-
-
 class TestListComponentsMoreErrors:
     @pytest.mark.asyncio
     async def test_errors_when_no_active_model(self, monkeypatch) -> None:
@@ -3867,27 +3804,6 @@ class TestAssemblyAndDrawingSuccessPaths:
         adapter.currentModel = MagicMock()
         adapter.currentModel.GetType.return_value = doc_type
         return adapter
-
-    @pytest.mark.asyncio
-    async def test_insert_component_reports_the_new_component(
-        self, monkeypatch
-    ) -> None:
-        adapter = self._document(monkeypatch, 2)
-        adapter.swApp = MagicMock()
-        snapshots = iter([["base-1"], ["base-1", "bracket-1"]])
-        monkeypatch.setattr(
-            _io_module, "_component_names", lambda _a, _asm: next(snapshots)
-        )
-
-        result = await adapter.insert_component(__file__, 10.0, 0.0, -5.0)
-
-        assert result.is_success, result.error
-        assert result.data["component"] == "bracket-1"
-        assert result.data["position"] == {"x": 10.0, "y": 0.0, "z": -5.0}
-        assert (result.data["components_before"], result.data["components_after"]) == (
-            1,
-            2,
-        )
 
     @pytest.mark.asyncio
     async def test_add_mate_reports_which_components_moved(self, monkeypatch) -> None:

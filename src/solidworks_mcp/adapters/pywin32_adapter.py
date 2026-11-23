@@ -1489,7 +1489,8 @@ class _FeatureSelectionService:
         Args:
             include_suppressed: Include suppressed features when ``True``.
             max_assembly_depth: Sub-assembly recursion budget. Ignored for
-                Part documents.
+                Part documents; below 0 an assembly lists its own tree only,
+                none of its components' features.
 
         Returns:
             list[dict[str, Any]]: Ordered, flattened feature descriptors.
@@ -1508,7 +1509,9 @@ class _FeatureSelectionService:
             lambda: int(self._adapter._get_attr_or_call(document, "GetType") or 0),
             default=0,
         )
-        if doc_type == self._adapter.constants.get("swDocASSEMBLY", 2):
+        if max_assembly_depth >= 0 and doc_type == self._adapter.constants.get(
+            "swDocASSEMBLY", 2
+        ):
             sw_type_info.flag_doc(document, doc_type)
             features.extend(
                 self._list_assembly_component_features(

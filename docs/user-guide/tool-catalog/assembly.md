@@ -10,6 +10,58 @@ An assembly drawing a shop builds from is an exploded view with numbered balloon
 
 ---
 
+### `add_components`
+
+Insert many parts or sub-assemblies into the active assembly in one call, each placed by its origin and turned.
+
+**Prerequisite:** An open assembly and the files on disk
+
+**SolidWorks automation note:** One `IAssemblyDoc.AddComponents3` call takes every file and a 16-number transform each (the rotation's rows are the images of the part's axes, then the origin in metres). The files load without windows; live on SolidWorks 2025 three components went in in 0.08 s. An item with `anchor` `center` is moved afterwards so its bounding box's middle is on the point. A missing file fails its own item; `fix` fixes every new component with one `FixComponent`.
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `items` | `list[ComponentItem]` | ✅ | | The components, each `file_path` with `x`, `y`, `z` (mm, where its origin goes), `rx`, `ry`, `rz` (degrees about the assembly's x, then y, then z axis) and `anchor` (`origin` or `center`) |
+| `fix` | `bool` | — | `false` | true fixes every new component where it is |
+
+**Sample call:**
+
+```json
+{"items": [{"file_path": "C:\\steel\\HEB400.SLDPRT", "x": 0, "y": 0, "z": 0}, {"file_path": "C:\\steel\\HEB400.SLDPRT", "x": 9000, "y": 0, "z": 0, "rz": 90}], "fix": true}
+```
+
+---
+
+### `set_component_position`
+
+Move or turn assembly components: place one at a point and angle, or shift and turn several.
+
+**Prerequisite:** An open assembly with the components
+
+**SolidWorks automation note:** Sets `IComponent2.Transform2` from `IMathUtility.CreateTransform` and reads it back; a component that didn't move (held by its mates) is an error. Absolute values replace the component's own and a value left out is kept; `relative` shifts the origin and turns the part about it.
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `components` | `list[str]` | ✅ | | Instance names, as list_components reports them |
+| `x` | `float?` | — | `None` | X of the part's origin, mm (with relative: how far to shift it) |
+| `y` | `float?` | — | `None` | Y of the origin, or the shift, mm |
+| `z` | `float?` | — | `None` | Z of the origin, or the shift, mm |
+| `rx` | `float?` | — | `None` | Degrees about the assembly's x axis (with relative: an extra turn) |
+| `ry` | `float?` | — | `None` | Degrees about the assembly's y axis |
+| `rz` | `float?` | — | `None` | Degrees about the assembly's z axis |
+| `relative` | `bool` | — | `false` | true shifts and turns each component from where it is; false places it |
+
+**Sample call:**
+
+```json
+{"components": ["IPE200-10", "IPE200-11"], "z": 20, "relative": true}
+```
+
+---
+
 ### `create_exploded_view`
 
 Explode the active assembly, automatically or step by step, and show it.

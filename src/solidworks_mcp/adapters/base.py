@@ -1864,15 +1864,28 @@ class SolidWorksAdapter(ABC):
 
     # Assembly Operations
     async def insert_component(
-        self, file_path: str, x: float = 0.0, y: float = 0.0, z: float = 0.0
+        self,
+        file_path: str,
+        x: float = 0.0,
+        y: float = 0.0,
+        z: float = 0.0,
+        rx: float = 0.0,
+        ry: float = 0.0,
+        rz: float = 0.0,
+        anchor: str = "center",
     ) -> AdapterResult[dict[str, Any]]:
         """Insert a part or sub-assembly into the active assembly.
 
         Args:
             file_path (str): Absolute path to the ``.sldprt`` or ``.sldasm``.
-            x (float): X position in millimetres. Defaults to 0.0.
-            y (float): Y position in millimetres. Defaults to 0.0.
-            z (float): Z position in millimetres. Defaults to 0.0.
+            x (float): X of the point, mm.
+            y (float): Y of the point, mm.
+            z (float): Z of the point, mm.
+            rx (float): Degrees about the assembly's x axis, applied first.
+            ry (float): Degrees about its y axis, applied second.
+            rz (float): Degrees about its z axis, applied last.
+            anchor (str): ``center`` puts the middle of the part's bounding
+                box on the point, ``origin`` its origin.
 
         Returns:
             AdapterResult[dict[str, Any]]: Component name and counts, or error.
@@ -1880,6 +1893,56 @@ class SolidWorksAdapter(ABC):
         return AdapterResult(
             status=AdapterResultStatus.ERROR,
             error="insert_component is not implemented by this adapter",
+        )
+
+    async def add_components(
+        self, items: list[dict[str, Any]], fix: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
+        """Insert many parts or sub-assemblies in one call, each by its origin.
+
+        Args:
+            items (list[dict[str, Any]]): ``file_path`` and optional ``x``,
+                ``y``, ``z`` (mm), ``rx``, ``ry``, ``rz`` (degrees) and
+                ``anchor`` each.
+            fix (bool): Fix the new components where they are.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``added`` and ``failed`` items, or error.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="add_components is not implemented by this adapter",
+        )
+
+    async def set_component_position(
+        self,
+        components: list[str],
+        x: float | None = None,
+        y: float | None = None,
+        z: float | None = None,
+        rx: float | None = None,
+        ry: float | None = None,
+        rz: float | None = None,
+        relative: bool = False,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Move or turn components: place them, or shift and turn them.
+
+        Args:
+            components (list[str]): Instance names.
+            x (float | None): X of the origin, or a shift when relative, mm.
+            y (float | None): Y, mm.
+            z (float | None): Z, mm.
+            rx (float | None): Degrees about the assembly's x axis.
+            ry (float | None): Degrees about its y axis.
+            rz (float | None): Degrees about its z axis.
+            relative (bool): Shift and turn instead of placing.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``moved``, before and after each.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="set_component_position is not implemented by this adapter",
         )
 
     async def list_components(self) -> AdapterResult[list[str]]:
@@ -1948,7 +2011,7 @@ class SolidWorksAdapter(ABC):
 
     async def set_component_state(
         self,
-        component: str,
+        component: str | list[str],
         fixed: bool | None = None,
         flexible: bool | None = None,
     ) -> AdapterResult[dict[str, Any]]:

@@ -102,3 +102,78 @@ def test_a_circular_pattern_needs_no_spacing() -> None:
     )
 
     assert made.spacing is None
+
+
+@pytest.mark.asyncio
+async def test_add_components_sends_every_item_in_one_call(mcp_server) -> None:
+    adapter = Mock()
+    adapter.add_components = AsyncMock(
+        return_value=_ok(
+            {
+                "added": [{"index": 0, "component": "col-1"}],
+                "failed": [
+                    {"index": 1, "file_path": "x.sldprt", "error": "file not found"}
+                ],
+                "fixed": True,
+            }
+        )
+    )
+    tools = await _tools(mcp_server, adapter)
+
+    reply = await tools["add_components"](
+        {
+            "items": [
+                {"file_path": "C:/p/col.sldprt", "x": 9000, "rz": 90},
+                {"file_path": "x.sldprt"},
+            ],
+            "fix": True,
+        }
+    )
+    empty = await tools["add_components"]({"items": []})
+
+    items, fix = adapter.add_components.await_args.args
+    assert fix is True
+    assert items[0] == {
+        "file_path": "C:/p/col.sldprt",
+        "x": 9000.0,
+        "y": 0.0,
+        "z": 0.0,
+        "rx": 0.0,
+        "ry": 0.0,
+        "rz": 90.0,
+        "anchor": "origin",
+    }
+    assert reply["message"] == "Added 1 of 2 component(s) and fixed them"
+    assert reply["warning"].startswith("1 item(s) failed: #1 x.sldprt: file not found")
+    assert empty["error_type"] == "invalid_input"
+
+
+@pytest.mark.asyncio
+async def test_set_component_position_places_or_shifts(mcp_server) -> None:
+    adapter = Mock()
+    adapter.set_component_position = AsyncMock(
+        return_value=_ok({"moved": [{"component": "a-1"}, {"component": "a-2"}]})
+    )
+    tools = await _tools(mcp_server, adapter)
+
+    shifted = await tools["set_component_position"](
+        {"components": ["a-1", "a-2"], "z": 20, "relative": True}
+    )
+    placed = await tools["set_component_position"]({"components": ["a-1"], "rz": 90})
+    nothing = await tools["set_component_position"]({"components": ["a-1"]})
+    pile = await tools["set_component_position"]({"components": ["a-1", "a-2"], "x": 0})
+
+    assert adapter.set_component_position.await_args_list[0].args == (
+        ["a-1", "a-2"],
+        None,
+        None,
+        20.0,
+        None,
+        None,
+        None,
+        True,
+    )
+    assert shifted["message"] == "Shifted 2 component(s)"
+    assert placed["message"] == "Placed 2 component(s)"
+    assert nothing["error_type"] == "invalid_input"
+    assert "same spot" in pile["message"]

@@ -3635,6 +3635,11 @@ async def test_delete_feature_names_every_feature_it_removed(monkeypatch) -> Non
 
     assert result.data["removed_features"] == ["Sketch2", "Cut-Extrude1"]
     assert result.execution_time == 0.2
+    # The document's own tree only, never every component's (gap §6).
+    assert all(
+        call.kwargs == {"include_suppressed": True, "max_assembly_depth": -1}
+        for call in adapter.list_features.await_args_list
+    )
 
 
 @pytest.mark.asyncio

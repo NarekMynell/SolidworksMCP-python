@@ -1950,23 +1950,59 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
     # Assembly operations
 
     async def insert_component(
-        self, file_path: str, x: float = 0.0, y: float = 0.0, z: float = 0.0
+        self,
+        file_path: str,
+        x: float = 0.0,
+        y: float = 0.0,
+        z: float = 0.0,
+        rx: float = 0.0,
+        ry: float = 0.0,
+        rz: float = 0.0,
+        anchor: str = "center",
     ) -> AdapterResult[dict[str, Any]]:
-        """Insert component through circuit breaker.
-
-        Args:
-            file_path (str): Path to the target file.
-            x (float): X position in millimetres. Defaults to 0.0.
-            y (float): Y position in millimetres. Defaults to 0.0.
-            z (float): Z position in millimetres. Defaults to 0.0.
-
-        Returns:
-            AdapterResult[dict[str, Any]]: The result produced by the operation.
-        """
+        """Insert component through circuit breaker."""
         return await self._execute_with_circuit_breaker(
             "insert_component",
-            lambda: self.adapter.insert_component(file_path, x, y, z),
-            input_dict={"file_path": file_path, "x": x, "y": y, "z": z},
+            lambda: self.adapter.insert_component(
+                file_path, x, y, z, rx, ry, rz, anchor
+            ),
+            input_dict={
+                "file_path": file_path,
+                "x": x,
+                "y": y,
+                "z": z,
+                "anchor": anchor,
+            },
+        )
+
+    async def add_components(
+        self, items: list[dict[str, Any]], fix: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
+        """Insert many components in one call, through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "add_components",
+            lambda: self.adapter.add_components(items, fix),
+            input_dict={"items": len(items), "fix": fix},
+        )
+
+    async def set_component_position(
+        self,
+        components: list[str],
+        x: float | None = None,
+        y: float | None = None,
+        z: float | None = None,
+        rx: float | None = None,
+        ry: float | None = None,
+        rz: float | None = None,
+        relative: bool = False,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Move or turn components, through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "set_component_position",
+            lambda: self.adapter.set_component_position(
+                components, x, y, z, rx, ry, rz, relative
+            ),
+            input_dict={"components": components, "relative": relative},
         )
 
     async def list_components(self) -> AdapterResult[list[str]]:
@@ -2316,7 +2352,7 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
 
     async def set_component_state(
         self,
-        component: str,
+        component: str | list[str],
         fixed: bool | None = None,
         flexible: bool | None = None,
     ) -> AdapterResult[dict[str, Any]]:

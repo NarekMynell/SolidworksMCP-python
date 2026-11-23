@@ -14,7 +14,8 @@ from typing import Any, cast
 
 from .. import sw_type_info as _sw_type_info
 from ..base import AdapterResult, AdapterResultStatus
-from .com_utils import as_list, dispatch_array, long_array
+from . import placement as _placement
+from .com_utils import as_list, dispatch_array, double_array, long_array, string_array
 from .features import _null_callout
 from .io import (
     _box_from_metres,
@@ -24,7 +25,62 @@ from .io import (
     _find_components,
     _resolve_drawing_view,
     _view_names,
+    _wrap_component,
 )
+
+#: The files ``AddComponents3`` takes.
+_COMPONENT_SUFFIXES = frozenset({".sldprt", ".sldasm"})
+
+
+def _number(item: dict[str, Any], key: str) -> float:
+    """``item[key]`` as a float, 0 when it is missing or None."""
+    return float(item.get(key) or 0.0)
+
+
+def _component_count(adapter: Any, assembly: Any) -> int:
+    """The assembly's top-level component count, in one COM call.
+
+    ``GetComponentCount(True)`` is read, with the name walk as the fallback.
+    """
+    count = adapter._attempt(lambda: assembly.GetComponentCount(True), default=None)
+    if isinstance(count, int):
+        return count
+    return len(_component_names(adapter, assembly))
+
+
+def _math_utility(adapter: Any) -> Any:
+    """SolidWorks' ``IMathUtility``, fetched once per batch."""
+    return _sw_type_info.flagged(adapter.swApp.GetMathUtility(), "IMathUtility")
+
+
+def _math_transform(utility: Any, data: list[float]) -> Any:
+    """An ``IMathTransform`` holding the 16 ``ArrayData`` numbers."""
+    return utility.CreateTransform(double_array(data))
+
+
+def _centre_on(
+    adapter: Any,
+    utility: Any,
+    component: Any,
+    point: list[float],
+    matrix: _placement.Matrix,
+) -> None:
+    """Move ``component`` so the middle of its bounding box is at ``point`` (mm).
+
+    Raises:
+        Exception: The box can't be read.
+    """
+    box = as_list(adapter._attempt(lambda: component.GetBox(False, False)))
+    if len(box) < 6:
+        raise Exception(
+            f"Couldn't read {component.Name2}'s bounding box to centre it; "
+            "use anchor 'origin'"
+        )
+    middle = [(float(box[i]) + float(box[i + 3])) * 500.0 for i in range(3)]
+    origin, _ = _placement.from_array(as_list(component.Transform2.ArrayData))
+    moved = [origin[i] + point[i] - middle[i] for i in range(3)]
+    component.Transform2 = _math_transform(utility, _placement.to_array(moved, matrix))
+
 
 #: The default plane whose normal is each explode direction.
 _DIRECTION_PLANES = {"x": "Right Plane", "y": "Top Plane", "z": "Front Plane"}
@@ -430,6 +486,296 @@ class SolidWorksAssemblyMixin:
         return cast(
             AdapterResult[dict[str, Any]],
             adapter._handle_com_operation("replace_component", run),
+        )
+
+    async def insert_component(
+        self,
+        file_path: str,
+        x: float = 0.0,
+        y: float = 0.0,
+        z: float = 0.0,
+        rx: float = 0.0,
+        ry: float = 0.0,
+        rz: float = 0.0,
+        anchor: str = "center",
+    ) -> AdapterResult[dict[str, Any]]:
+        """Insert one part or sub-assembly, centred on a point or by its origin.
+
+        One item through :meth:`add_components` (``AddComponents3``): the file
+        loads without a window of its own. ``anchor="center"`` (the default,
+        where ``AddComponent4`` put parts) moves the component afterwards so
+        the middle of its bounding box lands on the point; ``"origin"`` puts
+        the part's origin there.
+
+        Args:
+            file_path: Absolute path to the ``.sldprt`` or ``.sldasm``.
+            x: X of the point, mm.
+            y: Y of the point, mm.
+            z: Z of the point, mm.
+            rx: Degrees about the assembly's x axis, applied first.
+            ry: Degrees about its y axis, applied second.
+            rz: Degrees about its z axis, applied last.
+            anchor: ``center`` or ``origin``.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``component``, ``file_path``,
+            ``position`` (the point), ``anchor``, ``origin_mm``,
+            ``rotation_deg`` and the component counts before and after.
+        """
+        item = {
+            "file_path": file_path,
+            "x": x,
+            "y": y,
+            "z": z,
+            "rx": rx,
+            "ry": ry,
+            "rz": rz,
+            "anchor": anchor,
+        }
+        result = await self.add_components([item])
+        if not result.is_success:
+            return result
+        data = result.data or {}
+        added = data["added"][0]
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "component": added["component"],
+                "file_path": added["file_path"],
+                "position": {"x": x, "y": y, "z": z},
+                "anchor": anchor,
+                "origin_mm": added["origin_mm"],
+                "rotation_deg": added["rotation_deg"],
+                "components_before": data["components_before"],
+                "components_after": data["components_after"],
+            },
+            execution_time=result.execution_time,
+        )
+
+    async def add_components(
+        self, items: list[dict[str, Any]], fix: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
+        """Insert many parts or sub-assemblies in one ``AddComponents3`` call.
+
+        Each item puts its file's **origin** at ``x``, ``y``, ``z`` (mm),
+        turned ``rx``, ``ry``, ``rz`` degrees about the assembly's x, then y,
+        then z axis; an item with ``anchor="center"`` is moved afterwards so
+        the middle of its bounding box lands there instead. The files load
+        without windows (live on SolidWorks 2025: three in 0.08 s, where
+        ``AddComponent4`` took seconds each and left every part open). A file
+        that is missing, or that SolidWorks refuses, fails its own item and
+        the rest go in. ``fix`` fixes every new component in one
+        ``FixComponent``.
+
+        Args:
+            items: Dicts with ``file_path`` and optional ``x``, ``y``, ``z``,
+                ``rx``, ``ry``, ``rz`` and ``anchor``.
+            fix: Fix the new components where they are.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``added`` (``index``,
+            ``component``, ``file_path``, ``origin_mm``, ``rotation_deg``),
+            ``failed`` (``index``, ``file_path``, ``error``), ``fixed`` and
+            the component counts before and after; an error when none went in.
+        """
+        adapter = self._adapter(self)
+        if wrong := _need_assembly(adapter, "add_components"):
+            return wrong
+        ready: list[tuple[int, dict[str, Any]]] = []
+        failed: list[dict[str, Any]] = []
+        for index, item in enumerate(items):
+            given = str(item.get("file_path") or "")
+            path = os.path.abspath(given) if given.strip() else ""
+            if not path or not os.path.isfile(path):
+                failed.append(
+                    {"index": index, "file_path": given, "error": "file not found"}
+                )
+            elif os.path.splitext(path)[1].lower() not in _COMPONENT_SUFFIXES:
+                failed.append(
+                    {
+                        "index": index,
+                        "file_path": given,
+                        "error": "not a .sldprt or .sldasm file",
+                    }
+                )
+            else:
+                ready.append((index, {**item, "file_path": path}))
+        if not ready:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error="No component could be added: "
+                + "; ".join(
+                    f"{f['file_path'] or '<empty>'}: {f['error']}" for f in failed
+                ),
+            )
+
+        def run() -> dict[str, Any]:
+            model = adapter.currentModel
+            assembly = _assembly(adapter)
+            before = _component_count(adapter, assembly)
+            matrices = [
+                _placement.rotation(*(_number(item, key) for key in ("rx", "ry", "rz")))
+                for _, item in ready
+            ]
+            transforms: list[float] = []
+            for (_, item), matrix in zip(ready, matrices, strict=True):
+                point = [_number(item, key) for key in ("x", "y", "z")]
+                transforms.extend(_placement.to_array(point, matrix))
+            returned = as_list(
+                assembly.AddComponents3(
+                    string_array([item["file_path"] for _, item in ready]),
+                    double_array(transforms),
+                    string_array([""] * len(ready)),
+                )
+            )
+            placed: list[tuple[int, dict[str, Any], Any]] = []
+            utility = None
+            for position, ((index, item), matrix) in enumerate(
+                zip(ready, matrices, strict=True)
+            ):
+                raw = returned[position] if position < len(returned) else None
+                component = None if raw is None else _wrap_component(adapter, raw)
+                if component is None:
+                    failed.append(
+                        {
+                            "index": index,
+                            "file_path": item["file_path"],
+                            "error": "SolidWorks added nothing; it refuses a part "
+                            "with no solid body without saying so",
+                        }
+                    )
+                    continue
+                if item.get("anchor") == "center":
+                    point = [_number(item, key) for key in ("x", "y", "z")]
+                    utility = utility or _math_utility(adapter)
+                    _centre_on(adapter, utility, component, point, matrix)
+                placed.append((index, item, component))
+            if not placed:
+                raise Exception(
+                    "SolidWorks added none of the components. A part with no "
+                    "solid body is refused without a message; check each file "
+                    "opens with a body."
+                )
+            if fix:
+                model.ClearSelection2(True)
+                _select_components(adapter, [c for _, _, c in placed], 0)
+                assembly.FixComponent()
+                model.ClearSelection2(True)
+            adapter._attempt(lambda: model.GraphicsRedraw2(), default=None)
+            added = [
+                {
+                    "index": index,
+                    "component": str(component.Name2),
+                    "file_path": item["file_path"],
+                    **_placement.placement(as_list(component.Transform2.ArrayData)),
+                }
+                for index, item, component in placed
+            ]
+            return {
+                "added": added,
+                "failed": sorted(failed, key=lambda f: int(f["index"])),
+                "fixed": fix,
+                "components_before": before,
+                "components_after": _component_count(adapter, assembly),
+            }
+
+        return cast(
+            AdapterResult[dict[str, Any]],
+            adapter._handle_com_operation("add_components", run),
+        )
+
+    async def set_component_position(
+        self,
+        components: list[str],
+        x: float | None = None,
+        y: float | None = None,
+        z: float | None = None,
+        rx: float | None = None,
+        ry: float | None = None,
+        rz: float | None = None,
+        relative: bool = False,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Move or turn components by setting ``IComponent2.Transform2``.
+
+        Absolute (the default): each value given replaces the component's own
+        (its origin in mm; degrees about the assembly's x, y and z axes,
+        applied in that order) and a value left out is kept. Relative: the
+        origin moves by ``x``, ``y``, ``z`` and the part turns by ``rx``,
+        ``ry``, ``rz`` about its own origin. The transform is read back, and a
+        component SolidWorks held where it was is an error.
+
+        Args:
+            components: Instance names.
+            x: X of the origin (absolute) or a shift (relative), mm.
+            y: Y, mm.
+            z: Z, mm.
+            rx: Degrees about the assembly's x axis.
+            ry: Degrees about its y axis.
+            rz: Degrees about its z axis.
+            relative: Shift and turn instead of placing.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``moved``, each with ``component``,
+            ``before`` and ``after`` (``origin_mm``, ``rotation_deg``).
+        """
+        adapter = self._adapter(self)
+        if wrong := _need_assembly(adapter, "set_component_position"):
+            return wrong
+        shift = (x, y, z)
+        turn = (rx, ry, rz)
+
+        def run() -> dict[str, Any]:
+            model = adapter.currentModel
+            found = _find_components(adapter, _assembly(adapter), components)
+            utility = _math_utility(adapter)
+            moved = []
+            for name in components:
+                component = found[name]
+                data = as_list(component.Transform2.ArrayData)
+                origin, matrix = _placement.from_array(data)
+                if relative:
+                    new_matrix = _placement.multiply(
+                        _placement.rotation(
+                            turn[0] or 0.0, turn[1] or 0.0, turn[2] or 0.0
+                        ),
+                        matrix,
+                    )
+                    new_origin = [origin[i] + (shift[i] or 0.0) for i in range(3)]
+                else:
+                    current = _placement.angles(matrix)
+                    new_matrix = (
+                        matrix
+                        if all(v is None for v in turn)
+                        else _placement.rotation(*_placement.merge(turn, current))
+                    )
+                    new_origin = [
+                        origin[i] if shift[i] is None else float(shift[i] or 0.0)
+                        for i in range(3)
+                    ]
+                wanted = _placement.to_array(new_origin, new_matrix)
+                component.Transform2 = _math_transform(utility, wanted)
+                got = [float(v) for v in as_list(component.Transform2.ArrayData)]
+                if len(got) < 12 or any(
+                    abs(a - b) > 1e-7
+                    for a, b in zip(got[:12], wanted[:12], strict=True)
+                ):
+                    raise Exception(
+                        f"SolidWorks kept {name} where it was: mates hold it. "
+                        "Delete or suppress its mates, or move what it is mated to."
+                    )
+                moved.append(
+                    {
+                        "component": name,
+                        "before": _placement.placement(data),
+                        "after": _placement.placement(got),
+                    }
+                )
+            adapter._attempt(lambda: model.GraphicsRedraw2(), default=None)
+            return {"moved": moved, "relative": relative}
+
+        return cast(
+            AdapterResult[dict[str, Any]],
+            adapter._handle_com_operation("set_component_position", run),
         )
 
     async def set_component_appearance(

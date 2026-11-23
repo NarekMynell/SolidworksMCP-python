@@ -14,6 +14,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Steel-structure assemblies by coordinates, fast** (field report on a
+  36 m roof module, SolidWorks 2025). `add_components` inserts any number
+  of parts in one `AddComponents3` call, each placed by its **origin** and
+  turned `rx`, `ry`, `rz` degrees about the assembly's axes, and can fix
+  them all: 20 parts in 1.4 s live, where `insert_component` took about 9 s
+  each. `set_component_position` places one component or shifts and turns
+  several, without delete and re-insert. `set_component_state` takes
+  `components` to fix or float many in one selection. `insert_component`
+  takes `rx`, `ry`, `rz` and `anchor` (`center`, the default, or `origin`).
+
+### Changed
+
+- **Every method flag after the first is cached** (`sw_type_info`).
+  SolidWorks' dispatches carry no type information, so flagging asked
+  SolidWorks for each method's DISPID: 342 ms for a fresh `IComponent2`,
+  about 1.7 s for an `IModelDoc2`, on every new dispatch. The DISPIDs are
+  learnt once per interface and copied (4.8 ms, two of them re-checked).
+  Fixing or moving 19 components went from 6.5 s to under 2 s.
+- **`insert_component` loads the part without a window** and no longer
+  rebuilds the assembly or walks its components twice; parts it inserted
+  were left open as windows.
+
+### Fixed
+
+- **`delete_feature` in an assembly took minutes.** It listed the tree
+  before and after with every component's features (57 s for a 20-part
+  assembly, 3 to 5 minutes for 51 parts); it lists the assembly's own tree
+  now (1.3 s). `list_features` takes `max_assembly_depth` -1 for that.
+- **Finding components flagged every component's whole interface**, so each
+  mate, pattern or state call on a 50-part assembly spent seconds before
+  doing anything; only the components asked for are flagged now.
+
 - **Assembly depth** (queue item 33): an assembly to the drawing a shop
   builds from, 157 tools in all. `create_exploded_view` explodes the
   assembly automatically or step by step (components along x, y or z) and
