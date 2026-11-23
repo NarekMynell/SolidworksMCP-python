@@ -34,6 +34,7 @@ from .mock_drawing_pack import MockDrawingPackMixin
 from .mock_equations import MockEquationsMixin
 from .mock_sheet_metal import MockSheetMetalMixin
 from .mock_templates import MockTemplatesMixin
+from .mock_weldments import MockWeldmentsMixin
 from .solidworks import placement as _placement
 from .solidworks.documentation import MATERIAL_PROPERTIES
 from .solidworks.drawing_standard import gtol_problem
@@ -146,6 +147,7 @@ class _BoolCallable:
 
 class MockSolidWorksAdapter(
     MockSheetMetalMixin,
+    MockWeldmentsMixin,
     MockTemplatesMixin,
     MockDrawingPackMixin,
     MockEquationsMixin,

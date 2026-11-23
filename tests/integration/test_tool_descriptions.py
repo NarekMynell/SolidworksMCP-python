@@ -35,6 +35,7 @@ _MODULES = [
     "sketching",
     "template_management",
     "vba_generation",
+    "weldments",
 ]
 
 _MIN_CHARS, _MAX_CHARS = 120, 1200

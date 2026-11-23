@@ -14,6 +14,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Weldments** (queue item 38): steel frames and trusses as structural
+  members, with a shop cut list. `list_weldment_profiles` reads SolidWorks'
+  profile library and searches it by the names agents use (`HEB400` is DIN's
+  `HE400B`, `250x250x12` BSI's `RHS250x250x12.5`). `create_structural_members`
+  puts one profile on many segments in one call (drawn as a 3D sketch from
+  coordinates, or an existing sketch), grouping them into the chains
+  SolidWorks accepts and mitring their corners. `get_cut_list` gives every
+  item's quantity, length, end angles and mass, and writes CSV. Stable,
+  checked live on SolidWorks 2025: a 12 m Warren truss's cut list adds up to
+  the part's own 459.231 kg.
 - **Steel-structure assemblies by coordinates, fast** (field report on a
   36 m roof module, SolidWorks 2025). `add_components` inserts any number
   of parts in one `AddComponents3` call, each placed by its **origin** and

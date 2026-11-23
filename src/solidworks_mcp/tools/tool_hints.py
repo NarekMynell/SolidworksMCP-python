@@ -174,6 +174,10 @@ TOOL_HINTS: dict[str, ToolHints] = {
     "add_balloons": _adds("Add Balloons"),
     "add_components": _adds("Add Components"),
     "set_component_position": _sets("Set Component Position"),
+    # weldments
+    "list_weldment_profiles": _reads("List Weldment Profiles"),
+    "create_structural_members": _adds("Create Structural Members"),
+    "get_cut_list": _sets("Get Cut List"),
     "list_equations": _reads("List Equations"),
     "set_equation": _sets("Set Equation"),
     "delete_equation": _discards("Delete Equation"),

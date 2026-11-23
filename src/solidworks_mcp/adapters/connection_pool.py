@@ -1805,6 +1805,39 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
 
     # Assembly operations
 
+    async def list_weldment_profiles(
+        self,
+        standard: str | None = None,
+        profile_type: str | None = None,
+        query: str | None = None,
+        limit: int = 50,
+    ) -> AdapterResult[dict[str, Any]]:
+        """List or search the weldment profile library, using pool."""
+        return await self._execute_with_pool(
+            "list_weldment_profiles",
+            lambda adapter: adapter.list_weldment_profiles(
+                standard, profile_type, query, limit
+            ),
+        )
+
+    async def create_structural_members(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Insert a structural member feature, using pool."""
+        return await self._execute_with_pool(
+            "create_structural_members",
+            lambda adapter: adapter.create_structural_members(params),
+        )
+
+    async def get_cut_list(
+        self, update: bool = True, export_path: str | None = None
+    ) -> AdapterResult[dict[str, Any]]:
+        """Read the weldment's cut list, using pool."""
+        return await self._execute_with_pool(
+            "get_cut_list",
+            lambda adapter: adapter.get_cut_list(update, export_path),
+        )
+
     async def insert_component(
         self,
         file_path: str,

@@ -1949,6 +1949,42 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
 
     # Assembly operations
 
+    async def list_weldment_profiles(
+        self,
+        standard: str | None = None,
+        profile_type: str | None = None,
+        query: str | None = None,
+        limit: int = 50,
+    ) -> AdapterResult[dict[str, Any]]:
+        """List or search the weldment profile library, through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "list_weldment_profiles",
+            lambda: self.adapter.list_weldment_profiles(
+                standard, profile_type, query, limit
+            ),
+            input_dict={"standard": standard, "query": query},
+        )
+
+    async def create_structural_members(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Insert a structural member feature, through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "create_structural_members",
+            lambda: self.adapter.create_structural_members(params),
+            input_dict={"params": params},
+        )
+
+    async def get_cut_list(
+        self, update: bool = True, export_path: str | None = None
+    ) -> AdapterResult[dict[str, Any]]:
+        """Read the weldment's cut list, through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "get_cut_list",
+            lambda: self.adapter.get_cut_list(update, export_path),
+            input_dict={"update": update, "export_path": export_path},
+        )
+
     async def insert_component(
         self,
         file_path: str,

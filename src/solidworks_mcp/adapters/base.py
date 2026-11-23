@@ -1863,6 +1863,62 @@ class SolidWorksAdapter(ABC):
         )
 
     # Assembly Operations
+    async def list_weldment_profiles(
+        self,
+        standard: str | None = None,
+        profile_type: str | None = None,
+        query: str | None = None,
+        limit: int = 50,
+    ) -> AdapterResult[dict[str, Any]]:
+        """List the weldment profile library's standards, types or sizes, or search it.
+
+        Args:
+            standard (str | None): One standard, e.g. ``DIN``.
+            profile_type (str | None): One type of it, e.g. ``ipe``.
+            query (str | None): Words to find in type and size names.
+            limit (int): The most search results.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The library listing, or error.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="list_weldment_profiles is not implemented by this adapter",
+        )
+
+    async def create_structural_members(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Insert a structural member feature: one profile on sketch segments.
+
+        Args:
+            params (dict[str, Any]): The profile and the segments.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The feature, or error.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="create_structural_members is not implemented by this adapter",
+        )
+
+    async def get_cut_list(
+        self, update: bool = True, export_path: str | None = None
+    ) -> AdapterResult[dict[str, Any]]:
+        """Read the active weldment's cut list.
+
+        Args:
+            update (bool): Update the cut list first.
+            export_path (str | None): Also write it as CSV.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The items and totals, or error.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="get_cut_list is not implemented by this adapter",
+        )
+
     async def insert_component(
         self,
         file_path: str,

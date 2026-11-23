@@ -38,6 +38,7 @@ from .solidworks import (
     SolidWorksSheetMetalMixin,
     SolidWorksSketchMixin,
     SolidWorksTemplatesMixin,
+    SolidWorksWeldmentsMixin,
     bitmap,
 )
 from .solidworks.dialog_watch import DialogWatch, waited_message
@@ -1722,6 +1723,7 @@ class _FeatureSelectionService:
 class PyWin32Adapter(
     SolidWorksAssemblyMixin,
     SolidWorksSheetMetalMixin,
+    SolidWorksWeldmentsMixin,
     SolidWorksTemplatesMixin,
     SolidWorksDrawingPackMixin,
     SolidWorksDrawingStandardMixin,

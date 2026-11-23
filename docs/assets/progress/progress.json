@@ -1,10 +1,10 @@
 {
  "tools": {
-  "total": 159,
+  "total": 162,
   "by_level": {
-   "stable": 149,
+   "stable": 154,
    "beta": 0,
-   "experimental": 2,
+   "experimental": 0,
    "planned": 0,
    "deprecated": 8
   },
@@ -61,8 +61,8 @@
    {
     "name": "add_components",
     "family": "assembly",
-    "level": "experimental",
-    "reason": "no live test has checked it yet.",
+    "level": "stable",
+    "reason": "",
     "summary": "Insert many parts or sub-assemblies into the active assembly in one call, each placed by its origin and turned."
    },
    {
@@ -437,6 +437,13 @@
     "summary": "Bend a sheet-metal part along a line sketched on one of its faces."
    },
    {
+    "name": "create_structural_members",
+    "family": "weldments",
+    "level": "stable",
+    "reason": "",
+    "summary": "Put a weldment profile (IPE, HEB, SHS, RHS, UPN, angle...) on many segments in one call: columns, beams, truss chords and web members."
+   },
+   {
     "name": "create_sweep",
     "family": "modeling",
     "level": "stable",
@@ -647,6 +654,13 @@
     "summary": "Read the active document's custom properties, such as PartNo, Description or Revision."
    },
    {
+    "name": "get_cut_list",
+    "family": "weldments",
+    "level": "stable",
+    "reason": "",
+    "summary": "Read the active weldment part's cut list: every member size with its quantity, length, end angles and mass, ready for the shop."
+   },
+   {
     "name": "get_dimension",
     "family": "modeling",
     "level": "stable",
@@ -771,6 +785,13 @@
     "level": "stable",
     "reason": "",
     "summary": "List every document open in SolidWorks and say which one is active."
+   },
+   {
+    "name": "list_weldment_profiles",
+    "family": "weldments",
+    "level": "stable",
+    "reason": "",
+    "summary": "List SolidWorks' weldment profile library: standards, profile types and sizes, or search it."
    },
    {
     "name": "load_assembly",
@@ -950,8 +971,8 @@
    {
     "name": "set_component_position",
     "family": "assembly",
-    "level": "experimental",
-    "reason": "no live test has checked it yet.",
+    "level": "stable",
+    "reason": "",
     "summary": "Move or turn assembly components: place one at a point and angle, or shift and turn several."
    },
    {
@@ -1127,11 +1148,11 @@
  "com": {
   "type_library": "83A33D31-27C5-11CE-BFD4-00400513BB57x0x34x0",
   "core": {
-   "covered": 280,
+   "covered": 291,
    "total": 2838
   },
   "api": {
-   "covered": 321,
+   "covered": 331,
    "total": 5985
   },
   "interfaces": [
@@ -1146,10 +1167,12 @@
      "GetDocuments",
      "GetExecutablePath",
      "GetExportFileData",
+     "GetFirstDocument",
      "GetMassProperties",
      "GetMathUtility",
      "GetOpenDocumentByName",
      "GetProcessID",
+     "GetUserPreferenceIntegerValue",
      "GetUserPreferenceStringValue",
      "GetUserPreferenceToggle",
      "NewAssembly",
@@ -1215,9 +1238,11 @@
      "GetSaveFlag",
      "GetTitle",
      "GetType",
+     "GetUserPreferenceIntegerValue",
      "GetUserPreferenceStringValue",
      "GetUserPreferenceToggle",
      "GraphicsRedraw2",
+     "Insert3DSketch",
      "InsertAxis2",
      "InsertDatumTag2",
      "InsertFeatureShell",
@@ -1291,11 +1316,13 @@
      "FeatureExtrusionThin2",
      "FeatureRevolve2",
      "FirstFeature",
+     "GetBodies",
      "GetBodies2",
      "GetExplodedViewNames",
      "GetMaterialPropertyName2",
      "GetPartBox",
      "InsertMirrorFeature",
+     "IsWeldment",
      "SetMaterialPropertyName2",
      "ShowExploded"
     ],
@@ -1356,6 +1383,7 @@
      "CreateDefinition",
      "CreateFeature",
      "CreateSaveBodyFeature",
+     "CreateStructuralMemberGroup",
      "FeatureCircularPattern5",
      "FeatureCut3",
      "FeatureCut4",
@@ -1378,7 +1406,9 @@
      "InsertReferencePoint",
      "InsertRib",
      "InsertSheetMetalBaseFlange2",
-     "InsertSheetMetalEdgeFlange2"
+     "InsertSheetMetalEdgeFlange2",
+     "InsertStructuralWeldment5",
+     "InsertWeldmentFeature"
     ],
     "total": 268
    },
@@ -1402,6 +1432,7 @@
      "CreateSketchSlot",
      "CreateSpline2",
      "CreateTangentArc",
+     "Insert3DSketch",
      "InsertSketch",
      "SketchExtend",
      "SketchOffset2",
@@ -1427,6 +1458,7 @@
      "CustomPropertyManager",
      "FeatureByName",
      "FirstFeature",
+     "GetBodies",
      "GetBodies2",
      "GetBox",
      "GetChildren",
