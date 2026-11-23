@@ -6,7 +6,7 @@ reviewed, then implemented, signed off live where it touches SolidWorks,
 and archived after its PR merges. Update this file when an item is done
 or the order changes.
 
-Last updated 2026-11-19.
+Last updated 2026-11-23.
 
 | # | Item | Issue | OpenSpec change | State |
 | --- | --- | --- | --- | --- |
@@ -48,7 +48,8 @@ Last updated 2026-11-19.
 | 35 | Multi-body tools: combine (add, subtract, common), split, move/copy, delete/keep a body, scale | none | not yet written | Planned |
 | 36 | Appearance and colour: set a part's, body's or face's colour and read it back | none | not yet written | Planned (small; may ride with another item) |
 | 37 | Drawing sheets and callouts: new and active sheet, auxiliary, break and broken-out views, hole callouts, ordinate dimensions, surface finish, revision table | #158 (part) | not yet written | Planned |
-| 38 | Weldments: structural members, trim/extend, end caps, gussets, cut list | none | not yet written | Planned (needs live probes: the profile library location varies) |
+| 38 | Weldments: structural members, trim/extend, end caps, gussets, cut list | none | none (fork branch `feat/steel-structures-toolkit`) | First part done 2026-11-23 on SW 2025 SP4: `list_weldment_profiles`, `create_structural_members`, `get_cut_list`, stable, live test passes. Left for item 41: trim/extend (`InsertWeldmentTrimFeature2`), end caps (`InsertEndCapFeature3`), gussets (`InsertGussetFeature3`), the cut-list table on a drawing (`IView.InsertWeldmentTable`), arc segments from coordinates |
+| 41 | Steel-structures field report (36 m roof module, SW 2025), what is left after the fork's first two commits: (a) the dialog watch around every COM call, not only `RunMacro2` (a `save_file`/`export_pdf` on a large drawing hung 30 min and SolidWorks was killed); (b) `insert_bom_table` deletes the table before it reports it off the sheet; a `delete_annotation` tool; (c) `get_custom_properties` resolves `$PRP` links through `Get6` with byref out-parameters (works on SW 2025, checked live; today it falls back to `Get`); (d) `check_interference` volumes to significant figures and a `min_volume_mm3`; (e) `fastmcp<4.3` (FastMCP 4.3 removes `SkillProvider`) and `pydantic_ai` imported lazily, as an optional extra; (f) weldments part 2 (item 38) | none | not yet written | Planned (the order above) |
 | 39 | Reference and analysis extras: coordinate system, bounding box, centre-of-mass point, section properties; wrap (text on a curved face) | none | not yet written | Planned |
 | 40 | Structure review (the user's request 2026-11-19), not a rewrite: the adapter wrappers (`base`, `circuit_breaker`, `connection_pool`, each about 2,500 lines of near-identical per-tool methods) repeat every adapter method, and the largest modules (`mock_adapter` 4,900, `io` 4,000, `features` 3,800, `modeling` 3,200, `sketch` 2,900 lines) should split by topic, as `adapters/solidworks/` already does. Measure the repetition, propose a SOLID structure (one generic forwarding path; one module per topic), and move to it in steps that keep every test passing | none | not yet written | Planned (last) |
 ## Removed tools (item 10, release 2.1.0)
