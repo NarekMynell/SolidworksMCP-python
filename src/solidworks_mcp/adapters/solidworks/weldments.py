@@ -30,6 +30,8 @@ from typing import Any, cast
 from ...exceptions import InputRefused
 from .. import sw_type_info as _sw_type_info
 from ..base import AdapterResult, AdapterResultStatus
+from . import feature_tree as _tree
+from . import sketch_define as _define
 from . import weldment_joints as _joints
 from .com_utils import as_list, dispatch_array
 from .features import _null_callout
@@ -297,13 +299,18 @@ class SolidWorksWeldmentsMixin:
                 raise ValueError(
                     "A sketch is open; close it with exit_sketch before adding members"
                 )
+            skeleton: dict[str, Any] | None = None
             if params.get("segments"):
-                sketch, raw, ends = _draw_lines(
+                sketch_name = params.get("sketch_name") or (
+                    f"{params['name']} skeleton" if params.get("name") else None
+                )
+                sketch, raw, ends, skeleton = _draw_lines(
                     adapter,
                     model,
                     manager,
                     params["segments"],
-                    params.get("sketch_name"),
+                    sketch_name,
+                    define=str(params.get("define") or "dimensions") == "dimensions",
                 )
             else:
                 sketch, raw, ends = _sketch_segments(
@@ -337,11 +344,16 @@ class SolidWorksWeldmentsMixin:
                 )
             if params.get("name"):
                 feature.Name = str(params["name"])
+            placed = None
+            if params.get("folder"):
+                placed = _tree.move_into_folder(
+                    adapter, model, str(params["folder"]), [sketch, str(feature.Name)]
+                )
             bodies = as_list(
                 adapter._attempt(lambda: part.GetBodies2(0, True), default=None)
             )
             adapter._attempt(lambda: model.GraphicsRedraw2())
-            return {
+            result: dict[str, Any] = {
                 "feature": str(feature.Name),
                 "profile": profile.as_dict(),
                 "sketch": sketch,
@@ -350,6 +362,11 @@ class SolidWorksWeldmentsMixin:
                 "grouping": grouping,
                 "bodies_after": len(bodies),
             }
+            if skeleton is not None:
+                result["skeleton"] = skeleton
+            if placed is not None:
+                result["folder"] = placed
+            return result
 
         return cast(
             AdapterResult[dict[str, Any]],
@@ -742,13 +759,22 @@ def _draw_lines(
     manager: Any,
     segments: list[list[float]],
     name: str | None,
-) -> tuple[str, list[Any], list[tuple[Point, Point]]]:
+    define: bool = True,
+) -> tuple[str, list[Any], list[tuple[Point, Point]], dict[str, Any] | None]:
     """A new 3D sketch of one line per segment (mm), closed again.
 
+    With ``define``, the ends that meet are merged and every node is
+    dimensioned to the main planes before the sketch closes
+    (:mod:`.sketch_define`), so the skeleton comes out fully defined.
+
     Returns:
-        tuple: The sketch's name, its segments (raw dispatches, in order)
-        and each segment's ends in mm.
+        tuple: The sketch's name, its segments (raw dispatches, in order),
+        each segment's ends in mm, and how it was defined (``None`` when
+        ``define`` is off).
     """
+    defined: dict[str, Any] | None = None
+    model.ClearSelection2(True)
+    _define.solve_on(adapter, manager)
     manager.AddToDB = True
     manager.Insert3DSketch(True)
     try:
@@ -765,6 +791,11 @@ def _draw_lines(
                 raise ValueError(
                     f"SolidWorks refused the line {[x1, y1, z1]} -> {[x2, y2, z2]} mm"
                 )
+        if define:
+            open_sketch = _sw_type_info.flagged(manager.ActiveSketch, "ISketch")
+            merged = _define.merge_nodes(model, open_sketch)
+            defined = _define.tie_nodes_to_planes(adapter, model, manager, open_sketch)
+            defined["merged_nodes"] = merged
     finally:
         manager.Insert3DSketch(True)
         manager.AddToDB = False
@@ -779,7 +810,7 @@ def _draw_lines(
             "two lines may be the same line"
         )
     ends = [((s[0], s[1], s[2]), (s[3], s[4], s[5])) for s in segments]
-    return str(feature.Name), raw, ends
+    return str(feature.Name), raw, ends, defined
 
 
 def _sketch_segments(

@@ -14,7 +14,15 @@ The order for a frame: `list_weldment_profiles` to find each size,
 bracing) on centre lines in model axes (y up), `create_trim_extend`
 wherever one member frames into another, `check_joints` until no member
 runs into another, `create_end_caps` on the open hollow ends,
-`set_material`, then `get_cut_list`.
+`create_plates` for base, splice and connection plates with their bolt
+holes, `set_material`, then `get_cut_list`, `export_plate_dxfs` for the
+cutting table and `check_feature_tree` before the model is handed over.
+
+Every sketch these tools draw comes out fully defined: a skeleton's nodes
+are dimensioned to the Right, Top and Front planes and a plate's corners and
+holes from the origin, so nothing moves when dragged and a specialist can
+edit any coordinate. Give each call a `name` and a `folder` to keep the tree
+readable.
 
 ### `list_weldment_profiles`
 
@@ -45,7 +53,7 @@ Put a weldment profile on many segments in one call: columns, beams, truss chord
 
 **Prerequisite:** An open part
 
-**SolidWorks automation note:** The segments are drawn as a 3D sketch (`ISketchManager.CreateLine`) or taken from an existing sketch. `IFeatureManager.InsertWeldmentFeature` comes first in a part that isn't a weldment yet, then `InsertStructuralWeldment5` with the profile file, the size as its configuration and one `IStructuralMemberGroup` per chain of segments joined end to end. SolidWorks refuses a group that branches (a truss's chords and web together); if it refuses the chains, each segment becomes its own group. The profile's `.sldlfp`, which SolidWorks leaves open, is closed again.
+**SolidWorks automation note:** The segments are drawn as a 3D sketch (`ISketchManager.CreateLine`) or taken from an existing sketch. `IFeatureManager.InsertWeldmentFeature` comes first in a part that isn't a weldment yet, then `InsertStructuralWeldment5` with the profile file, the size as its configuration and one `IStructuralMemberGroup` per chain of segments joined end to end. SolidWorks refuses a group that branches (a truss's chords and web together); if it refuses the chains, each segment becomes its own group. The profile's `.sldlfp`, which SolidWorks leaves open, is closed again. With `define`, the line ends meeting at a node are merged (`sgMERGEPOINTS`) and every node gets its distance to the Right, Top and Front planes (`AddDimension2`, text halfway between point and plane) or a coincident relation with a plane it lies on, with auto-solve off and `CommandInProgress` on while they go in (a 6 x 6 grid: 20 s instead of 43 s). Checked live on 2025 SP4: once a 2D sketch in the part has been dimensioned, later 3D sketch points refuse their distance to the Top plane, so such a point loses its other dimensions again and gets a Fix relation; members drawn before the plates keep their dimensions.
 
 **Parameters:**
 
@@ -65,12 +73,14 @@ Put a weldment profile on many segments in one call: columns, beams, truss chord
 | `merge_arcs` | `bool` | — | `false` | Make tangent arc segments one body |
 | `grouping` | `str` | — | `auto` | `auto` groups segments joined end to end; `single` one group; `each` one per segment |
 | `name` | `str?` | — | `None` | Name for the new feature |
-| `sketch_name` | `str?` | — | `None` | Name for the new 3D sketch drawn from `segments` |
+| `sketch_name` | `str?` | — | `None` | Name for the new 3D sketch drawn from `segments`; default `<name> skeleton` |
+| `define` | `str` | — | `dimensions` | `dimensions` ties every node of the new sketch to the Right, Top and Front planes (a Fix relation where SolidWorks refuses a dimension); `none` leaves it under defined |
+| `folder` | `str?` | — | `None` | Feature-tree folder for the member feature and its sketch, made if missing |
 
 **Sample call:**
 
 ```json
-{"standard": "DIN", "profile_type": "hea", "size": "HE400B", "segments": [[0, 0, 0, 0, 12000, 0], [9000, 0, 0, 9000, 12000, 0]], "name": "Columns"}
+{"standard": "DIN", "profile_type": "hea", "size": "HE400B", "segments": [[0, 0, 0, 0, 12000, 0], [9000, 0, 0, 9000, 12000, 0]], "name": "Columns", "folder": "Frame"}
 ```
 
 ---
@@ -153,6 +163,54 @@ Close the open ends of hollow structural members with end caps (End Cap).
 
 ```json
 {"open_ends": true, "thickness_mm": 5}
+```
+
+---
+
+### `create_plates`
+
+Add plates to a weldment in one call: base, splice, cap, gusset and connection plates, with their bolt holes.
+
+**Prerequisite:** An open part, no sketch open
+
+**SolidWorks automation note:** A plate whose normal runs along x, y or z is sketched on the main plane or a plane offset from it (`IFeatureManager.InsertRefPlane` with the Distance constraint; plates on one level share it). Any other plate stands on a plane square to a short line in a "Plate axes" 3D sketch, through the line's start (`InsertRefPlane` Perpendicular + Coincident, the two references marked 0 and 1). The outline and holes are drawn in the plate's own x/y, mapped into the sketch by `ISketch.ModelToSketchTransform`, then every corner and hole centre gets a horizontal and a vertical dimension from the part origin's projection and every hole its diameter, so the sketch is fully defined. `FeatureExtrusion3` with Merge off makes each plate its own body, named after the plate; its cut-list item gets `Description` (`PL15 250x250`), `MARK` and `THICKNESS`. Checked live on 2025 SP4: four 250 x 250 x 15 base plates with four Ø22 holes each and a tilted gusset with two Ø14 holes, every sketch fully defined, the base plates one cut-list item of four.
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `plates` | `list[object]?` | — | `None` | The plates: `name`, `thickness` (mm), `origin` `[x, y, z]`, `normal` (the thickness direction), `outline` (corners `[x, y]` in the plate's x/y) or `width` and `height` (a rectangle centred on `origin`), and optionally `mark`, `x_axis`, `holes` (each `diameter` and `positions`) and `thickness_side` (`normal`, `reverse` or `mid`) |
+| `plates_file` | `str?` | — | `None` | A `.json` file of plates instead (a list, or `{"plates": [...]}`); up to 500 |
+| `folder` | `str?` | — | `Plates` | Feature-tree folder for the plates, made if missing |
+| `define` | `str` | — | `dimensions` | `dimensions` fully defines each plate's sketch; `none` leaves it under defined |
+
+**Sample call:**
+
+```json
+{"plates": [{"name": "Base plate", "mark": "BP-1", "thickness": 15, "width": 250, "height": 250, "origin": [0, 0, 0], "normal": [0, -1, 0], "holes": [{"diameter": 22, "positions": [[-85, -85], [85, -85], [85, 85], [-85, 85]]}]}]}
+```
+
+---
+
+### `export_plate_dxfs`
+
+Write a DXF of every distinct plate in the weldment for the laser or plasma table, with a plates.csv list.
+
+**Prerequisite:** An open weldment part, saved to disk
+
+**SolidWorks automation note:** Every cut-list item whose bodies no structural member made (`IBody2.GetFeatures` has no `WeldMemberFeat`) and that has a flat face is a plate: its largest planar face is selected and written by `IPartDoc.ExportToDWG2` with `swExportToDWG_ExportSelectedFacesOrLoops`, holes included, 1:1. Thickness is the body's volume over that face's area. Checked live on 2025 SP4: the four base plates gave one `BP-1_t15_x4.dxf` of 60979.5 mm² (the plate less four Ø22 holes).
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `output_dir` | `str` | ✅ | | Folder for the DXFs and `plates.csv`, made if missing |
+| `prefix` | `str?` | — | `None` | Put before every file name, e.g. the job number |
+
+**Sample call:**
+
+```json
+{"output_dir": "C:\\steel\\OP-2026-014\\dxf", "prefix": "OP-2026-014_"}
 ```
 
 ---

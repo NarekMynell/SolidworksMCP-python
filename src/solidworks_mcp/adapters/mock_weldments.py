@@ -14,12 +14,15 @@ mitred); an end that meets nothing and isn't capped is open.
 
 from __future__ import annotations
 
+import csv
 import math
+import os
 import re
 from typing import TYPE_CHECKING, Any
 
 from .base import AdapterResult, AdapterResultStatus
 from .solidworks.weldment_library import chains, normalise
+from .solidworks.weldment_plates import check_plate, description, main_axis, plate_frame
 
 #: ``{standard: {type: {size: kg per metre}}}``, nominal masses.
 SAMPLE_PROFILES: dict[str, dict[str, dict[str, float]]] = {
@@ -55,6 +58,45 @@ def _distance_to_line(point: list[float], line: list[float]) -> float:
 
 #: Centre lines this close meet (mm).
 _MEETS_MM = 1.0
+
+
+def _tree_item(
+    name: str, kind: str, defined: bool = True, absorbed: bool = False
+) -> dict[str, Any]:
+    """One feature of the mock tree."""
+    return {
+        "name": name,
+        "type": kind,
+        "folder": None,
+        "defined": defined,
+        "absorbed": absorbed,
+    }
+
+
+def _into_folder(
+    tree: list[dict[str, Any]], folder: str, names: list[str]
+) -> dict[str, Any]:
+    """Put the named features of the mock tree in ``folder``, as the live call reports it."""
+    by_name = {item["name"]: item for item in tree}
+    moved, missing = [], []
+    for name in names:
+        if name in by_name:
+            by_name[name]["folder"] = folder
+            moved.append(name)
+        else:
+            missing.append(name)
+    return {"folder": folder, "moved": moved, "missing": missing, "refused": []}
+
+
+def _area(points: list[tuple[float, float]]) -> float:
+    """A polygon's signed area, mm²."""
+    return (
+        sum(
+            x1 * y2 - x2 * y1
+            for (x1, y1), (x2, y2) in zip(points, points[1:] + points[:1], strict=True)
+        )
+        / 2.0
+    )
 
 
 def _find(table: dict[str, Any], name: str) -> str | None:
@@ -213,10 +255,13 @@ class MockWeldmentsMixin:
             return _error(resolved)
         profile, per_metre = resolved
         state = self._weld_state()
-        if params.get("segments"):
+        drawn = bool(params.get("segments"))
+        if drawn:
             segments = [list(map(float, s)) for s in params["segments"]]
             sketch = str(
-                params.get("sketch_name") or f"3DSketch{len(state['sketches']) + 1}"
+                params.get("sketch_name")
+                or (f"{params['name']} skeleton" if params.get("name") else None)
+                or f"3DSketch{len(state['sketches']) + 1}"
             )
             state["sketches"][sketch] = segments
         else:
@@ -250,17 +295,194 @@ class MockWeldmentsMixin:
             state.setdefault("lines", {})[body] = list(s)
             if chained:
                 state.setdefault("mitred", set()).add(body)
+        defined = str(params.get("define") or "dimensions") == "dimensions"
+        tree = state.setdefault("tree", [])
+        if drawn:
+            tree.append(_tree_item(sketch, "3DProfileFeature", defined=defined))
+        tree.append(_tree_item(str(name), "WeldMemberFeat"))
+        data: dict[str, Any] = {
+            "feature": name,
+            "profile": profile,
+            "sketch": sketch,
+            "segments": len(segments),
+            "groups": groups,
+            "grouping": grouping,
+            "bodies_after": len(state["bodies"]),
+        }
+        if drawn:
+            nodes = {tuple(s[:3]) for s in segments} | {tuple(s[3:]) for s in segments}
+            data["skeleton"] = {
+                "nodes": len(nodes),
+                "dimensions": sum(1 for n in nodes for c in n if abs(c) > 1e-6)
+                if defined
+                else 0,
+                "relations": sum(1 for n in nodes for c in n if abs(c) <= 1e-6)
+                if defined
+                else 0,
+                "fixed": 0,
+                "fixed_points": [],
+                "definition": "fully defined" if defined else "under defined",
+                "seconds": 0.0,
+            }
+        if params.get("folder"):
+            data["folder"] = _into_folder(
+                tree, str(params["folder"]), ([sketch] if drawn else []) + [str(name)]
+            )
+        return AdapterResult(status=AdapterResultStatus.SUCCESS, data=data)
+
+    async def create_plates(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock plates: one body each, named, described, with its sketch and plane."""
+        if error := self._part_error("create_plates"):
+            return error
+        state = self._weld_state()
+        tree = state.setdefault("tree", [])
+        defined = str(params.get("define") or "dimensions") == "dimensions"
+        made: list[str] = []
+        planes: dict[tuple[int, float], str] = {}
+        tilted = 0
+        results: list[dict[str, Any]] = []
+        for spec in params["plates"]:
+            try:
+                points = check_plate(spec)
+                frame = plate_frame(spec["origin"], spec["normal"], spec.get("x_axis"))
+            except ValueError as error:
+                return _error(str(error))
+            label = (
+                f"{spec['mark']} {spec['name']}"
+                if spec.get("mark")
+                else str(spec["name"])
+            )
+            along = main_axis(frame.n)
+            if along is None:
+                tilted += 1
+                plane = f"{label} plane"
+                tree.append(_tree_item(plane, "RefPlane"))
+                made.append(plane)
+            else:
+                axis = along[0]
+                offset = round(frame.origin[axis], 6)
+                if abs(offset) < 1e-6:
+                    plane = ("Right Plane", "Top Plane", "Front Plane")[axis]
+                elif (axis, offset) in planes:
+                    plane = planes[(axis, offset)]
+                else:
+                    plane = f"Plates {'XYZ'[axis]}{offset:+g}"
+                    planes[(axis, offset)] = plane
+                    tree.append(_tree_item(plane, "RefPlane"))
+                    made.append(plane)
+            tree.append(
+                _tree_item(
+                    f"{label} sketch", "ProfileFeature", defined=defined, absorbed=True
+                )
+            )
+            tree.append(_tree_item(label, "Extrusion"))
+            made.append(label)
+            text = description(spec, points)
+            state["bodies"].append((text, float(spec["thickness"]), 0.0, label, label))
+            state.setdefault("plates", []).append(
+                {
+                    "label": label,
+                    "mark": spec.get("mark") or "",
+                    "description": text,
+                    "thickness_mm": float(spec["thickness"]),
+                    "area_mm2": abs(_area(points))
+                    - sum(
+                        math.pi * (h["diameter"] / 2) ** 2 * len(h["positions"])
+                        for h in spec.get("holes") or []
+                    ),
+                }
+            )
+            results.append(
+                {
+                    "name": label,
+                    "feature": label,
+                    "sketch": f"{label} sketch",
+                    "plane": plane,
+                    "body": label,
+                    "description": text,
+                    "thickness_mm": float(spec["thickness"]),
+                    "holes": sum(len(h["positions"]) for h in spec.get("holes") or []),
+                    "definition": "fully defined" if defined else "not checked",
+                }
+            )
+        self._operation_count += 1
+        folder = params.get("folder")
         return AdapterResult(
             status=AdapterResultStatus.SUCCESS,
             data={
-                "feature": name,
-                "profile": profile,
-                "sketch": sketch,
-                "segments": len(segments),
-                "groups": groups,
-                "grouping": grouping,
+                "plates": results,
+                "planes_made": len(planes) + tilted,
+                "folder": _into_folder(tree, str(folder), made) if folder else None,
                 "bodies_after": len(state["bodies"]),
             },
+        )
+
+    async def export_plate_dxfs(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock plate DXFs: one small DXF per distinct plate, and plates.csv."""
+        if error := self._part_error("export_plate_dxfs"):
+            return error
+        path = str(getattr(self._current_model, "path", "") or "")
+        if not path or path.startswith("Mock://"):
+            return _error(
+                "The part has never been saved; save it with save_file, then export its plates."
+            )
+        out_dir = str(params["output_dir"])
+        prefix = str(params.get("prefix") or "")
+        os.makedirs(out_dir, exist_ok=True)
+        # Like SolidWorks' cut list: identical plates are one item; holes make
+        # two plates of one size different, so the area is in the key.
+        groups: dict[tuple[str, float, float], list[dict[str, Any]]] = {}
+        for plate in self._weld_state().get("plates", []):
+            key = (
+                plate["description"],
+                plate["thickness_mm"],
+                round(plate["area_mm2"], 1),
+            )
+            groups.setdefault(key, []).append(plate)
+        files = []
+        for (text, thickness, _area_mm2), plates in groups.items():
+            mark = plates[0]["mark"]
+            stem = re.sub(
+                r"[^A-Za-z0-9._-]+",
+                "_",
+                f"{prefix}{mark or text}_t{thickness:g}_x{len(plates)}",
+            ).strip("_")
+            file = os.path.join(out_dir, f"{stem}.dxf")
+            with open(file, "w", encoding="ascii") as handle:
+                handle.write("0\nSECTION\n2\nENTITIES\n0\nENDSEC\n0\nEOF\n")
+            files.append(
+                {
+                    "file": file,
+                    "mark": mark,
+                    "description": text,
+                    "thickness_mm": thickness,
+                    "quantity": len(plates),
+                    "area_mm2": round(plates[0]["area_mm2"], 1),
+                }
+            )
+        listing = os.path.join(out_dir, f"{prefix}plates.csv")
+        with open(listing, "w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(
+                handle,
+                fieldnames=[
+                    "file",
+                    "mark",
+                    "description",
+                    "thickness_mm",
+                    "quantity",
+                    "area_mm2",
+                ],
+            )
+            writer.writeheader()
+            for row in files:
+                writer.writerow({**row, "file": os.path.basename(row["file"])})
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={"files": files, "csv": listing, "skipped": []},
         )
 
     def _trim_bodies(self, names: list[str]) -> list[int] | str:

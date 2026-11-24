@@ -28,6 +28,7 @@ _MODULES = [
     "engineering_data",
     "equations",
     "export",
+    "feature_tree",
     "file_management",
     "macro_recording",
     "modeling",

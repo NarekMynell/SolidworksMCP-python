@@ -98,6 +98,10 @@ class _Part:
         )
         self.units = 0
         self.Extension = SimpleNamespace(CreateMassProperty=self._mass)
+        self.cleared = 0
+
+    def ClearSelection2(self, _all: bool) -> None:
+        self.cleared += 1
 
     def _toggle_3d(self, _rebuild: bool) -> None:
         if self.lines is None:
@@ -231,6 +235,7 @@ def _fakes(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 _TRUSS = {
+    "define": "none",
     "standard": "bsi",
     "profile_type": "SHS",
     "size": "rhs100x100x5",
@@ -399,16 +404,23 @@ async def test_member_inputs_are_checked_before_anything_is_drawn(
             "profile_path": str(tmp_path / "gone.sldlfp"),
             "size": "A",
             "segments": _TRUSS["segments"],
+            "define": "none",
         }
     )
     wrong_config = await adapter.create_structural_members(
-        {"profile_path": str(custom), "size": "B", "segments": _TRUSS["segments"]}
+        {
+            "profile_path": str(custom),
+            "size": "B",
+            "segments": _TRUSS["segments"],
+            "define": "none",
+        }
     )
     own = await adapter.create_structural_members(
         {
             "profile_path": str(custom),
             "size": "RHS60x60x4",
             "segments": _TRUSS["segments"],
+            "define": "none",
         }
     )
     drawing = await _Adapter(root, doc_type=3).create_structural_members(_TRUSS)

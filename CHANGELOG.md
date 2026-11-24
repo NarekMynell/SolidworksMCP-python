@@ -14,6 +14,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Models a CAD specialist can open and edit: fully defined sketches,
+  folders and names.** Two agent-built 20 m weldments came back with every
+  sketch (75) under defined, so anything dragged moved, no folders and
+  generic names. `create_structural_members` now ties every node of the
+  skeleton it draws to the Right, Top and Front planes (its x, y and z as
+  dimensions; a Fix relation where SolidWorks refuses one: seen once a 2D
+  sketch in the part has been dimensioned), names the sketch
+  `<name> skeleton` and puts both in a `folder`. `set_feature_folders`
+  renames features and groups them into folders (moving later features up
+  into an existing folder); `check_feature_tree` audits the tree for
+  sketches not fully defined, SolidWorks' own names and features outside
+  folders, and says what to fix. Stable, checked live on SolidWorks 2025.
+- **`create_plates`: base, splice, cap and gusset plates in one call, with
+  their bolt holes.** An agent spent about 300 calls (planes, sketches,
+  rectangles, extrusions) on 64 plates. Each plate is an outline or a
+  rectangle and its holes in its own x/y, placed by an origin, a normal and
+  an x axis; it becomes its own body, named after its mark, described in the
+  cut list (`PL15 250x250`, `MARK`, `THICKNESS`), on a fully defined sketch
+  and a plane tied to the main planes (plates on one level share it). A
+  `plates_file` takes hundreds. Stable, checked live: four 250 x 250 x 15
+  base plates with four Ø22 holes and a tilted gusset.
+- **`export_plate_dxfs`: the cutting table's files.** One 1:1 DXF of each
+  distinct plate's face (holes included), named
+  `<mark>_t<thickness>_x<quantity>.dxf`, and `plates.csv`. Stable, checked
+  live: the four base plates gave one DXF of 60979.5 mm².
+
 - **Weldments** (queue item 38): steel frames and trusses as structural
   members, with a shop cut list. `list_weldment_profiles` reads SolidWorks'
   profile library and searches it by the names agents use (`HEB400` is DIN's

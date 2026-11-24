@@ -15,9 +15,10 @@ import os
 from typing import Any, Literal
 
 from fastmcp import FastMCP
-from pydantic import Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from ..adapters.base import SolidWorksAdapter
+from ..adapters.solidworks.weldment_plates import check_plate, plate_frame
 from .input_compat import CompatInput
 from .tool_boundary import (
     InvalidInputError,
@@ -124,6 +125,8 @@ class CreateStructuralMembersInput(CompatInput):
     """Input schema for a structural member feature.
 
     Attributes:
+        define (str): How the new 3D sketch is tied down.
+        folder (str | None): The feature-tree folder for the new features.
         size (str): The profile size, e.g. ``IPE300``.
         standard (str | None): The library standard, e.g. ``DIN``.
         profile_type (str | None): The library type, e.g. ``ipe``.
@@ -197,7 +200,22 @@ class CreateStructuralMembersInput(CompatInput):
     )
     name: str | None = Field(default=None, description="Name for the new feature")
     sketch_name: str | None = Field(
-        default=None, description="Name for the new 3D sketch drawn from segments"
+        default=None,
+        description="Name for the new 3D sketch drawn from segments; default "
+        "'<name> skeleton'",
+    )
+    define: Literal["dimensions", "none"] = Field(
+        default="dimensions",
+        description="'dimensions' ties every node of the new 3D sketch to the "
+        "Right, Top and Front planes (its x, y and z as dimensions the user can "
+        "edit; a Fix relation where SolidWorks refuses one), so the skeleton is "
+        "fully defined and nothing moves when dragged; 'none' leaves it under "
+        "defined, for a quick draft",
+    )
+    folder: str | None = Field(
+        default=None,
+        description="Put the member feature and its sketch in this feature-tree "
+        "folder (made if missing), e.g. 'Tower' or 'Bracing'",
     )
 
     @model_validator(mode="after")
@@ -373,6 +391,218 @@ class CreateEndCapsInput(CompatInput):
         return self
 
 
+#: The most plates one call takes.
+MAX_PLATES = 500
+
+
+class PlateHoles(BaseModel):
+    """Holes of one size in a plate.
+
+    Attributes:
+        diameter (float): The hole diameter, mm.
+        positions (list[list[float]]): Hole centres in the plate's x/y, mm.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    diameter: float = Field(
+        gt=0,
+        le=500,
+        description="Hole diameter, mm: a bolt's normal clearance hole is the bolt "
+        "plus 2 mm (M12-M24) or 3 mm (M27 and up), EN 1090-2",
+    )
+    positions: list[list[float]] = Field(
+        min_length=1, description="Hole centres [x, y] in the plate's own x/y, mm"
+    )
+
+    @model_validator(mode="after")
+    def _pairs(self) -> PlateHoles:
+        """Each position is two numbers."""
+        for position in self.positions:
+            if len(position) != 2:
+                raise ValueError("each hole position is [x, y]")
+        return self
+
+
+class PlateSpec(BaseModel):
+    """One plate: what it is, its outline and holes, and where it sits.
+
+    Attributes:
+        name (str): What the plate is.
+        mark (str | None): The shop mark.
+        thickness (float): mm.
+        origin (list[float]): The plate's reference point, mm.
+        normal (list[float]): The thickness direction.
+        x_axis (list[float] | None): The plate's own x direction.
+        outline (list[list[float]] | None): Corners in the plate's x/y, mm.
+        width (float | None): A centred rectangle's width, mm.
+        height (float | None): A centred rectangle's height, mm.
+        holes (list[PlateHoles]): Holes, by size.
+        thickness_side (str): Which way the thickness grows.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(
+        min_length=1, description="What the plate is, e.g. 'Base plate', 'Splice plate'"
+    )
+    mark: str | None = Field(
+        default=None,
+        description="Shop mark, e.g. 'BP-1': names the plate, its cut-list item "
+        "and its DXF",
+    )
+    thickness: float = Field(gt=0, le=200, description="Plate thickness, mm")
+    origin: list[float] = Field(
+        min_length=3,
+        max_length=3,
+        description="The plate's reference point [x, y, z] mm (its own x, y = 0), "
+        "on the face the thickness grows from",
+    )
+    normal: list[float] = Field(
+        min_length=3,
+        max_length=3,
+        description="Thickness direction [x, y, z], any length: [0, -1, 0] for a "
+        "base plate under a column foot, the member's axis for a splice or cap plate",
+    )
+    x_axis: list[float] | None = Field(
+        default=None,
+        min_length=3,
+        max_length=3,
+        description="The plate's own x direction; default: model x for a level "
+        "plate, otherwise the plate's y runs up",
+    )
+    outline: list[list[float]] | None = Field(
+        default=None,
+        min_length=3,
+        description="Corners [x, y] in the plate's x/y, mm, in order, the first "
+        "not repeated at the end",
+    )
+    width: float | None = Field(
+        default=None,
+        gt=0,
+        description="A width x height rectangle centred on origin instead of "
+        "outline, mm",
+    )
+    height: float | None = Field(
+        default=None, gt=0, description="The rectangle's height, mm"
+    )
+    holes: list[PlateHoles] = Field(default_factory=list, description="Holes, by size")
+    thickness_side: Literal["normal", "reverse", "mid"] = Field(
+        default="normal",
+        description="'normal' the thickness grows along normal from origin, "
+        "'reverse' against it, 'mid' half each way",
+    )
+
+    @model_validator(mode="after")
+    def _shape(self) -> PlateSpec:
+        """An outline or a rectangle, with every hole inside the plate."""
+        if (self.outline is None) == (self.width is None or self.height is None):
+            raise ValueError("give outline, or width and height")
+        if self.outline is not None and any(len(p) != 2 for p in self.outline):
+            raise ValueError("each outline corner is [x, y]")
+        check_plate(self.model_dump())
+        plate_frame(self.origin, self.normal, self.x_axis)
+        return self
+
+
+class CreatePlatesInput(CompatInput):
+    """Input schema for plates in a weldment part.
+
+    Attributes:
+        plates (list[PlateSpec] | None): The plates.
+        plates_file (str | None): A JSON file of them instead.
+        folder (str | None): The feature-tree folder.
+        define (str): How the plate sketches are tied down.
+    """
+
+    plates: list[PlateSpec] | None = Field(
+        default=None,
+        min_length=1,
+        max_length=MAX_PLATES,
+        description="The plates, each with name, thickness, origin, normal and "
+        "outline (or width and height), holes and mark",
+    )
+    plates_file: str | None = Field(
+        default=None,
+        description="A .json file of plates instead (a list, or "
+        '{"plates": [...]}), such as a script writes for many splice plates',
+    )
+    folder: str | None = Field(
+        default="Plates",
+        description="Feature-tree folder for the plates (made if missing); null for none",
+    )
+    define: Literal["dimensions", "none"] = Field(
+        default="dimensions",
+        description="'dimensions' dimensions every corner and hole of each plate "
+        "from the origin and each hole's diameter (fully defined sketches); "
+        "'none' leaves them under defined",
+    )
+
+    @model_validator(mode="after")
+    def _one_source(self) -> CreatePlatesInput:
+        """Plates or a file of them, not both."""
+        if (self.plates is None) == (self.plates_file is None):
+            raise ValueError("give plates or plates_file, one of them")
+        return self
+
+
+def load_plates(path: str) -> list[dict[str, Any]]:
+    """The plates a JSON file holds, each checked like ``plates``.
+
+    Raises:
+        InvalidInputError: The file is missing, isn't JSON, or a plate is wrong.
+    """
+    if not os.path.isfile(path):
+        raise InvalidInputError(f"plates_file {path!r} doesn't exist")
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            data = json.load(f)
+    except (OSError, ValueError) as error:
+        raise InvalidInputError(
+            f"plates_file {path!r} isn't readable JSON: {error}"
+        ) from error
+    if isinstance(data, dict):
+        data = data.get("plates")
+    if not isinstance(data, list) or not data:
+        raise InvalidInputError(
+            f'plates_file {path!r} must hold a list of plates, or {{"plates": [...]}}'
+        )
+    if len(data) > MAX_PLATES:
+        raise InvalidInputError(
+            f"plates_file {path!r} has {len(data)} plates; one call takes "
+            f"{MAX_PLATES}: split it"
+        )
+    plates = []
+    for index, item in enumerate(data):
+        try:
+            plates.append(PlateSpec.model_validate(item).model_dump())
+        except ValidationError as error:
+            first = error.errors()[0]
+            where = ".".join(str(p) for p in first.get("loc", ()))
+            raise InvalidInputError(
+                f"plates_file entry {index}{' ' + where if where else ''}: "
+                f"{first.get('msg')} ({path})"
+            ) from error
+    return plates
+
+
+class ExportPlateDxfsInput(CompatInput):
+    """Input schema for the plates' DXFs.
+
+    Attributes:
+        output_dir (str): Where the DXFs and the list go.
+        prefix (str | None): Put before every file name.
+    """
+
+    output_dir: str = Field(
+        min_length=1, description="Folder for the DXFs and plates.csv (made if missing)"
+    )
+    prefix: str | None = Field(
+        default=None,
+        description="Put before every file name, e.g. the job number 'OP-2026-014_'",
+    )
+
+
 class GetCutListInput(CompatInput):
     """Input schema for reading the cut list.
 
@@ -460,19 +690,20 @@ async def register_weldment_tools(
     ) -> dict[str, Any]:
         """Put a weldment profile (IPE, HEB, SHS, RHS, UPN, angle...) on many segments in one call: columns, beams, truss chords and web members.
 
-        Use it for steel frames and trusses instead of sketching profiles and
-        extruding them: each segment becomes a member body, with its cut list
-        length and end angles. Give `segments` ([x1, y1, z1, x2, y2, z2] mm each,
-        drawn as a new 3D sketch) or an existing `sketch`; draw a continuous member
-        as one segment. Segments joined end to end are mitred (`corner_treatment`);
-        each call is one profile, so a truss is one call for the chords and one for
-        the web. Segments are member centre lines in model axes (y up); where one
-        member frames into another, finish with `create_trim_extend`. Find the
-        size with `list_weldment_profiles`. Hundreds of segments: write them to
-        a JSON file and give `segments_file`. Needs: an open part.
-        Changes: adds a weldment feature (first time), a 3D sketch and the members.
-        Returns: `members` with `feature`, `profile`, `sketch`, `segments`, `groups`,
-        `grouping` and `bodies_after`.
+        Use it for frames and trusses: each segment ([x1, y1, z1, x2, y2, z2] mm,
+        member centre lines, y up) becomes a member body with its cut-list length
+        and end angles; or give an existing `sketch`. Segments joined end to end
+        are mitred; one call is one profile, so a truss is one call for the chords
+        and one for the web. Finish with `create_trim_extend` where members meet;
+        sizes from `list_weldment_profiles`; hundreds of segments go in a
+        `segments_file`. The new sketch is fully defined (`define`): every node
+        dimensioned to the main planes, so nothing drifts and a specialist can
+        edit a coordinate. Give `name` (the sketch becomes '<name> skeleton') and
+        `folder`. Draw members before plates: once plates exist some nodes get a
+        Fix relation instead. Needs: an open part. Changes: adds a weldment
+        feature (first time), a 3D sketch and the members. Returns: `members`
+        with `feature`, `profile`, `sketch`, `segments`, `groups`, `bodies_after`,
+        `skeleton` (`definition`, `dimensions`, `fixed`) and `folder`.
 
         Args:
             input_data: `size` plus `standard` and `profile_type` (or
@@ -640,6 +871,93 @@ async def register_weldment_tools(
         return reply
 
     @mcp.tool()
+    async def create_plates(input_data: CreatePlatesInput) -> dict[str, Any]:
+        """Add plates to a weldment in one call: base, splice, cap, gusset and connection plates, with their bolt holes.
+
+        Use it for every plate of a frame or truss instead of planes, sketches and
+        extrusions one by one. Each plate is an `outline` (or `width` x `height`)
+        and `holes` in its own x/y, placed by `origin`, `normal` (the thickness
+        direction) and optionally `x_axis`. Each becomes its own body (never
+        merged into the members), named '<mark> <name>', described in the cut
+        list ('PL15 250x250', with MARK and THICKNESS), on a sketch dimensioned
+        from the origin (fully defined) and a plane tied to the main planes
+        (plates on one level share it), all in `folder`. Many plates: write them
+        to a JSON file and give `plates_file`. Draw the members first. Needs: an
+        open part, no sketch open. Changes: adds planes, sketches and one
+        extrusion per plate. Returns: `plates` (each `name`, `feature`, `sketch`,
+        `plane`, `body`, `description`, `thickness_mm`, `holes`,
+        `definition`), `planes_made`, `folder` and `bodies_after`.
+
+        Args:
+            input_data: `plates` (or `plates_file`); `folder` ('Plates') and
+                `define` ('dimensions') have defaults.
+
+        Returns:
+            dict[str, Any]: The plates made.
+        """
+        input_data = normalize_input(input_data, CreatePlatesInput)
+        require_capability(adapter, "create_plates", "Active adapter can't add plates")
+        params = input_data.model_dump(exclude={"plates_file"})
+        if input_data.plates_file:
+            params["plates"] = load_plates(input_data.plates_file)
+        result = await adapter.create_plates(params)
+        require_success(result, context="Failed to add the plates")
+        data = result.data or {}
+        plates = data.get("plates") or []
+        loose = [
+            p["name"]
+            for p in plates
+            if p.get("definition") not in ("fully defined", "not checked")
+        ]
+        reply: dict[str, Any] = {
+            "status": "success",
+            "message": f"Added {len(plates)} plate(s), "
+            f"{sum(p.get('holes', 0) for p in plates)} hole(s)",
+            "plates": data,
+            "execution_time": result.execution_time,
+        }
+        if loose:
+            reply["warning"] = f"Not fully defined: {', '.join(loose[:10])}"
+        return reply
+
+    @mcp.tool()
+    async def export_plate_dxfs(input_data: ExportPlateDxfsInput) -> dict[str, Any]:
+        """Write a DXF of every distinct plate in the weldment for the laser or plasma table, with a plates.csv list.
+
+        Use it after the plates are in and the part is saved: each cut-list item
+        that is a flat plate (plates, end caps, gussets; not the members) gives
+        one DXF of its face at 1:1 with every hole, named
+        '<mark or description>_t<thickness>_x<quantity>.dxf', and plates.csv
+        lists file, mark, description, thickness, quantity and area. Needs: an
+        open weldment part saved to disk. Changes: writes files only. Returns:
+        `files` (each `file`, `mark`, `description`, `thickness_mm`, `quantity`,
+        `area_mm2`), `csv` and `skipped`.
+
+        Args:
+            input_data: `output_dir`, and optionally `prefix`.
+
+        Returns:
+            dict[str, Any]: The DXFs written.
+        """
+        input_data = normalize_input(input_data, ExportPlateDxfsInput)
+        require_capability(
+            adapter, "export_plate_dxfs", "Active adapter can't export plates"
+        )
+        result = await adapter.export_plate_dxfs(
+            input_data.model_dump(exclude_none=True)
+        )
+        require_success(result, context="Failed to export the plates")
+        data = result.data or {}
+        files = data.get("files") or []
+        return {
+            "status": "success",
+            "message": f"Wrote {len(files)} plate DXF(s), "
+            f"{sum(f.get('quantity', 0) for f in files)} plate(s) to cut",
+            "dxfs": data,
+            "execution_time": result.execution_time,
+        }
+
+    @mcp.tool()
     async def get_cut_list(input_data: GetCutListInput | None = None) -> dict[str, Any]:
         """Read the active weldment part's cut list: every member size with its quantity, length, end angles and mass, ready for the shop.
 
@@ -676,4 +994,4 @@ async def register_weldment_tools(
             reply["warning"] = warning
         return reply
 
-    return 6
+    return 8

@@ -52,6 +52,7 @@ nav:
       - Equations: user-guide/tool-catalog/equations.md
       - Assembly: user-guide/tool-catalog/assembly.md
       - Weldments: user-guide/tool-catalog/weldments.md
+      - Feature Tree: user-guide/tool-catalog/feature-tree.md
       - Sketching: user-guide/tool-catalog/sketching.md
       - Drawing: user-guide/tool-catalog/drawing.md
       - Drawing Analysis: user-guide/tool-catalog/drawing-analysis.md

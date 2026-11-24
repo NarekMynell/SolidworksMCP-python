@@ -262,6 +262,10 @@ SUPPORT_LEVELS: dict[str, Support] = {
     "create_trim_extend": _STABLE,
     "check_joints": _STABLE,
     "create_end_caps": _STABLE,
+    "create_plates": _STABLE,
+    "export_plate_dxfs": _STABLE,
+    "set_feature_folders": _STABLE,
+    "check_feature_tree": _STABLE,
     "get_cut_list": _STABLE,
     # equations
     "list_equations": _STABLE,

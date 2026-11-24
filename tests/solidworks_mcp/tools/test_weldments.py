@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
 
 from solidworks_mcp.adapters.base import AdapterResult, AdapterResultStatus
 from solidworks_mcp.tools.weldments import (
+    MAX_PLATES,
     CheckJointsInput,
     CreateEndCapsInput,
+    CreatePlatesInput,
     CreateStructuralMembersInput,
     CreateTrimExtendInput,
     register_weldment_tools,
@@ -463,3 +466,195 @@ async def test_an_end_cap_warning_is_passed_on(
 
     assert reply["warning"].startswith("2 end(s) selected")
     assert "warning" not in reply["caps"]
+
+
+_PLATE = {
+    "name": "Base plate",
+    "mark": "BP-1",
+    "thickness": 15,
+    "width": 250,
+    "height": 250,
+    "origin": [0, 0, 0],
+    "normal": [0, -1, 0],
+    "holes": [{"diameter": 22, "positions": [[-85, -85], [85, 85]]}],
+}
+
+
+@pytest.mark.parametrize(
+    ("plate", "message"),
+    [
+        (
+            {**_PLATE, "outline": [[0, 0], [10, 0], [0, 10]]},
+            "outline, or width and height",
+        ),
+        (
+            {k: v for k, v in _PLATE.items() if k != "height"},
+            "outline, or width and height",
+        ),
+        (
+            {
+                **_PLATE,
+                "width": None,
+                "height": None,
+                "outline": [[0, 0], [10, 0, 1], [0, 10]],
+            },
+            "each outline corner is",
+        ),
+        (
+            {**_PLATE, "holes": [{"diameter": 22, "positions": [[0, 0, 0]]}]},
+            "each hole position is",
+        ),
+        (
+            {**_PLATE, "holes": [{"diameter": 22, "positions": [[200, 0]]}]},
+            "outside the plate",
+        ),
+        ({**_PLATE, "normal": [0, 0, 0]}, "normal has no length"),
+        ({**_PLATE, "colour": "red"}, "Extra inputs"),
+    ],
+)
+def test_plate_input_refusals(plate: dict[str, Any], message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        CreatePlatesInput(plates=[plate])
+
+
+def test_plates_or_a_file_not_both() -> None:
+    with pytest.raises(ValueError, match="plates or plates_file"):
+        CreatePlatesInput()
+    with pytest.raises(ValueError, match="plates or plates_file"):
+        CreatePlatesInput(plates=[_PLATE], plates_file="p.json")
+
+
+@pytest.mark.asyncio
+async def test_plates_with_holes_then_their_dxfs(
+    mcp_server, mock_adapter, tmp_path
+) -> None:
+    tools = await _tools(mcp_server, mock_adapter)
+    await mock_adapter.create_part()
+    second = {**_PLATE, "mark": "BP-2", "origin": [4000, 0, 0]}
+    cap = {
+        **_PLATE,
+        "mark": "CP-1",
+        "name": "Cap",
+        "origin": [0, 3040, 0],
+        "normal": [0, 1, 0],
+        "holes": [],
+    }
+    gusset = {
+        "name": "Gusset",
+        "mark": "GP-1",
+        "thickness": 10,
+        "outline": [[-100, -60], [100, -60], [100, 60], [-60, 60]],
+        "origin": [2000, 1500, 0],
+        "normal": [1, 1, 0],
+    }
+    made = await tools["create_plates"]({"plates": [_PLATE, second, cap, gusset]})
+    assert made["status"] == "success", made
+    assert made["message"] == "Added 4 plate(s), 4 hole(s)"
+    data = made["plates"]
+    assert [p["plane"] for p in data["plates"]] == [
+        "Top Plane",
+        "Top Plane",
+        "Plates Y+3040",
+        "GP-1 Gusset plane",
+    ]
+    assert data["planes_made"] == 2
+    assert data["folder"]["folder"] == "Plates"
+
+    unsaved = await tools["export_plate_dxfs"]({"output_dir": str(tmp_path)})
+    assert unsaved["status"] == "error"
+    assert "never been saved" in unsaved["message"]
+
+    # A part on disk: the same plates, opened from its file.
+    await mock_adapter.open_model(str(tmp_path / "frame.sldprt"))
+    await tools["create_plates"]({"plates": [_PLATE, second, cap, gusset]})
+    dxfs = await tools["export_plate_dxfs"](
+        {"output_dir": str(tmp_path / "dxf"), "prefix": "J1_"}
+    )
+    assert dxfs["status"] == "success", dxfs
+    names = sorted(p.name for p in (tmp_path / "dxf").iterdir())
+    assert names == [
+        "J1_BP-1_t15_x2.dxf",
+        "J1_CP-1_t15_x1.dxf",
+        "J1_GP-1_t10_x1.dxf",
+        "J1_plates.csv",
+    ]
+    assert dxfs["message"] == "Wrote 3 plate DXF(s), 4 plate(s) to cut"
+
+
+@pytest.mark.asyncio
+async def test_plates_from_a_file(mcp_server, mock_adapter, tmp_path) -> None:
+    tools = await _tools(mcp_server, mock_adapter)
+    await mock_adapter.create_part()
+    good = tmp_path / "plates.json"
+    good.write_text(json.dumps({"plates": [_PLATE]}), encoding="utf-8")
+    made = await tools["create_plates"]({"plates_file": str(good), "define": "none"})
+    assert made["status"] == "success", made
+    assert made["plates"]["plates"][0]["definition"] == "not checked"
+
+    cases = {
+        "missing.json": (None, "doesn't exist"),
+        "broken.json": ("{", "isn't readable JSON"),
+        "shape.json": ('{"plates": 3}', "must hold a list of plates"),
+        "many.json": (json.dumps([_PLATE] * (MAX_PLATES + 1)), "split it"),
+        "entry.json": (
+            json.dumps([_PLATE, {**_PLATE, "thickness": -1}]),
+            "entry 1 thickness",
+        ),
+    }
+    for name, (text, message) in cases.items():
+        path = tmp_path / name
+        if text is not None:
+            path.write_text(text, encoding="utf-8")
+        reply = await tools["create_plates"]({"plates_file": str(path)})
+        assert reply["status"] == "error", name
+        assert message in reply["message"], (name, reply["message"])
+
+
+@pytest.mark.asyncio
+async def test_a_plate_the_adapter_refuses_is_an_error(
+    mcp_server, mock_adapter, monkeypatch
+) -> None:
+    async def refuse(_params: dict[str, Any]) -> AdapterResult[dict[str, Any]]:
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR, error="SolidWorks refused to extrude BP-1"
+        )
+
+    monkeypatch.setattr(mock_adapter, "create_plates", refuse)
+    tools = await _tools(mcp_server, mock_adapter)
+    reply = await tools["create_plates"]({"plates": [_PLATE]})
+    assert reply["status"] == "error"
+    assert "refused to extrude" in reply["message"]
+
+
+@pytest.mark.asyncio
+async def test_a_plate_left_loose_is_flagged(
+    mcp_server, mock_adapter, monkeypatch
+) -> None:
+    async def loose(_params: dict[str, Any]) -> AdapterResult[dict[str, Any]]:
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "plates": [
+                    {
+                        "name": "BP-1 Base plate",
+                        "holes": 4,
+                        "definition": "under defined",
+                    }
+                ]
+            },
+        )
+
+    monkeypatch.setattr(mock_adapter, "create_plates", loose)
+    tools = await _tools(mcp_server, mock_adapter)
+    reply = await tools["create_plates"]({"plates": [_PLATE]})
+    assert reply["warning"] == "Not fully defined: BP-1 Base plate"
+
+
+@pytest.mark.asyncio
+async def test_plates_need_a_part(mcp_server, mock_adapter, tmp_path) -> None:
+    tools = await _tools(mcp_server, mock_adapter)
+    await mock_adapter.create_assembly()
+    assert (await tools["create_plates"]({"plates": [_PLATE]}))["status"] == "error"
+    assert (await tools["export_plate_dxfs"]({"output_dir": str(tmp_path)}))[
+        "status"
+    ] == "error"

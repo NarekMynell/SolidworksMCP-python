@@ -1950,6 +1950,70 @@ class SolidWorksAdapter(ABC):
             error="create_end_caps is not implemented by this adapter",
         )
 
+    async def create_plates(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Add plates to a weldment part, each its own body.
+
+        Args:
+            params (dict[str, Any]): The plates, folder and definition.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The result, or error.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="create_plates is not implemented by this adapter",
+        )
+
+    async def export_plate_dxfs(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Write each distinct plate's DXF and a CSV list.
+
+        Args:
+            params (dict[str, Any]): The output folder and file prefix.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The result, or error.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="export_plate_dxfs is not implemented by this adapter",
+        )
+
+    async def set_feature_folders(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Rename features and put them in folders.
+
+        Args:
+            params (dict[str, Any]): The renames and the folders.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The result, or error.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="set_feature_folders is not implemented by this adapter",
+        )
+
+    async def check_feature_tree(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Audit the feature tree: definition, names, folders.
+
+        Args:
+            params (dict[str, Any]): How many names to list.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The result, or error.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="check_feature_tree is not implemented by this adapter",
+        )
+
     async def get_cut_list(
         self, update: bool = True, export_path: str | None = None
     ) -> AdapterResult[dict[str, Any]]:

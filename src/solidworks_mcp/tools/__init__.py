@@ -18,6 +18,7 @@ from .drawing_automation import register_drawing_automation_tools
 from .engineering_data import register_engineering_data_tools
 from .equations import register_equation_tools
 from .export import register_export_tools
+from .feature_tree import register_feature_tree_tools
 from .file_management import register_file_management_tools
 from .macro_recording import register_macro_recording_tools
 from .modeling import register_modeling_tools
@@ -46,6 +47,7 @@ async def register_tools(mcp: FastMCP, adapter: Any, config: Any) -> int:
     await register_equation_tools(mcp, adapter, config)
     await register_assembly_tools(mcp, adapter, config)
     await register_weldment_tools(mcp, adapter, config)
+    await register_feature_tree_tools(mcp, adapter, config)
     await register_sketching_tools(mcp, adapter, config)
     await register_drawing_tools(mcp, adapter, config)
     await register_drawing_analysis_tools(mcp, adapter, config)
