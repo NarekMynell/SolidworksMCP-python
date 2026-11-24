@@ -296,6 +296,52 @@ async def test_holes_through_a_joist_and_its_fin_plate_and_a_cope(
     assert "no steel within 10 mm" in missed["message"]
 
 
+async def test_an_assembly_of_weldments_gets_no_sketch_dimensions(
+    scratch: Any, tmp_path: Path
+) -> None:
+    """The drawing package on an assembly of weldment pieces leaves the
+    pieces' sketch dimensions out. Seen live: the check read each part's type
+    unflagged ("'int' object is not callable"), saw no weldment, and an
+    agent's platform drawing got 63 skeleton dimensions."""
+    from solidworks_mcp.adapters.solidworks.drawing_standard import (
+        WELDMENT_ASSEMBLY_DIMENSIONS,
+    )
+
+    tools = await _tools(scratch.adapter)
+    _ok(await tools["create_part"]({"name": "piece"}))
+    _ok(
+        await tools["create_structural_members"](
+            {**_SHS, "segments": [[0, 0, 0, 2000, 0, 0]], "name": "Rail"}
+        )
+    )
+    piece = str(tmp_path / "piece.SLDPRT")
+    _ok(await tools["save_as"]({"file_path": piece}))
+    _ok(await tools["create_assembly"]({"name": "pieces"}))
+    _ok(
+        await tools["add_components"](
+            {
+                "items": [{"file_path": piece}, {"file_path": piece, "z": 1000}],
+                "fix": True,
+            }
+        )
+    )
+    assembly = str(tmp_path / "pieces.SLDASM")
+    _ok(await tools["save_as"]({"file_path": assembly}))
+    assert scratch.adapter._has_weldment_parts() is True
+
+    made = _ok(
+        await tools["generate_drawing_package"](
+            {
+                "model_path": assembly,
+                "output_dir": str(tmp_path),
+                "write_model_properties": False,
+                "include_bom": True,
+            }
+        )
+    )
+    assert made["data"]["dimensions"]["note"] == WELDMENT_ASSEMBLY_DIMENSIONS, made
+
+
 async def test_vent_and_drain_holes_through_one_wall(scratch: Any) -> None:
     """A post and a rail of SHS 80x80x5, hung as built: each gets a vent near
     its higher end through the wall facing up (or, plumb, one side) and a drain

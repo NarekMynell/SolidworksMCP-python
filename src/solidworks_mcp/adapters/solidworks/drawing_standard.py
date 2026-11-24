@@ -1734,7 +1734,12 @@ class SolidWorksDrawingStandardMixin:
         for raw in components:
             component = _sw_type_info.flagged(raw, "IComponent2")
             doc = self._attempt(lambda c=component: c.GetModelDoc2(), default=None)
-            if doc is None or self._attempt(lambda d=doc: d.GetType()) != 1:
+            if doc is None:
+                continue
+            # Unflagged, GetType reads as a property: "'int' object is not
+            # callable", and no part was ever seen as a weldment (live, 2025).
+            model = _sw_type_info.flagged(doc, "IModelDoc2")
+            if self._attempt(lambda m=model: m.GetType()) != 1:
                 continue
             part = _sw_type_info.flagged(doc, "IPartDoc")
             if self._attempt(lambda p=part: bool(p.IsWeldment()), default=False):
