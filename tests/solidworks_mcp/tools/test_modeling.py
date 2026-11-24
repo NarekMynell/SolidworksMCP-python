@@ -205,7 +205,7 @@ class TestModelingTools:
         assert refused["status"] == "error"
         assert refused["error_type"] == "invalid_input"
         assert "`components`" in refused["message"]
-        assert "insert_component" in refused["message"]
+        assert "add_components" in refused["message"]
         assert mock_adapter.create_assembly.await_count == 1
 
     @pytest.mark.asyncio

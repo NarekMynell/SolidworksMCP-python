@@ -7,9 +7,9 @@ dimension names. Evidence lines (``tests.live.evidence``) hold SolidWorks on
 each proven state during a demo.
 
 The author verified these on SolidWorks 2025; they are the sign-off on 2026.
-``export_flat_pattern`` is checked both ways: refusing a solid block, and
-exporting a copy of the "Simple Sheet Metal Part" sample SolidWorks installs
-(skipped when the samples are not installed).
+``export_flat_pattern`` is checked both ways: a plain block gives its largest
+flat face, and a copy of the "Simple Sheet Metal Part" sample SolidWorks
+installs gives its flat pattern (skipped when the samples are not installed).
 
 The drawing-dimension tools (from the same PR) are checked on a drawing of the
 same block: each model dimension shown once, then laid out with no overlaps.
@@ -139,19 +139,28 @@ async def test_dimensions_list_and_measure(scratch):
 
 
 @pytest.mark.asyncio
-async def test_export_flat_pattern_refuses_a_solid_part(scratch, tmp_path):
-    """A part without a sheet-metal body is refused clearly; nothing is written."""
+async def test_export_flat_pattern_draws_a_plain_plate(scratch, tmp_path):
+    """A part of one body that isn't sheet metal (a plate extruded from a
+    sketch, as agents model base plates) gives its largest flat face: the
+    30 x 30 mm face of the block, four lines at 1:1. Unsaved, it is refused."""
     adapter = scratch.adapter
     await _block(adapter)
     tools = await _tools(adapter)
     target = tmp_path / "flat.dxf"
 
+    unsaved = await tools["export_flat_pattern"]({"file_path": str(target)})
+    part = tmp_path / "block.sldprt"
+    assert (await adapter.save_file(str(part))).is_success
+    scratch.written_files.append(str(part))
     result = await tools["export_flat_pattern"]({"file_path": str(target)})
-    evidence("export_flat_pattern on a solid block", result)
-    assert result["status"] == "error"
-    assert result["error_type"] == "not_found"
-    assert "sheet-metal" in result["message"]
-    assert not target.exists()
+    evidence("export_flat_pattern on a plain block", result)
+
+    assert "never been saved" in unsaved["message"]
+    assert result["status"] == "success", result
+    assert result["data"]["source"] == "face"
+    assert result["data"]["face_area_mm2"] == pytest.approx(900.0)
+    entities = [x.strip() for x in target.read_text(encoding="latin-1").split("\n")]
+    assert entities.count("LINE") == 4 and entities.count("CIRCLE") == 0
 
 
 _SHEET_METAL_SAMPLE = Path(

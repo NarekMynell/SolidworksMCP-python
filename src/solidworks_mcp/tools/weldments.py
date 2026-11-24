@@ -155,6 +155,62 @@ class CreateStructuralMembersInput(CompatInput):
         return self
 
 
+class CreateTrimExtendInput(CompatInput):
+    """Input schema for trimming or extending structural members.
+
+    Attributes:
+        members (list[str]): The members to trim or extend.
+        boundary (list[str]): The members they are trimmed to.
+        corner_type (str): ``end_trim``, ``miter``, ``butt1`` or ``butt2``.
+        cut (str): ``simple`` or ``coped``.
+        weld_gap_mm (float): Gap left for the weld, mm.
+        allow_extension (bool): Extend members that stop short.
+        name (str | None): The feature's name.
+    """
+
+    members: list[str] = Field(
+        min_length=1,
+        description="Members to trim or extend: member feature names (all its "
+        "bodies, e.g. 'Joists IPE160') or body names (e.g. 'Joists IPE160[3]')",
+    )
+    boundary: list[str] = Field(
+        min_length=1,
+        description="What they are trimmed to, the same kind of names, e.g. "
+        "['Main beams IPE240']",
+    )
+    corner_type: Literal["end_trim", "miter", "butt1", "butt2"] = Field(
+        default="end_trim",
+        description="'end_trim' cuts every member at the boundary; 'miter', "
+        "'butt1' and 'butt2' join one member to one boundary member at a corner",
+    )
+    cut: Literal["simple", "coped"] = Field(
+        default="simple",
+        description="'simple' cuts square at the boundary's nearest flat face; "
+        "'coped' cuts to the boundary's shape (a joist notched round a beam's "
+        "flanges, tops flush)",
+    )
+    weld_gap_mm: float = Field(
+        default=0.0, ge=0, le=100, description="Gap left for the weld at each cut, mm"
+    )
+    allow_extension: bool = Field(
+        default=True, description="Extend members that stop short of the boundary"
+    )
+    name: str | None = Field(default=None, description="Name for the new feature")
+
+    @model_validator(mode="after")
+    def _a_corner_joins_two(self) -> CreateTrimExtendInput:
+        """A miter or butt corner is one member and one boundary member."""
+        if self.corner_type != "end_trim" and (
+            len(self.members),
+            len(self.boundary),
+        ) != (1, 1):
+            raise ValueError(
+                f"a {self.corner_type} corner joins one member to one boundary "
+                "member; use end_trim for more"
+            )
+        return self
+
+
 class GetCutListInput(CompatInput):
     """Input schema for reading the cut list.
 
@@ -248,7 +304,9 @@ async def register_weldment_tools(
         drawn as a new 3D sketch) or an existing `sketch`; draw a continuous member
         as one segment. Segments joined end to end are mitred (`corner_treatment`);
         each call is one profile, so a truss is one call for the chords and one for
-        the web. Find the size with `list_weldment_profiles`. Needs: an open part.
+        the web. Segments are member centre lines in model axes (y up); where one
+        member frames into another, finish with `create_trim_extend`. Find the
+        size with `list_weldment_profiles`. Needs: an open part.
         Changes: adds a weldment feature (first time), a 3D sketch and the members.
         Returns: `members` with `feature`, `profile`, `sketch`, `segments`, `groups`,
         `grouping` and `bodies_after`.
@@ -278,6 +336,57 @@ async def register_weldment_tools(
             "members": data,
             "execution_time": result.execution_time,
         }
+
+    @mcp.tool()
+    async def create_trim_extend(
+        input_data: CreateTrimExtendInput,
+    ) -> dict[str, Any]:
+        """Trim or extend structural members where they meet: beams to columns, joists coped to beams, braces to the frame (Trim/Extend).
+
+        Use it after `create_structural_members` wherever members meet: members
+        drawn centre line to centre line run into each other until trimmed, and
+        the cut list then gives centre-line lengths, not cut lengths.
+        `end_trim` cuts every member at the `boundary` members; `cut` 'coped'
+        notches them to the boundary's shape (joists with tops flush with the
+        beams they frame into), 'simple' cuts square. 'miter', 'butt1' and
+        'butt2' join one member to one other at a corner. `weld_gap_mm` leaves
+        room for the weld. Names are member features (all their bodies) or
+        bodies (`Joists IPE160[3]`). Needs: an open weldment part. Changes: adds
+        a Trim/Extend feature. Returns: `trim` with `feature`, `members` (each
+        body's `name`, `now`, its name after the trim, which SolidWorks changes,
+        `volume_change_mm3` and `changed`), `boundary`, `unchanged` (members it didn't
+        reach, also named in a `warning`) and `bodies_after`; `get_cut_list`
+        then gives the new lengths. Member feature names keep working after.
+
+        Args:
+            input_data: `members` and `boundary` (names); `corner_type`
+                (end_trim), `cut` (simple), `weld_gap_mm` (0),
+                `allow_extension` (true) and `name` have defaults.
+
+        Returns:
+            dict[str, Any]: The Trim/Extend feature and what it changed.
+        """
+        input_data = normalize_input(input_data, CreateTrimExtendInput)
+        require_capability(
+            adapter, "create_trim_extend", "Active adapter can't trim members"
+        )
+        result = await adapter.create_trim_extend(
+            input_data.model_dump(exclude_none=True)
+        )
+        require_success(result, context="Failed to trim the structural members")
+        data = dict(result.data or {})
+        warning = data.pop("warning", None)
+        reply: dict[str, Any] = {
+            "status": "success",
+            "message": f"Trimmed {len(data.get('members', []))} member body(ies) to "
+            f"{len(data.get('boundary', []))} boundary body(ies) as "
+            f"{data.get('feature')}",
+            "trim": data,
+            "execution_time": result.execution_time,
+        }
+        if warning:
+            reply["warning"] = warning
+        return reply
 
     @mcp.tool()
     async def get_cut_list(input_data: GetCutListInput | None = None) -> dict[str, Any]:
@@ -316,4 +425,4 @@ async def register_weldment_tools(
             reply["warning"] = warning
         return reply
 
-    return 3
+    return 4

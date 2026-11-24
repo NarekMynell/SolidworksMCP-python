@@ -14,6 +14,28 @@ from solidworks_mcp.adapters.solidworks.selection import SolidWorksSelectionMixi
 from solidworks_mcp.exceptions import SolidWorksMCPError
 
 
+def test_the_active_document_is_flagged_for_its_type(monkeypatch) -> None:
+    """A fresh ``ActiveDoc`` has no method flags; it gets its type's (a
+    ``FirstFeature()`` on it failed with "Member not found", seen live)."""
+    from solidworks_mcp.adapters.solidworks import selection
+
+    seen: list[tuple[object, int]] = []
+    monkeypatch.setattr(
+        selection._sw_type_info,
+        "flag_doc",
+        lambda model, doc_type: seen.append((model, doc_type)) or 0,
+    )
+    method = SimpleNamespace(GetType=lambda: 3)
+    value = SimpleNamespace(GetType=2)  # late binding read it as a property
+    unreadable = SimpleNamespace(GetType="x")
+
+    assert selection._flag_active(method) is method
+    selection._flag_active(value)
+    selection._flag_active(unreadable)
+
+    assert seen == [(method, 3), (value, 2), (unreadable, 1)]
+
+
 class _SelectionHarness(SolidWorksSelectionMixin):
     """Minimal harness to exercise the mixin methods."""
 

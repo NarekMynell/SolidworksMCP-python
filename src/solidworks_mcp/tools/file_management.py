@@ -659,7 +659,7 @@ async def register_file_management_tools(
         }
 
     @mcp.tool()
-    async def save_file(input_data: SaveFileInput) -> dict[str, Any]:
+    async def save_file(input_data: SaveFileInput | None = None) -> dict[str, Any]:
         """Save the active part, assembly or drawing, to its own path or to a new path in its own format.
 
         Use it after changes you want to keep. A new `file_path` is checked before
@@ -667,8 +667,9 @@ async def register_file_management_tools(
         the document's extension (.sldprt, .sldasm, .slddrw), and a file already there
         is kept unless `overwrite` is on. To write another format, use `save_as` or an
         `export_*` tool; to copy an assembly with its parts, `pack_and_go_assembly`.
-        Needs: an open, active document, already saved once unless you give a path.
-        Changes: writes the file. Returns: `file_path` (when given) and `data` from
+        Needs: an open, active document, already saved once unless you give a path
+        (a new document without `file_path` is refused). Changes: writes the
+        file. Returns: `file_path` (when given) and `data` from
         the save.
 
         Args:
@@ -678,7 +679,7 @@ async def register_file_management_tools(
         Returns:
             dict[str, Any]: The save result.
         """
-        input_data = _coerce_input(SaveFileInput, input_data)
+        input_data = _coerce_input(SaveFileInput, input_data or {})
         require_capability(
             adapter,
             "save_file",

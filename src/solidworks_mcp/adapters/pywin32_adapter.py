@@ -2583,7 +2583,13 @@ class PyWin32Adapter(
 
             format_lower = format_type.lower()
             if format_lower not in format_map:
-                raise Exception(f"Unsupported export format: {format_type}")
+                hint = (
+                    " A part's DXF for cutting comes from export_flat_pattern; a "
+                    "drawing's from export_dwg with a .dxf path."
+                    if format_lower in {"dxf", "dwg"}
+                    else ""
+                )
+                raise Exception(f"Unsupported export format: {format_type}.{hint}")
 
             resolved_path = os.path.abspath(file_path)
             os.makedirs(os.path.dirname(resolved_path), exist_ok=True)

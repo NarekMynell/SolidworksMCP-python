@@ -1,8 +1,8 @@
 {
  "tools": {
-  "total": 162,
+  "total": 163,
   "by_level": {
-   "stable": 154,
+   "stable": 155,
    "beta": 0,
    "experimental": 0,
    "planned": 0,
@@ -294,7 +294,7 @@
     "family": "modeling",
     "level": "stable",
     "reason": "",
-    "summary": "Create a new, empty assembly document and make it active, ready for `insert_component`."
+    "summary": "Create a new, empty assembly document and make it active, ready for `add_components`."
    },
    {
     "name": "create_axis",
@@ -458,6 +458,13 @@
     "summary": "Place a model's three standard views (front, top and side) on the active drawing sheet in one call."
    },
    {
+    "name": "create_trim_extend",
+    "family": "weldments",
+    "level": "stable",
+    "reason": "",
+    "summary": "Trim or extend structural members where they meet: beams to columns, joists coped to beams, braces to the frame (Trim/Extend)."
+   },
+   {
     "name": "delete_configuration",
     "family": "file_management",
     "level": "stable",
@@ -511,7 +518,7 @@
     "family": "engineering_data",
     "level": "stable",
     "reason": "",
-    "summary": "Export the active sheet-metal part's flat pattern to DXF or DWG, for laser or waterjet cutting."
+    "summary": "Export the active part's cutting blank to DXF or DWG, for a laser, plasma or waterjet table."
    },
    {
     "name": "export_iges",
@@ -1148,11 +1155,11 @@
  "com": {
   "type_library": "83A33D31-27C5-11CE-BFD4-00400513BB57x0x34x0",
   "core": {
-   "covered": 291,
+   "covered": 294,
    "total": 2838
   },
   "api": {
-   "covered": 331,
+   "covered": 337,
    "total": 5985
   },
   "interfaces": [
@@ -1408,7 +1415,8 @@
      "InsertSheetMetalBaseFlange2",
      "InsertSheetMetalEdgeFlange2",
      "InsertStructuralWeldment5",
-     "InsertWeldmentFeature"
+     "InsertWeldmentFeature",
+     "InsertWeldmentTrimFeature2"
     ],
     "total": 268
    },
@@ -1460,6 +1468,7 @@
      "FirstFeature",
      "GetBodies",
      "GetBodies2",
+     "GetBody",
      "GetBox",
      "GetChildren",
      "GetConfigurationNames",
@@ -1482,6 +1491,7 @@
    {
     "name": "IFeature",
     "covered": [
+     "GetBody",
      "GetBox",
      "GetChildren",
      "GetDefinition",

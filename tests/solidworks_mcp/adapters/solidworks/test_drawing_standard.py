@@ -69,16 +69,24 @@ class TestSheetMaths:
     def test_a_part_too_big_for_any_scale_gets_the_smallest_and_default_cells(
         self,
     ) -> None:
-        scale, cells = std.choose_layout({"front": (100.0, 100.0)})
+        scale, cells = std.choose_layout({"front": (1000.0, 1000.0)})
         assert scale == std.STANDARD_SCALES[-1]
         assert cells == std.CELLS
+
+    def test_a_building_frame_gets_a_structural_scale(self) -> None:
+        """A 40 x 20 m shed, 10 m high, needs 1:150 on A3, past the old 1:100."""
+        scale, _ = std.choose_layout(
+            {"front": (40.0, 10.0), "plan": (40.0, 20.0), "side": (20.0, 10.0)}
+        )
+        assert scale[1] > 100 and scale in std.STANDARD_SCALES
 
     def test_iso_fit_and_labels(self) -> None:
         assert std.scale_label((1, 2)) == "1:2"
         assert std.scale_label((2.5, 1)) == "2.5:1"
         _, cells = std.choose_layout(self.PLATE)
         assert std.iso_fit_scale((0.15, 0.09), cells["iso"]) in std.STANDARD_SCALES
-        assert std.iso_fit_scale((100.0, 100.0), cells["iso"]) == (1, 100)
+        assert std.iso_fit_scale((100.0, 100.0), cells["iso"]) == (1, 1000)
+        assert std.iso_fit_scale((1000.0, 1000.0), cells["iso"]) == (1, 1000)
         assert std.content_box((0, 0, 1, 1)) == (0, std.CAPTION_STRIP, 1, 1)
 
     def test_title_block_properties(self) -> None:
@@ -724,3 +732,122 @@ class TestHelpers:
 
 
 # ---- the generator --------------------------------------------------------------
+
+
+# ---- a weldment's cut-list table ----------------------------------------------
+
+
+class _CutTable(_Table):
+    """A cut list as the default template lays it out: 199 mm, a wide DESCRIPTION."""
+
+    ROWS = [
+        ["ITEM NO.", "QTY.", "DESCRIPTION", "LENGTH"],
+        ["1", "4", "HE160B", "2760"],
+        ["2", "7", "IPE160", "3983.8"],
+    ]
+
+    def __init__(self, height: float | None = 0.0035) -> None:
+        super().__init__((0.02, 0.02))
+        self.RowCount = len(self.ROWS)
+        self.widths = [0.0291, 0.0292, 0.1114, 0.0296]
+        self.height = height
+
+    def Text(self, row, column):  # noqa: N802
+        return self.ROWS[row][column]
+
+    def GetColumnWidth(self, column):  # noqa: N802
+        return self.widths[column]
+
+    def SetColumnWidth(self, column, width, _options):  # noqa: N802
+        self.widths[column] = width
+        return width
+
+    def GetTextFormat(self):  # noqa: N802
+        if self.height is None:
+            raise RuntimeError("no text format")
+        return SimpleNamespace(CharHeight=self.height)
+
+
+def _weldment_view(adapter: _Harness, accepts: set[str]) -> list[tuple]:
+    """Give Drawing View1 InsertWeldmentTable: a table for configurations in ``accepts``."""
+    view = adapter.drawing.views["Drawing View1"]
+    view.ReferencedConfiguration = "Default<As Machined>"
+    calls: list[tuple] = []
+
+    def insert(*args):
+        calls.append(args)
+        return _CutTable() if args[4] in accepts else None
+
+    view.InsertWeldmentTable = insert
+    return calls
+
+
+class TestCutListTable:
+    @pytest.mark.parametrize("height", [0.0035, None])
+    def test_columns_narrow_to_their_longest_text(self, height) -> None:
+        """Each column fits its text at 0.75 x the text height per character plus
+        8 mm; a missing text format reads as 3.5 mm text."""
+        table = _CutTable(height)
+
+        _Harness()._fit_columns(table)
+
+        per_char = 0.0035 * 0.75
+        assert table.widths == pytest.approx(
+            [n * per_char + 0.008 for n in (8, 4, 11, 6)]
+        )  # 199 mm wide before, 108 mm after
+
+    def test_a_column_is_never_widened(self) -> None:
+        table = _CutTable()
+        table.widths = [0.01, 0.01, 0.01, 0.01]
+
+        _Harness()._fit_columns(table)
+
+        assert table.widths == [0.01, 0.01, 0.01, 0.01]
+
+    @pytest.mark.parametrize(
+        ("accepts", "tried"),
+        [({""}, [""]), ({"Default"}, ["", "Default"])],
+        ids=["the view's own", "the base configuration"],
+    )
+    def test_a_derived_configuration_is_tried_as_the_view_s_own(
+        self, accepts, tried, tmp_path
+    ) -> None:
+        """A weldment view shows "Default<As Machined>", which InsertWeldmentTable
+        refuses (live, SW 2025 SP4); "" takes the view's own configuration."""
+        (tmp_path / "cut list.sldwldtbt").write_bytes(b"")
+        adapter = _drawing_harness()
+        adapter.swApp.prefs[std._SW_PREF_CUT_LIST_TEMPLATES] = str(tmp_path)
+        calls = _weldment_view(adapter, accepts)
+
+        table, info = adapter._insert_cut_list("Drawing View1", 230.0, 190.0)
+
+        assert [c[4] for c in calls] == tried
+        template = str(tmp_path / "cut list.sldwldtbt")
+        assert calls[0] == (False, 0.23, 0.19, 3, "", template)
+        assert info["template"] == template and info["row_count"] == 3
+        assert table.widths[2] < 0.04  # the 111 mm DESCRIPTION narrowed
+
+    def test_the_install_s_template_and_an_unchecked_placement(self, tmp_path) -> None:
+        folder = tmp_path / "lang" / "english"
+        folder.mkdir(parents=True)
+        (folder / "cut list.sldwldtbt").write_bytes(b"")
+        adapter = _drawing_harness()
+        adapter.swApp.GetExecutablePath = lambda: str(tmp_path / "SLDWORKS.exe")
+        calls = _weldment_view(adapter, {""})
+
+        _table, info = adapter._insert_cut_list(
+            "Drawing View1", None, None, check_sheet=False
+        )
+
+        assert calls[0][:3] == (True, 0.0, 0.0)  # the sheet's anchor
+        assert info["template"] == str(folder / "cut list.sldwldtbt")
+        assert info["moved_onto_sheet"] is False
+
+    def test_a_view_of_no_weldment_and_an_unknown_view(self) -> None:
+        adapter = _drawing_harness()
+        _weldment_view(adapter, set())
+
+        with pytest.raises(Exception, match="weldment part and a cut-list template"):
+            adapter._insert_cut_list("Drawing View1", 10.0, 10.0)
+        with pytest.raises(LookupError, match="No view named 'Side'"):
+            adapter._insert_cut_list("Side", 10.0, 10.0)

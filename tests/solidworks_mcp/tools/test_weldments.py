@@ -6,8 +6,10 @@ from typing import Any
 
 import pytest
 
+from solidworks_mcp.adapters.base import AdapterResult, AdapterResultStatus
 from solidworks_mcp.tools.weldments import (
     CreateStructuralMembersInput,
+    CreateTrimExtendInput,
     register_weldment_tools,
 )
 
@@ -193,3 +195,95 @@ async def test_the_mock_cut_list_needs_members_and_a_csv_name(
     assert "No weldment profile standard" in no_standard["message"]
     assert "No profile type" in no_type["message"]
     assert "must end in .csv" in csv_only["message"]
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"members": [], "boundary": ["Beams"]}, "at least 1 item"),
+        (
+            {"members": ["A", "B"], "boundary": ["C"], "corner_type": "miter"},
+            "a miter corner joins one member to one boundary member",
+        ),
+        ({"members": ["A"], "boundary": ["C"], "weld_gap_mm": -1}, "greater than"),
+    ],
+)
+def test_trim_input_refusals(kwargs: dict[str, Any], message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        CreateTrimExtendInput(**kwargs)
+
+
+@pytest.mark.asyncio
+async def test_joists_trimmed_to_beams_shorten_in_the_cut_list(
+    mcp_server, mock_adapter
+) -> None:
+    tools = await _tools(mcp_server, mock_adapter)
+    await mock_adapter.create_part()
+    for name, size, segments in (
+        ("Beams", "IPE300", [[0, 0, z, 6000, 0, z] for z in (0, 4000)]),
+        ("Joists", "IPE200", [[x, 0, 0, x, 0, 4000] for x in (1000, 2000)]),
+    ):
+        await tools["create_structural_members"](
+            {
+                "standard": "DIN",
+                "profile_type": "ipe",
+                "size": size,
+                "segments": segments,
+                "name": name,
+            }
+        )
+
+    trimmed = await tools["create_trim_extend"](
+        {"members": ["Joists"], "boundary": ["Beams"], "cut": "coped", "weld_gap_mm": 5}
+    )
+    unknown = await tools["create_trim_extend"](
+        {"members": ["Purlins"], "boundary": ["Beams"]}
+    )
+    both = await tools["create_trim_extend"](
+        {"members": ["Joists"], "boundary": ["Joists"]}
+    )
+    corner = await tools["create_trim_extend"](
+        {"members": ["Joists"], "boundary": ["Beams[1]"], "corner_type": "butt1"}
+    )
+    cut = await tools["get_cut_list"]()
+
+    assert trimmed["message"] == (
+        "Trimmed 2 member body(ies) to 2 boundary body(ies) as Trim/Extend1"
+    )
+    assert [m["now"] for m in trimmed["trim"]["members"]] == [
+        "Trim/Extend1[1]",
+        "Trim/Extend1[2]",
+    ]
+    assert "warning" not in trimmed
+    assert "No structural member or body named 'Purlins'" in unknown["message"]
+    assert "can't be both trimmed and the boundary" in both["message"]
+    assert "A butt1 corner joins two members" in corner["message"]
+    lengths = {i["description"]: i["length_mm"] for i in cut["cut_list"]["items"]}
+    assert lengths == {"IPE300": 6000.0, "IPE200": 3995.0}
+
+
+@pytest.mark.asyncio
+async def test_a_trim_warning_is_passed_on(
+    mcp_server, mock_adapter, monkeypatch
+) -> None:
+    async def partly(_params: dict[str, Any]) -> AdapterResult[dict[str, Any]]:
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "feature": "Trim/Extend1",
+                "members": [{"name": "J[2]", "now": "J[2]", "changed": False}],
+                "boundary": ["B[1]"],
+                "unchanged": ["J[2]"],
+                "warning": "1 member(s) didn't change: J[2]",
+            },
+        )
+
+    monkeypatch.setattr(mock_adapter, "create_trim_extend", partly)
+    tools = await _tools(mcp_server, mock_adapter)
+
+    reply = await tools["create_trim_extend"](
+        {"members": ["J[2]"], "boundary": ["B[1]"]}
+    )
+
+    assert reply["warning"] == "1 member(s) didn't change: J[2]"
+    assert "warning" not in reply["trim"]

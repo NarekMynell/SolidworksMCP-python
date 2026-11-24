@@ -1811,7 +1811,10 @@ class TestPyWin32AdapterBranches:
 
         assert (await adapter.save_file()).is_error
         assert (await adapter.save_file("C:/tmp/new.sldprt")).is_error
-        assert (await adapter.export_file("C:/tmp/out.bad", "badfmt")).is_error
+        bad = await adapter.export_file("C:/tmp/out.bad", "badfmt")
+        dxf = await adapter.export_file("C:/tmp/plate.dxf", "dxf")
+        assert bad.is_error and "export_flat_pattern" not in (bad.error or "")
+        assert "comes from export_flat_pattern" in (dxf.error or "")
 
         monkeypatch.setattr(
             "solidworks_mcp.adapters.pywin32_adapter.os.path.exists",
@@ -2866,13 +2869,31 @@ class TestPyWin32AdapterBranches:
         adapter = self._build_adapter(monkeypatch)
         adapter.currentModel = SimpleNamespace(
             Save3=Mock(return_value=None),
-            GetPathName=Mock(return_value=""),
+            GetPathName=Mock(return_value="C:/work/gone.sldprt"),
         )
 
         result = await adapter.save_file()
 
         assert result.is_error
         assert "Failed to save file" in (result.error or "")
+
+    @pytest.mark.asyncio
+    async def test_saving_a_never_saved_document_in_place_is_refused(
+        self, monkeypatch
+    ) -> None:
+        """Save3 on a document with no path opens a Save As dialog that hangs
+        every later call (seen live), so it is refused before SolidWorks is asked."""
+        adapter = self._build_adapter(monkeypatch)
+        save3 = Mock(return_value=True)
+        adapter.currentModel = SimpleNamespace(
+            Save3=save3, GetPathName=Mock(return_value="")
+        )
+
+        result = await adapter.save_file()
+
+        assert "has never been saved" in (result.error or "")
+        assert "give file_path" in (result.error or "")
+        save3.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_model_info_and_list_features_return_error_without_model(

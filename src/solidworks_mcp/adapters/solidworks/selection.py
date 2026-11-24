@@ -21,6 +21,24 @@ from .face_selection import FaceEdgeSelector, describe_edge, validate_face_query
 _SELECTED_ENTITY_TYPE_NAMES = {1: "EDGE", 2: "FACE", 3: "VERTEX"}
 
 
+def _flag_active(model: Any) -> Any:
+    """The active document with its methods flagged for its type.
+
+    ``swApp.ActiveDoc`` hands back a new dispatch each time, without the
+    method flags every other adapter call relies on. Kept unflagged as
+    ``currentModel``, a later ``model.FirstFeature()`` reads ``FirstFeature``
+    as a property and calls the feature it returns: "Member not found" (seen
+    live: ``get_cut_list`` straight after ``list_features``).
+    """
+    value: Any = getattr(model, "GetType", None)
+    try:
+        doc_type = int(value() if callable(value) else value)
+    except (TypeError, ValueError):
+        doc_type = 1
+    _sw_type_info.flag_doc(model, doc_type)
+    return model
+
+
 class SolidWorksSelectionMixin:
     """Expose feature-selection and feature-list methods through a mixin."""
 
@@ -44,7 +62,7 @@ class SolidWorksSelectionMixin:
         sw_app = getattr(self, "swApp", None)
         active_model = getattr(sw_app, "ActiveDoc", None) if sw_app else None
         if active_model is not None:
-            self.currentModel = active_model
+            self.currentModel = _flag_active(active_model)
         if not self.currentModel:
             return AdapterResult(
                 status=AdapterResultStatus.ERROR,
@@ -236,7 +254,7 @@ class SolidWorksSelectionMixin:
         sw_app = getattr(self, "swApp", None)
         active_model = getattr(sw_app, "ActiveDoc", None) if sw_app else None
         if active_model is not None:
-            self.currentModel = active_model
+            self.currentModel = _flag_active(active_model)
         if not self.currentModel:
             return AdapterResult(
                 status=AdapterResultStatus.ERROR, error="No active model"

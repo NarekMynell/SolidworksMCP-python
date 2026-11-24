@@ -24,6 +24,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   item's quantity, length, end angles and mass, and writes CSV. Stable,
   checked live on SolidWorks 2025: a 12 m Warren truss's cut list adds up to
   the part's own 459.231 kg.
+- **`create_trim_extend`: members trimmed where they meet** (SolidWorks'
+  Trim/Extend). Members drawn on centre lines run into each other, and the
+  cut list then gave centre-line lengths: a 6 x 4 m platform's joists read
+  4000 mm and 14 joist ends sat inside the beams. `end_trim` cuts members
+  at a boundary, simple or coped to its shape, with a weld gap; `miter`,
+  `butt1`, `butt2` join two members at a corner. The reply follows each
+  member to its new body name (SolidWorks renames what it trims) and names
+  any member the boundary didn't reach. Stable, checked live: IPE160 joists
+  coped to IPE240 beams with a 5 mm gap came out 3983.8 mm.
+- **A weldment's drawing carries its cut list.** `generate_drawing_package`
+  puts the cut-list table (item, quantity, description, length) above the
+  isometric of a weldment part, its columns fitted to their text, and leaves
+  out the model dimensions, which for a weldment are its profiles' flange and
+  web sizes. `add_balloons` then numbers the members as the table does.
+  The drawing scales go to 1:1000 for building-sized frames (1:100 was the
+  smallest).
 - **Steel-structure assemblies by coordinates, fast** (field report on a
   36 m roof module, SolidWorks 2025). `add_components` inserts any number
   of parts in one `AddComponents3` call, each placed by its **origin** and
@@ -48,6 +64,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Hole Wizard holes landed up to 0.55 mm from their point.** SolidWorks
+  puts a hole where it picked the face through the screen, a pixel's worth
+  off at the current zoom: a 300 mm base plate's DXF had its M20 holes at
+  110.07/-109.45 and 109.77/110.54 instead of 110/110, and four holes in
+  one call failed ("position sketch couldn't be found"). `create_hole` now
+  moves each hole exactly onto its point and reads the points back (0.000
+  mm in the DXF, live).
+- **`save_file` without a path on a never-saved document hung the server.**
+  SolidWorks opened its Save As dialog even in silent mode and the call
+  waited for someone to answer it, so every later tool hung behind it. Such
+  a save is refused, asking for `file_path`.
+- **Tools after `list_features` could fail with "Member not found".**
+  `list_features` made the active document a fresh, unflagged dispatch, so a
+  later `FirstFeature()` (in `get_cut_list`, for one) was read as a property.
+  The active document is flagged for its type now.
+- **`set_material` needed the library for any material outside SolidWorks'
+  own.** `1.0037 (S235JR)` failed without `database: "SolidWorks DIN
+  Materials"`; the library holding the name is found by itself, and a name no
+  library holds is refused with the names that contain it (`S235JR` offers
+  `1.0037 (S235JR)`).
+- **`list_weldment_profiles` put `L50x50x4` first for "L50x5".** Shop
+  shorthand for an equal angle finds `L50x50x5`, and a size named exactly
+  comes first.
+- **A plain plate had no DXF.** `export_flat_pattern` refused any part that
+  wasn't sheet metal, so a base plate extruded from a sketch (how a Sonnet
+  agent modelled one in a live end-to-end run) needed a drawing and
+  `export_dwg` as a workaround. A part of one body now gives its largest flat
+  face, outline and holes at 1:1 (`source: face`).
+- **`save_file` and `close_model` refused a call with no arguments**
+  ("Missing required argument input_data"); everything in them is optional.
+  `save_as` to DXF says which tool writes one, and `create_assembly` points
+  to `add_components`.
 - **`delete_feature` in an assembly took minutes.** It listed the tree
   before and after with every component's features (57 s for a 20-part
   assembly, 3 to 5 minutes for 51 parts); it lists the assembly's own tree

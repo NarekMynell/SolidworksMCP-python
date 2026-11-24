@@ -1829,6 +1829,15 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             lambda adapter: adapter.create_structural_members(params),
         )
 
+    async def create_trim_extend(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Trim or extend structural members, using pool."""
+        return await self._execute_with_pool(
+            "create_trim_extend",
+            lambda adapter: adapter.create_trim_extend(params),
+        )
+
     async def get_cut_list(
         self, update: bool = True, export_path: str | None = None
     ) -> AdapterResult[dict[str, Any]]:

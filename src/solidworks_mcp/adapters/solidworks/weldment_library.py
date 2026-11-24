@@ -77,6 +77,23 @@ def _same(a: str, b: str) -> bool:
     return normalise(a) == normalise(b)
 
 
+_EQUAL_ANGLE = re.compile(r"^l(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)$")
+
+
+def _expansions(word: str) -> list[str]:
+    """A normalised query word and what it is shop shorthand for.
+
+    ``l50x5`` is the equal angle ``l50x50x5``: an angle's thickness is a
+    small part of its leg, so ``L<leg>x<t>`` with ``t`` under half the leg
+    can only mean that. ``l100x50`` (an unequal angle's legs) stays as it is.
+    """
+    match = _EQUAL_ANGLE.match(word)
+    if match and float(match.group(2)) < float(match.group(1)) / 2:
+        leg, thickness = match.groups()
+        return [f"l{leg}x{leg}x{thickness}", word]
+    return [word]
+
+
 class ProfileLibrary:
     """The profiles under one or more library folders.
 
@@ -214,7 +231,10 @@ class ProfileLibrary:
         """Sizes whose type and size names contain every word of ``query``.
 
         ``"250x250x12"`` finds ``RHS250x250x12.5`` in BSI's SHS; ``"HEB400"``
-        finds DIN's ``HE400B``; ``"ipe 300"`` finds ``IPE300``.
+        finds DIN's ``HE400B``; ``"ipe 300"`` finds ``IPE300``; ``"L50x5"``,
+        shop shorthand for an equal angle, finds ``L50x50x5``. A size the
+        query names exactly comes first, so ``L50x5`` lists ``L50x50x5``
+        before ``L50x50x4`` and ``L50x50x6``.
 
         Args:
             query: Words to look for, e.g. ``"shs 100x100"``.
@@ -222,20 +242,23 @@ class ProfileLibrary:
             limit: At most this many results.
 
         Returns:
-            list[Profile]: The matches, by standard, type and size.
+            list[Profile]: The matches: exact sizes first, then by standard,
+            type and size.
         """
-        words = [normalise(w) for w in re.split(r"[\s,;]+", query) if w.strip()]
+        words = [
+            _expansions(normalise(w)) for w in re.split(r"[\s,;]+", query) if w.strip()
+        ]
         standards = [standard] if standard else self.standards()
-        found: list[Profile] = []
+        found: list[tuple[bool, Profile]] = []
         for std in standards:
             for type_name in self.types(std):
                 for size in self.sizes(std, type_name):
                     text = normalise(type_name) + "|" + normalise(size)
-                    if all(word in text for word in words):
-                        found.append(self.resolve(std, type_name, size))
-                        if len(found) >= limit:
-                            return found
-        return found
+                    if all(any(a in text for a in word) for word in words):
+                        exact = any(normalise(size) in word for word in words)
+                        found.append((not exact, self.resolve(std, type_name, size)))
+        found.sort(key=lambda match: match[0])
+        return [profile for _, profile in found[:limit]]
 
 
 #: A sketch point, in any consistent unit.

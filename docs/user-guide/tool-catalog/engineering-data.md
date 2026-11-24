@@ -178,9 +178,11 @@ Create or overwrite one text custom property on the active document, e.g. PartNo
 
 ### `export_flat_pattern`
 
-Export the active sheet-metal part's flat pattern to DXF or DWG, for laser or waterjet cutting.
+Export the active part's cutting blank to DXF or DWG, for a laser, plasma or waterjet table.
 
-**Prerequisite:** SolidWorks running
+**Prerequisite:** An open part, saved once
+
+**SolidWorks automation note:** A sheet-metal part gives its flat pattern (`IPartDoc.ExportToDWG2` with `swExportToDWG_ExportSheetMetal`, the outline only). A plain plate of one body, such as a base plate extruded from a sketch, has no flat pattern: its largest planar face is selected and exported with `swExportToDWG_ExportSelectedFacesOrLoops`, its outline and holes at 1:1. A part of several bodies, none sheet metal, is refused.
 
 **Parameters:**
 

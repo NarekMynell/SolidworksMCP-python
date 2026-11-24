@@ -10,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
+from ...exceptions import InputRefused
 from ...utils.sw_dependencies import dependency_paths
 from .. import sw_type_info as _sw_type_info
 from ..base import AdapterResult, AdapterResultStatus, MassProperties, SolidWorksModel
@@ -2097,6 +2098,21 @@ class SolidWorksIOMixin:
                 if not os.path.exists(resolved_path):
                     raise Exception(f"File not written after save: {resolved_path}")
                 return
+
+            own_path = adapter._attempt(
+                lambda: adapter._get_attr_or_call(adapter.currentModel, "GetPathName"),
+                default=None,
+            )
+            if own_path is not None and not str(own_path):
+                # Save3 on a document that was never saved opens SolidWorks'
+                # Save As dialog, even with the silent option, and the call
+                # waits for someone to answer it: every later tool hangs
+                # behind it (seen live on a new drawing, SW 2025 SP4).
+                raise InputRefused(
+                    "The document has never been saved, so it has no path of its "
+                    "own; give file_path (SolidWorks would wait on a Save As "
+                    "dialog)."
+                )
 
             save_result = adapter._attempt(
                 lambda: adapter.currentModel.Save3(1, None, None)

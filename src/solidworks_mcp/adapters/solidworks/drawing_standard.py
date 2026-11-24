@@ -59,6 +59,10 @@ STANDARD_SCALES: list[tuple[float, float]] = [
     (1, 2), (1, 2.5), (1, 4), (1, 5), (1, 7.5), (1, 10), (1, 12.5),
     (1, 15), (1, 20), (1, 25), (1, 30), (1, 40), (1, 50), (1, 60),
     (1, 75), (1, 100),
+    # Structural steel: a 6 m platform's isometric needs 1:150 under its cut
+    # list on A3, a building's frame 1:500 or less.
+    (1, 150), (1, 200), (1, 250), (1, 300), (1, 400), (1, 500), (1, 750),
+    (1, 1000),
 ]  # fmt: skip
 
 SHEET_SIZE = (0.420, 0.297)
@@ -108,6 +112,22 @@ _SW_BOM_ANCHOR_TOP_RIGHT = 2
 _SW_BOM_ANCHOR_BOTTOM_LEFT = 3
 _SW_BOM_ANCHOR_BOTTOM_RIGHT = 4
 _SW_NUMBERING_NONE = 0
+#: ``swUserPreferenceStringValue_e.swFileLocationsWeldmentCutListTemplates``.
+_SW_PREF_CUT_LIST_TEMPLATES = 34
+#: SolidWorks' own weldment cut-list table template (``<install>/lang/<language>``).
+CUT_LIST_TEMPLATE = "cut list.sldwldtbt"
+#: A table column is narrowed to its longest text: this share of the text
+#: height per character, plus a margin (m). The cut-list template's
+#: DESCRIPTION column is 111 mm for names of a dozen characters, which made
+#: the table 199 mm wide, more than an A3 cell (measured live, SW 2025 SP4).
+_CHAR_WIDTH_SHARE = 0.75
+_COLUMN_MARGIN = 0.008
+_TABLE_TEXT_HEIGHT = 0.0035
+#: What a weldment drawing says instead of its dimensions.
+WELDMENT_DIMENSIONS = (
+    "skipped: a weldment's model dimensions are its profiles' sketch sizes, "
+    "not the frame's; the cut list gives each member's length"
+)
 #: GD&T characteristic -> SolidWorks GTOL symbol code (IGtol::SetFrameSymbols2).
 _GTOL_SYMBOLS = {
     "position": "<IGTOL-POSI>",
@@ -450,6 +470,8 @@ class _Sheet:
         sheet_format: The ``.slddrt`` applied to the sheet.
         include_isometric: Whether to add the isometric view.
         include_bom: Whether to put a BOM above the isometric.
+        weldment: A weldment part: its cut list goes above the isometric and
+            its model dimensions (its profiles' sketch sizes) are left out.
         material: The part's material, for the notes.
         extra_notes: The caller's note lines.
         views: View name -> ``IView``, orthographic first.
@@ -474,6 +496,7 @@ class _Sheet:
     sheet_format: str
     include_isometric: bool = True
     include_bom: bool = False
+    weldment: bool = False
     material: str | None = None
     extra_notes: list[str] = field(default_factory=list)
     views: dict[str, Any] = field(default_factory=dict)
@@ -781,6 +804,27 @@ class SolidWorksDrawingStandardMixin:
             lambda: _sw_type_info.flagged(table, "ITableAnnotation").RowCount,
             default=None,
         )
+        box_mm, moved = self._keep_on_sheet(table, drawing, use_anchor, "BOM table")
+        return table, {
+            "view": view_name,
+            "bom_type": bom_type,
+            "template": template or None,
+            "row_count": rows,
+            "table_box_mm": box_mm,
+            "moved_onto_sheet": moved,
+        }
+
+    def _keep_on_sheet(
+        self, table: Any, drawing: Any, use_anchor: bool, label: str
+    ) -> tuple[list[float] | None, bool]:
+        """Read a new table's box; slide one placed by the anchor onto the sheet.
+
+        Returns:
+            tuple: The box in mm (``None`` when unreadable) and whether it moved.
+
+        Raises:
+            RuntimeError: The table still runs off the sheet.
+        """
         box = self._table_box(table)
         sheet = self._sheet_bounds(drawing)
         on_sheet = _grow(sheet, 1e-6) if sheet else None
@@ -797,13 +841,132 @@ class SolidWorksDrawingStandardMixin:
         box_mm = [round(c * 1000, 1) for c in box] if box else None
         if box and on_sheet and not _layout.inside(box, on_sheet):
             raise RuntimeError(
-                f"The BOM table was inserted but runs off the sheet: table "
+                f"The {label} was inserted but runs off the sheet: table "
                 f"{box_mm} mm, sheet {sheet[2] * 1000:g} x {sheet[3] * 1000:g} "
                 "mm. Give x_mm and y_mm to place it on the sheet."
             )
+        return box_mm, moved
+
+    def _cut_list_template(self) -> str:
+        """The weldment cut-list table template: the file location's, else the install's."""
+        app = self.swApp
+        folder = str(
+            self._attempt(
+                lambda: app.GetUserPreferenceStringValue(_SW_PREF_CUT_LIST_TEMPLATES),
+                default="",
+            )
+            or ""
+        ).split(";")[0]
+        exe = str(self._attempt(lambda: app.GetExecutablePath(), default="") or "")
+        if exe.lower().endswith(".exe"):
+            exe = os.path.dirname(exe)
+        language = str(
+            self._attempt(lambda: app.GetCurrentLanguage(), default="") or "english"
+        )
+        candidates = [
+            os.path.join(folder, CUT_LIST_TEMPLATE) if folder else "",
+            os.path.join(exe, "lang", language, CUT_LIST_TEMPLATE) if exe else "",
+        ]
+        return next((c for c in candidates if c and os.path.exists(c)), "")
+
+    def _fit_columns(self, table: Any) -> None:
+        """Narrow each column of a table to its longest text; never widen one."""
+        ta = _sw_type_info.flagged(table, "ITableAnnotation")
+        height = self._attempt(
+            lambda: float(
+                _sw_type_info.flagged(ta.GetTextFormat(), "ITextFormat").CharHeight
+            ),
+            default=None,
+        )
+        per_char = (height or _TABLE_TEXT_HEIGHT) * _CHAR_WIDTH_SHARE
+        rows = int(self._attempt(lambda: ta.RowCount, default=0) or 0)
+        columns = int(self._attempt(lambda: ta.ColumnCount, default=0) or 0)
+        for column in range(columns):
+            longest = max(
+                (
+                    len(str(self._attempt(lambda r=r, c=column: ta.Text(r, c)) or ""))
+                    for r in range(rows)
+                ),
+                default=0,
+            )
+            wanted = longest * per_char + _COLUMN_MARGIN
+            current = self._attempt(lambda c=column: float(ta.GetColumnWidth(c)))
+            if current is not None and wanted < current:
+                self._attempt(lambda c=column, w=wanted: ta.SetColumnWidth(c, w, 0))
+
+    def _insert_cut_list(
+        self,
+        view_name: str,
+        x_mm: float | None,
+        y_mm: float | None,
+        check_sheet: bool = True,
+    ) -> tuple[Any, dict[str, Any]]:
+        """Insert a weldment cut-list table on a view (``IView::InsertWeldmentTable``).
+
+        Placed like a BOM (its bottom-left corner stays put), from SolidWorks'
+        own ``cut list.sldwldtbt``: item number, quantity, description and
+        length of each cut-list item, each column narrowed to its text.
+
+        Args:
+            view_name: A view of the weldment part.
+            x_mm: The table's position on the sheet; the anchor when omitted.
+            y_mm: The same, y.
+            check_sheet: Refuse a table that runs off the sheet; off when the
+                caller moves it into place next.
+
+        Returns:
+            tuple: The table annotation and what was inserted.
+
+        Raises:
+            LookupError: No such view.
+            RuntimeError: The table runs off the sheet.
+        """
+        drawing = _sw_type_info.flagged(self.currentModel, "IDrawingDoc")
+        view = _resolve_drawing_view(self, drawing, view_name)
+        if view is None:
+            raise LookupError(
+                f"No view named {view_name!r}. Views: "
+                f"{', '.join(_view_names(self, drawing)) or 'none'}"
+            )
+        template = self._cut_list_template()
+        use_anchor = x_mm is None or y_mm is None
+        # A weldment view references a derived configuration such as
+        # "Default<As Machined>", which InsertWeldmentTable refuses (returns
+        # nothing, seen live on SW 2025 SP4); "" takes the view's own.
+        config = str(
+            self._attempt(lambda: view.ReferencedConfiguration, default="") or ""
+        )
+        table = None
+        for name in dict.fromkeys(["", config.split("<", 1)[0]]):
+            table = view.InsertWeldmentTable(
+                use_anchor,
+                (x_mm or 0.0) / 1000.0,
+                (y_mm or 0.0) / 1000.0,
+                _SW_BOM_ANCHOR_BOTTOM_LEFT,
+                name,
+                template,
+            )
+            if table is not None:
+                break
+        if table is None:
+            raise Exception(
+                f"InsertWeldmentTable returned nothing for view {view_name!r}. "
+                "A cut list needs a view of a weldment part"
+                + ("" if template else " and a cut-list template (none found)")
+                + "."
+            )
+        rows = self._attempt(
+            lambda: _sw_type_info.flagged(table, "ITableAnnotation").RowCount,
+            default=None,
+        )
+        self._fit_columns(table)
+        if check_sheet:
+            box_mm, moved = self._keep_on_sheet(table, drawing, use_anchor, "cut list")
+        else:
+            box = self._table_box(table)
+            box_mm, moved = ([round(c * 1000, 1) for c in box] if box else None), False
         return table, {
             "view": view_name,
-            "bom_type": bom_type,
             "template": template or None,
             "row_count": rows,
             "table_box_mm": box_mm,
@@ -1468,7 +1631,7 @@ class SolidWorksDrawingStandardMixin:
         self._attempt(lambda: setattr(iso, "ScaleRatio", ratio), default=None)
 
     def _bom_above_iso(self, s: _Sheet) -> dict[str, Any] | None:
-        """Put the BOM in the top of the isometric's cell; fit the isometric below.
+        """Put the BOM (a weldment's cut list) in the top of the isometric's cell.
 
         The table is inserted, measured, and moved so its top-right corner sits
         ``BOM_GAP`` inside the cell's. The cell then ends below the table, and
@@ -1477,16 +1640,20 @@ class SolidWorksDrawingStandardMixin:
         Raises:
             RuntimeError: The table cannot be measured once inserted.
         """
-        if not s.include_bom:
+        if not (s.include_bom or s.weldment):
             return None
         cell = s.cells["iso"]
         front = next(n for n, r in s.role.items() if r == "front")
-        table, info = self._insert_bom(
-            front, None, "top_level_only", cell[0] * 1000 + 10, cell[1] * 1000 + 20
-        )
+        x, y = cell[0] * 1000 + 10, cell[1] * 1000 + 20
+        if s.include_bom:
+            label = "BOM"
+            table, info = self._insert_bom(front, None, "top_level_only", x, y)
+        else:  # moved into the cell below, so not checked where it lands first
+            label = "cut list"
+            table, info = self._insert_cut_list(front, x, y, check_sheet=False)
         box = self._table_box(table)
         if box is None:
-            raise RuntimeError("The BOM was inserted but cannot be measured")
+            raise RuntimeError(f"The {label} was inserted but cannot be measured")
         an = _sw_type_info.flagged(
             _sw_type_info.flagged(table, "ITableAnnotation").GetAnnotation(),
             "IAnnotation",
@@ -1497,7 +1664,7 @@ class SolidWorksDrawingStandardMixin:
         )
         box = self._table_box(table)
         if box is None:
-            raise RuntimeError("The BOM was moved but cannot be measured")
+            raise RuntimeError(f"The {label} was moved but cannot be measured")
         s.bom_box = box
         s.cells["iso"] = (cell[0], cell[1], cell[2], box[1] - BOM_GAP)
         if s.iso_name and s.iso_size:
@@ -1511,7 +1678,14 @@ class SolidWorksDrawingStandardMixin:
         return info
 
     def _dimension_views(self, s: _Sheet) -> dict[str, Any]:
-        """Import the model dimensions and lay them out clear of everything."""
+        """Import the model dimensions and lay them out clear of everything.
+
+        A weldment's are left out: they are the profiles' sketch sizes (an
+        IPE's flange and web), which crowd a frame's views and size nothing a
+        shop cuts; its cut list gives the member lengths.
+        """
+        if s.weldment:
+            return {"dimensions_added": 0, "note": WELDMENT_DIMENSIONS}
         dims = self._import_dimensions(None, True, only_views=list(s.ortho))
         dims["layout"] = self._arrange_layout(None, self._obstacles(s), WORK_AREA)
         return dims
@@ -1886,9 +2060,12 @@ class SolidWorksDrawingStandardMixin:
                     "with the same name is open in SolidWorks, close it first."
                 )
         material = None
+        weldment = False
         if ext == ".sldprt":
             mat = await self.get_material()
             material = (mat.data or {}).get("material") if mat.is_success else None
+            part = _sw_type_info.flagged(self.currentModel, "IPartDoc")
+            weldment = bool(self._attempt(lambda: part.IsWeldment(), default=False))
         model_props, drawing_props = title_block_properties(
             model_file=path,
             title=title or stem,
@@ -1943,6 +2120,7 @@ class SolidWorksDrawingStandardMixin:
             sheet_format=str(found.data),
             include_isometric=include_isometric,
             include_bom=include_bom,
+            weldment=weldment,
             material=material,
             extra_notes=list(notes or []),
             subtitle=(subtitle or "").strip() or None,
@@ -1970,7 +2148,7 @@ class SolidWorksDrawingStandardMixin:
             if name == "dimensions":
                 data["dimensions"] = done.data
             if name == "bom":
-                data["bom"] = done.data
+                data["cut_list" if weldment else "bom"] = done.data
             if name == "views":
                 views_data = cast("dict[str, Any]", done.data)
                 data["hidden_lines_visible"] = views_data["hidden_lines_visible"]

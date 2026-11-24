@@ -1685,12 +1685,13 @@ async def register_modeling_tools(
 
     @mcp.tool()
     async def create_assembly(input_data: CreateAssemblyInput) -> dict[str, Any]:
-        """Create a new, empty assembly document and make it active, ready for `insert_component`.
+        """Create a new, empty assembly document and make it active, ready for `add_components`.
 
         Uses `template` (an .asmdot) or the default assembly template. It is not saved
         until `save_file`. Needs: SolidWorks running. Changes: opens a new assembly
-        document. Returns: `assembly` with `name` and `template`. Then call
-        `insert_component` for each part.
+        document. Returns: `assembly` with `name` and `template`. Then insert the
+        parts with `add_components`, all in one call, each placed by its origin
+        (`insert_component` adds one).
 
         Args:
             input_data: The assembly. `name` is required but only a label: the
@@ -1750,7 +1751,7 @@ async def register_modeling_tools(
         }
 
     @mcp.tool()
-    async def close_model(input_data: CloseModelInput) -> dict[str, Any]:
+    async def close_model(input_data: CloseModelInput | None = None) -> dict[str, Any]:
         """Close the active document, saving it first only if asked.
 
         Use it when you are done with a document. Unsaved changes are lost unless `save`
@@ -3202,7 +3203,8 @@ async def register_modeling_tools(
         Use it instead of sketching a circle and cutting: the hole is sized from the
         standard, so it fits the fastener and a drawing shows its callout. Several
         holes on one face: give the rest as `positions` (one feature, a hole at each
-        point); a regular grid can also use `pattern_linear`. Sizes come from the
+        point); a regular grid can also use `pattern_linear`. Every hole lands
+        exactly on its point (read back). Sizes come from the
         Hole Wizard library (`list_hole_sizes`): an unknown size is refused, with the
         nearest ones, before anything is made. A simple hole can't be through all in
         SolidWorks, so it is made blind through the part (`end_condition_used`, with

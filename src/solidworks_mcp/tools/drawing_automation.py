@@ -516,13 +516,16 @@ async def register_drawing_automation_tools(
         number, material, weight, drawn by, date, revision). It places front, plan, side
         and isometric views at one standard scale, shows the model dimensions once in
         tidy rows, and adds view captions and a NOTES block. Then it checks nothing
-        overlaps. Use it instead of the step-by-step drawing tools when you want the
-        whole drawing. Needs: the model file on disk. Changes: saves
+        overlaps. A weldment gets its cut list above the isometric instead of
+        dimensions (its profiles' sizes); `add_balloons` (layout 'left') then
+        numbers its members. Use it instead of the step-by-step drawing tools for
+        the whole drawing. Needs: the model file on disk. Changes: saves
         `<drawing_number>.SLDDRW` and a PDF, replacing files of those names, and by
         default writes Description, Material and Weight into the model and saves it
         (turn off with `write_model_properties`). Returns: `data` with `scale`, `views`,
-        `dimensions`, `overlap_check`, `title_block`, `drawing_path`, `pdf_path` and
-        `steps`. A remaining overlap makes the call an error carrying that data; for
+        `dimensions`, `overlap_check`, `title_block`, `drawing_path`, `pdf_path`,
+        `steps`, and `bom` or `cut_list` when one was placed. A remaining overlap
+        makes the call an error carrying that data; for
         long title-block text pass `title_block_text_height_mm` (e.g. 3).
 
         Args:

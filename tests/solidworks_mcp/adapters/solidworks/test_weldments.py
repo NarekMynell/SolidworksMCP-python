@@ -585,3 +585,230 @@ async def test_a_profile_the_user_had_open_stays_open(root: str) -> None:
 
     assert result.is_success
     assert adapter.swApp.closed == []
+
+
+# ---- Trim/Extend ---------------------------------------------------------------
+
+
+class _Body:
+    """A solid body: a name, a centre of mass (m) and a volume (m3)."""
+
+    def __init__(self, name: str, centre: tuple, volume: float) -> None:
+        self.Name, self.centre, self.volume = name, centre, volume
+
+    def GetMassProperties(self, _density: float) -> tuple:
+        return (*self.centre, self.volume, 1.0, self.volume)
+
+
+class _TrimPart:
+    """A weldment of named members whose Trim/Extend renames what it cuts.
+
+    ``cuts`` says what the trim does to each body it is given: a volume
+    change (m3) and a shift of its centre (m); a body left out is untouched
+    and keeps its name, as SolidWorks does.
+    """
+
+    def __init__(self, members: dict[str, int], cuts: dict[str, tuple] | None = None):
+        self.bodies: list[_Body] = []
+        self.features: list[_Feature] = []
+        for index, (member, count) in enumerate(members.items()):
+            owned = []
+            for n in range(1, count + 1):
+                name = f"{member}[{n}]" if count > 1 else member
+                body = _Body(name, (float(index), float(n), 0.0), 1e-3)
+                self.bodies.append(body)
+                owned.append(body)
+            feature = _Feature(member, "WeldMemberFeat")
+            feature.GetFaces = lambda owned=owned: tuple(
+                SimpleNamespace(GetBody=lambda b=b: b) for b in owned
+            )
+            self.features.append(feature)
+        sketch = _Feature("3DSketch1", "3DProfileFeature")
+        for feature, after in zip(
+            [sketch, *self.features], [*self.features, None], strict=True
+        ):
+            feature.next = after
+        self.first = sketch
+        self.cuts = cuts if cuts is not None else {}
+        self.calls: list[tuple] = []
+        self.refuse = False
+        self.FeatureManager = SimpleNamespace(InsertWeldmentTrimFeature2=self._trim)
+
+    def GetBodies2(self, _kind: int, _visible: bool) -> tuple:
+        return tuple(self.bodies)
+
+    def FeatureByName(self, name: str) -> Any:
+        return next((f for f in self.features if f.Name == name), None)
+
+    def FirstFeature(self) -> Any:
+        return self.first
+
+    def _trim(self, corner, options, gap, members, boundary) -> Any:
+        names = [b.Name for b in _values(members)]
+        self.calls.append(
+            (corner, options, gap, names, [b.Name for b in _values(boundary)])
+        )
+        if self.refuse:
+            return None
+        renamed = 0
+        for body in _values(members):
+            change, shift = self.cuts.get(body.Name, (-1e-5, 0.01))
+            if (change, shift) == (0.0, 0.0):
+                continue
+            renamed += 1
+            body.Name = f"Trim/Extend1[{renamed}]"
+            body.volume += change
+            body.centre = (body.centre[0] + shift, *body.centre[1:])
+        return _Feature("Trim/Extend1", "WeldCornerFeat")
+
+
+def _trimming(part: _TrimPart) -> _Adapter:
+    adapter = _Adapter("")
+    adapter.currentModel = part  # type: ignore[assignment]
+    return adapter
+
+
+@pytest.mark.asyncio
+async def test_joists_are_coped_to_the_beams_and_renamed() -> None:
+    part = _TrimPart({"Beams": 2, "Joists": 3})
+    adapter = _trimming(part)
+
+    result = await adapter.create_trim_extend(
+        {
+            "members": ["Joists"],
+            "boundary": ["Beams"],
+            "cut": "coped",
+            "weld_gap_mm": 5,
+            "name": "Joists to beams",
+        }
+    )
+
+    assert result.is_success, result.error
+    (call,) = part.calls
+    assert call == (
+        4,  # swEndConditionTrim
+        1 | 4 | 8,  # allow extension, coped cut, weld gap
+        0.005,
+        ["Joists[1]", "Joists[2]", "Joists[3]"],
+        ["Beams[1]", "Beams[2]"],
+    )
+    data = result.data
+    assert data["feature"] == "Joists to beams"
+    assert [(m["name"], m["now"]) for m in data["members"]] == [
+        ("Joists[1]", "Trim/Extend1[1]"),
+        ("Joists[2]", "Trim/Extend1[2]"),
+        ("Joists[3]", "Trim/Extend1[3]"),
+    ]
+    assert {m["volume_change_mm3"] for m in data["members"]} == {-10000.0}
+    assert data["unchanged"] == [] and "warning" not in data
+    assert data["boundary"] == ["Beams[1]", "Beams[2]"]
+    assert data["bodies_after"] == 5
+
+
+@pytest.mark.asyncio
+async def test_a_mitre_keeps_the_volume_but_moves_the_centre() -> None:
+    """A mitred end gains outside what it loses inside: still a change."""
+    part = _TrimPart({"Rail A": 1, "Rail B": 1}, {"Rail A": (0.0, 0.015)})
+    adapter = _trimming(part)
+
+    result = await adapter.create_trim_extend(
+        {"members": ["Rail A"], "boundary": ["Rail B"], "corner_type": "miter"}
+    )
+
+    assert part.calls[0][:3] == (1, 1 | 2, 0.0)
+    (member,) = result.data["members"]
+    assert (member["volume_change_mm3"], member["changed"]) == (0.0, True)
+    assert result.data["unchanged"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_member_the_boundary_does_not_reach_is_named() -> None:
+    part = _TrimPart({"Beams": 1, "Joists": 2}, {"Joists[2]": (0.0, 0.0)})
+    adapter = _trimming(part)
+
+    result = await adapter.create_trim_extend(
+        {
+            "members": ["Joists[1]", "Joists[2]"],
+            "boundary": ["Beams"],
+            "allow_extension": False,
+        }
+    )
+
+    assert part.calls[0][1] == 0  # simple cut, no extension, no gap
+    assert result.data["unchanged"] == ["Joists[2]"]
+    assert result.data["members"][1]["now"] == "Joists[2]"
+    assert "1 member(s) didn't change: Joists[2]" in result.data["warning"]
+
+
+@pytest.mark.asyncio
+async def test_unreadable_masses_are_reported_as_unknown() -> None:
+    part = _TrimPart({"Beams": 1, "Joists": 1})
+    for body in part.bodies:
+        body.GetMassProperties = lambda _d: None  # type: ignore[method-assign]
+    adapter = _trimming(part)
+
+    result = await adapter.create_trim_extend(
+        {"members": ["Joists"], "boundary": ["Beams"]}
+    )
+
+    (member,) = result.data["members"]
+    assert (member["now"], member["volume_change_mm3"], member["changed"]) == (
+        None,
+        None,
+        None,
+    )
+    assert result.data["unchanged"] == []
+
+
+@pytest.mark.parametrize(
+    ("params", "message"),
+    [
+        (
+            {"members": ["Purlins"], "boundary": ["Beams"]},
+            "No structural member or body named 'Purlins'; the part has the members "
+            "Beams, Joists; its bodies are Beams[1], Beams[2], Joists[1], Joists[2]",
+        ),
+        (
+            {"members": ["Joists"], "boundary": ["Joists[2]"]},
+            "Joists[2] can't be both trimmed and the boundary",
+        ),
+        (
+            {"members": ["Joists"], "boundary": ["Beams[1]"], "corner_type": "butt1"},
+            "A butt1 corner joins two members: give one member body and one "
+            "boundary body (got 2 and 1)",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_trim_refusals(params: dict[str, Any], message: str) -> None:
+    part = _TrimPart({"Beams": 2, "Joists": 2})
+
+    result = await _trimming(part).create_trim_extend(params)
+
+    assert result.error == message
+    assert part.calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_trim_solidworks_refuses_and_a_big_frame_and_no_part() -> None:
+    refused = _TrimPart({"Beams": 1, "Joists": 1})
+    refused.refuse = True
+    big = _TrimPart({"Purlins": 30})
+    drawing = _Adapter("", doc_type=3)
+
+    no = await _trimming(refused).create_trim_extend(
+        {"members": ["Joists"], "boundary": ["Beams"]}
+    )
+    unknown = await _trimming(big).create_trim_extend(
+        {"members": ["Rafters"], "boundary": ["Purlins"]}
+    )
+    wrong = await drawing.create_trim_extend(
+        {"members": ["Joists"], "boundary": ["Beams"]}
+    )
+
+    assert "SolidWorks refused the Trim/Extend" in (no.error or "")
+    assert unknown.error == (
+        "No structural member or body named 'Rafters'; the part has the members "
+        "Purlins and 30 bodies, named '<member>[n]'"
+    )
+    assert "create_trim_extend needs an open part" in (wrong.error or "")

@@ -2,16 +2,24 @@
 
 Steel frames, trusses and platforms as SolidWorks weldments: a profile from
 the weldment library (IPE, HEB, SHS, RHS, UPN, angles...) on many sketch
-segments in one call, and a cut list with every member's length, end angles,
-quantity and mass. Checked live on SolidWorks 2025 SP4: a 6-panel Warren
-truss (chords SHS 100x100x5, web SHS 60x60x4) gave 459.23 kg, the part's
-own mass, split over five cut-list items.
+segments in one call, members trimmed where they meet, and a cut list with
+every member's length, end angles, quantity and mass. Checked live on
+SolidWorks 2025 SP4: a 6-panel Warren truss (chords SHS 100x100x5, web SHS
+60x60x4) gave 459.23 kg, the part's own mass, split over five cut-list
+items; IPE160 joists coped to IPE240 beams with a 5 mm weld gap came out
+1983.8 mm between beams 2000 mm apart.
+
+The order for a frame: `list_weldment_profiles` to find each size,
+`create_structural_members` once per profile (columns, beams, joists,
+bracing) on centre lines in model axes (y up), `create_trim_extend`
+wherever one member frames into another, `set_material`, then
+`get_cut_list`.
 
 ### `list_weldment_profiles`
 
 List SolidWorks' weldment profile library: standards, profile types and sizes, or search it.
 
-**SolidWorks automation note:** The library folder is Tools > Options > File Locations > Weldment Profiles (`swFileLocationsWeldmentProfiles`). Since SolidWorks 2018 each profile type is one `.sldlfp` with a configuration per size (`ISldWorks.GetConfigurationNames`); an older folder-per-type library is read too. The search matches every word against type and size names, so `HEB400` finds DIN's `HE400B` and `250x250x12` finds BSI's `RHS250x250x12.5`.
+**SolidWorks automation note:** The library folder is Tools > Options > File Locations > Weldment Profiles (`swFileLocationsWeldmentProfiles`). Since SolidWorks 2018 each profile type is one `.sldlfp` with a configuration per size (`ISldWorks.GetConfigurationNames`); an older folder-per-type library is read too. The search matches every word against type and size names, so `HEB400` finds DIN's `HE400B` and `250x250x12` finds BSI's `RHS250x250x12.5`; shop shorthand for an equal angle, `L50x5`, finds `L50x50x5`, and a size named exactly comes first.
 
 **Parameters:**
 
@@ -61,6 +69,34 @@ Put a weldment profile on many segments in one call: columns, beams, truss chord
 
 ```json
 {"standard": "DIN", "profile_type": "hea", "size": "HE400B", "segments": [[0, 0, 0, 0, 12000, 0], [9000, 0, 0, 9000, 12000, 0]], "name": "Columns"}
+```
+
+---
+
+### `create_trim_extend`
+
+Trim or extend structural members where they meet: beams to columns, joists coped to beams, braces to the frame (Trim/Extend).
+
+**Prerequisite:** An open weldment part
+
+**SolidWorks automation note:** `IFeatureManager.InsertWeldmentTrimFeature2(corner, options, gap, bodies, boundary)`, the bodies as `VT_DISPATCH` arrays; corner `swEndConditionTrim` (4) for an end trim or `Miter`/`Butt1`/`Butt2` (1-3) for a corner of two members, and the options `swWeldmentTrimExtendOptionType_e` flags (allow extension 1 and 2, coped cut 4, weld gap 8). A name is a member feature (every body whose faces it made) or a body. SolidWorks renames the bodies it trims after the feature (`Joists[1]` becomes `Trim/Extend1[1]`), so each member is followed by its centre of mass and its new name returned; a member whose volume and centre of mass didn't move is reported as `unchanged` (a mitre keeps the volume but moves the centre).
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `members` | `list[str]` | ✅ | | Members to trim or extend: member feature names or body names, e.g. `["Joists IPE160"]` |
+| `boundary` | `list[str]` | ✅ | | What they are trimmed to, e.g. `["Main beams IPE240"]` |
+| `corner_type` | `str` | — | `end_trim` | `end_trim` cuts every member at the boundary; `miter`, `butt1`, `butt2` join one member to one other |
+| `cut` | `str` | — | `simple` | `simple` cuts square; `coped` cuts to the boundary's shape (joists with tops flush with the beams) |
+| `weld_gap_mm` | `float` | — | `0.0` | Gap left for the weld at each cut, mm |
+| `allow_extension` | `bool` | — | `true` | Extend members that stop short of the boundary |
+| `name` | `str?` | — | `None` | Name for the new feature |
+
+**Sample call:**
+
+```json
+{"members": ["Joists IPE160"], "boundary": ["Main beams IPE240"], "cut": "coped", "weld_gap_mm": 5}
 ```
 
 ---

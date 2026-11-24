@@ -111,3 +111,135 @@ async def test_a_warren_truss_and_its_cut_list(scratch: Any, tmp_path: Path) -> 
     paths = [str(d.get("path", "")).lower() for d in opened.get("documents", [])]
     assert not [p for p in paths if p.endswith(".sldlfp")]
     print(f"[live] truss: {listed['pieces']} pieces, {listed['total_mass_kg']} kg")
+
+
+async def test_a_platform_trimmed_where_its_members_meet(scratch: Any) -> None:
+    """A 3 x 2 m platform drawn on centre lines, then trimmed as it is built.
+
+    HE160B columns, IPE240 beams sitting on them, IPE160 joists between the
+    beams with their tops flush: the joists are coped to the beams with a
+    5 mm weld gap, so each is 2000 - 6.2 (beam web) - 2 x 5 = 1983.8 mm. Two
+    SHS rails meeting at a corner are mitred to 45 degrees. A name that is no
+    member is refused with the members the part has.
+    """
+    tools = await _tools(scratch.adapter)
+    _ok(await tools["create_part"]({"name": "platform"}))
+
+    async def members(size: str, kind: str, name: str, segments: list) -> None:
+        _ok(
+            await tools["create_structural_members"](
+                {
+                    "standard": "DIN" if kind != "shs" else "BSI",
+                    "profile_type": kind,
+                    "size": size,
+                    "segments": segments,
+                    "name": name,
+                }
+            )
+        )
+
+    corners = [(0, 0), (3000, 0), (0, 2000), (3000, 2000)]
+    await members(
+        "HE160B", "hea", "Columns", [[x, 0, z, x, 2260, z] for x, z in corners]
+    )
+    await members(
+        "IPE240",
+        "ipe",
+        "Beams",
+        [[-80, 2380, z, 3080, 2380, z] for z in (0, 2000)],
+    )
+    await members(
+        "IPE160", "ipe", "Joists", [[x, 2420, 0, x, 2420, 2000] for x in (1000, 2000)]
+    )
+    await members("RHS60x60x4", "shs", "Rail A", [[0, 3000, 0, 1000, 3000, 0]])
+    await members("RHS60x60x4", "shs", "Rail B", [[1000, 3000, 0, 1000, 3000, 1000]])
+
+    coped = _ok(
+        await tools["create_trim_extend"](
+            {
+                "members": ["Joists"],
+                "boundary": ["Beams"],
+                "cut": "coped",
+                "weld_gap_mm": 5,
+                "name": "Joists to beams",
+            }
+        )
+    )
+    mitred = _ok(
+        await tools["create_trim_extend"](
+            {"members": ["Rail A"], "boundary": ["Rail B"], "corner_type": "miter"}
+        )
+    )
+    wrong = await tools["create_trim_extend"](
+        {"members": ["Purlins"], "boundary": ["Beams"]}
+    )
+    cut = _ok(await tools["get_cut_list"]({}))["cut_list"]["items"]
+
+    assert coped["trim"]["feature"] == "Joists to beams"
+    assert len(coped["trim"]["members"]) == 2 and coped["trim"]["unchanged"] == []
+    assert all(m["volume_change_mm3"] < 0 for m in coped["trim"]["members"])
+    joists = [i for i in cut if i["description"] == "IPE160"]
+    assert [(i["quantity"], i["length_mm"]) for i in joists] == [(2, 1983.8)]
+    assert mitred["trim"]["unchanged"] == []
+    rails = [i for i in cut if i["description"] == "RHS60x60x4"]
+    # Both rails come out alike, one square end and one mitred: one item of two.
+    assert [
+        (i["quantity"], sorted((i["angle1_deg"], i["angle2_deg"]))) for i in rails
+    ] == [(2, [0.0, 45.0])]
+    assert wrong["status"] == "error"
+    assert "No structural member or body named 'Purlins'" in wrong["message"]
+    assert "Columns, Beams, Joists, Rail A, Rail B" in wrong["message"]
+    print(
+        f"[live] platform cut list: {[(i['description'], i['quantity'], i['length_mm']) for i in cut]}"
+    )
+
+
+async def test_a_weldment_drawing_carries_its_cut_list(
+    scratch: Any, tmp_path: Path
+) -> None:
+    """A weldment's A3 drawing: its cut list above the isometric, no profile
+    dimensions, then a balloon per cut-list item on the isometric's left.
+
+    Two live findings shaped it (SW 2025 SP4): ``InsertWeldmentTable`` returns
+    nothing for the view's "Default<As Machined>" configuration, and the
+    template's table is 199 mm wide until its columns are fitted.
+    """
+    tools = await _tools(scratch.adapter)
+    _ok(await tools["create_part"]({"name": "frame"}))
+    for name, size, segments in (
+        ("Posts", "RHS100x100x5", [[x, 0, 0, x, 2000, 0] for x in (0, 3000)]),
+        ("Rail", "RHS60x60x4", [[0, 2030, 0, 3000, 2030, 0]]),
+    ):
+        _ok(
+            await tools["create_structural_members"](
+                {
+                    "standard": "BSI",
+                    "profile_type": "shs",
+                    "size": size,
+                    "segments": segments,
+                    "name": name,
+                }
+            )
+        )
+    _ok(await tools["set_material"]({"material_name": "1.0037 (S235JR)"}))
+    part = tmp_path / "frame.sldprt"
+    _ok(await tools["save_file"]({"file_path": str(part)}))
+    scratch.written_files.append(str(part))
+
+    drawing = _ok(
+        await tools["generate_drawing_package"](
+            {"model_path": str(part), "drawing_number": "FR-001", "author": "MCP"}
+        )
+    )
+    data = drawing["data"]
+    scratch.written_files += [data["drawing_path"], data["pdf_path"]]
+    balloons = _ok(
+        await tools["add_balloons"]({"view_name": "Drawing View4", "layout": "left"})
+    )
+
+    assert data["cut_list"]["row_count"] == 3  # the header and two items
+    box = data["cut_list"]["table_box_mm"]
+    assert box[2] - box[0] < 150  # fitted: the template's table is 199 mm
+    assert data["dimensions"]["dimensions_added"] == 0
+    assert balloons["balloons"]["items"] == ["1", "2"]
+    print(f"[live] weldment drawing: table {box} mm, scale {data['scale']}")

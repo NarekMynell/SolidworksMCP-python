@@ -571,6 +571,72 @@ async def test_set_material_reports_a_name_that_did_not_apply() -> None:
     assert "list_available_materials" in result.error
 
 
+def _din_libraries(tmp_path: Path) -> Path:
+    """SolidWorks' own library and a DIN one, as the install has them."""
+    folder = _library_folder(tmp_path)
+    (folder / "SolidWorks DIN Materials.sldmat").write_text(
+        _SLDMAT.replace("AISI 1020", "1.0037 (S235JR)")
+        .replace("AISI 304", "1.0038 (S235JRG2)")
+        .replace("6061-T6 (SS)", "1.0036 (S235JRG1)"),
+        encoding="utf-8",
+    )
+    return folder
+
+
+def _strict_part(known: set[str]) -> tuple[SimpleNamespace, list[str]]:
+    """A part that, like SolidWorks, ignores a name outside ``known``."""
+    libraries: list[str] = []
+    state: dict[str, Any] = {"material": ""}
+
+    def set_material(_config, library, name):
+        libraries.append(library)
+        if name in known:
+            state["material"] = name
+
+    return (
+        SimpleNamespace(
+            GetType=lambda: 1,
+            GetMaterialPropertyName2=lambda _config, _database: state["material"],
+            SetMaterialPropertyName2=set_material,
+            EditRebuild3=lambda: True,
+        ),
+        libraries,
+    )
+
+
+@pytest.mark.asyncio
+async def test_set_material_finds_the_library_that_holds_the_name(tmp_path) -> None:
+    """A DIN steel is in "SolidWorks DIN Materials", not SolidWorks' own library."""
+    part, libraries = _strict_part({"1.0037 (S235JR)", "AISI 1020"})
+    harness = _Harness(part, app=_app(str(_din_libraries(tmp_path))))
+
+    din = await harness.set_material("1.0037 (S235JR)")
+    own = await harness.set_material("AISI 1020")
+    given = await harness.set_material("AISI 1020", "Custom")
+
+    assert din.data["database"] == "SolidWorks DIN Materials"
+    assert own.data["database"] == "solidworks materials"
+    assert given.data["database"] == "Custom"
+    assert libraries == ["SolidWorks DIN Materials", "solidworks materials", "Custom"]
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_material_offers_the_library_names_with_it(tmp_path) -> None:
+    part, libraries = _strict_part(set())
+    harness = _Harness(part, app=_app(str(_din_libraries(tmp_path))))
+
+    near = await harness.set_material("S235JR")
+    far = await harness.set_material("Unobtainium")
+
+    assert libraries == ["SOLIDWORKS Materials", "SOLIDWORKS Materials"]
+    assert (
+        "Library names with it: 1.0037 (S235JR) (SolidWorks DIN Materials); "
+        "1.0038 (S235JRG2) (SolidWorks DIN Materials); "
+        "1.0036 (S235JRG1) (SolidWorks DIN Materials)."
+    ) in near.error
+    assert "Library names with it" not in far.error
+
+
 @pytest.mark.asyncio
 async def test_set_material_needs_a_name() -> None:
     result = await _Harness(_part(None)).set_material("  ")
@@ -776,36 +842,90 @@ async def test_custom_properties_need_an_active_model() -> None:
 # ---- export_flat_pattern -----------------------------------------------------
 
 
-def _sheet_metal_part(sheet_metal: bool, writes: bool = True) -> SimpleNamespace:
-    def export(out, *_args):
+def _face(area: float, planar: bool = True, selects: bool = True) -> SimpleNamespace:
+    """A body face: its area (m2), whether it is planar, and a Select4."""
+    face = SimpleNamespace(
+        GetArea=lambda: area,
+        GetSurface=lambda: SimpleNamespace(IsPlane=lambda: planar),
+        selected=False,
+    )
+
+    def select(_append, _data):
+        face.selected = selects
+        return selects
+
+    face.Select4 = select
+    return face
+
+
+def _sheet_metal_part(
+    sheet_metal: bool, writes: bool = True, faces: tuple = (), bodies: int = 1
+) -> SimpleNamespace:
+    def export(out, *args):
+        part.exported = args
         if writes:
             Path(out).write_bytes(b"0\nSECTION\n")
         return writes
 
-    body = SimpleNamespace(IsSheetMetal=lambda: sheet_metal)
-    return SimpleNamespace(
+    body = SimpleNamespace(IsSheetMetal=lambda: sheet_metal, GetFaces=lambda: faces)
+    part = SimpleNamespace(
         GetType=lambda: 1,
-        GetBodies2=lambda _kind, _visible: (body,),
+        GetBodies2=lambda _kind, _visible: (body,) * bodies,
         GetPathName=lambda: "C:/parts/bracket.sldprt",
         ExportToDWG2=export,
+        ClearSelection2=lambda _all: None,
+        exported=None,
     )
+    return part
 
 
 @pytest.mark.asyncio
 async def test_export_flat_pattern_writes_the_file(tmp_path) -> None:
     out = tmp_path / "flat" / "bracket.dxf"
+    part = _sheet_metal_part(True)
 
-    result = await _Harness(_sheet_metal_part(True)).export_flat_pattern(str(out))
+    result = await _Harness(part).export_flat_pattern(str(out))
 
-    assert result.data == {"file_path": str(out), "size_bytes": os.path.getsize(out)}
+    assert result.data == {
+        "file_path": str(out),
+        "size_bytes": os.path.getsize(out),
+        "source": "flat_pattern",
+    }
+    assert part.exported[1:] == (1, True, None, False, False, 1, None)
 
 
 @pytest.mark.asyncio
-async def test_export_flat_pattern_needs_a_sheet_metal_body(tmp_path) -> None:
-    result = await _Harness(_sheet_metal_part(False)).export_flat_pattern(
-        str(tmp_path / "x.dxf")
-    )
-    assert "has no sheet-metal body" in result.error
+async def test_a_plain_plate_exports_its_largest_flat_face(tmp_path) -> None:
+    """A base plate made by extruding a sketch has no flat pattern; its biggest
+    flat face carries the outline and holes (exactly four lines and four
+    circles for a 250 mm plate, live)."""
+    edge, top, hole = _face(0.00375), _face(0.0614821), _face(0.0085, planar=False)
+    part = _sheet_metal_part(False, faces=(edge, hole, top))
+
+    result = await _Harness(part).export_flat_pattern(str(tmp_path / "plate.dxf"))
+
+    assert result.data["source"] == "face"
+    assert result.data["face_area_mm2"] == 61482.1
+    assert top.selected and not edge.selected and not hole.selected
+    assert part.exported[1:] == (2, True, None, False, False, 0, None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("faces", "bodies", "message"),
+    [
+        ((), 2, "has 2 solid bodies and none is sheet metal"),
+        ((_face(0.01, planar=False),), 1, "no sheet-metal body and no flat face"),
+        ((_face(0.01, selects=False),), 1, "flat face could not be selected"),
+    ],
+)
+async def test_a_part_with_no_blank_to_export(tmp_path, faces, bodies, message) -> None:
+    part = _sheet_metal_part(False, faces=faces, bodies=bodies)
+
+    result = await _Harness(part).export_flat_pattern(str(tmp_path / "x.dxf"))
+
+    assert message in result.error
+    assert part.exported is None
 
 
 @pytest.mark.asyncio

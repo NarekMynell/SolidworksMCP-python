@@ -60,6 +60,18 @@ and cut once: `pattern_circular` and `mirror_feature` can't repeat a cut yet.
 Worked sequences for parts, assemblies and drawings:
 [references/workflows.md](references/workflows.md).
 
+## Steel frames, trusses and platforms
+
+Build them as a weldment, not as sketched and extruded parts:
+`create_structural_members` puts a library profile (IPE, HEB, SHS, angles;
+`list_weldment_profiles` finds the exact size name) on many centre lines in
+one call, `create_trim_extend` trims members where they meet (joists coped
+to beams, mitred corners), and `get_cut_list` gives the shop's cutting list
+with lengths, angles and masses. A plate's DXF for the cutting table comes
+from `export_flat_pattern` (a sheet-metal part, or a plain extruded plate).
+Many parts in an assembly go in with one `add_components` call. The sequence:
+[references/workflows.md](references/workflows.md#a-steel-frame-truss-or-platform-weldments).
+
 ## Units
 
 Inputs are millimetres and degrees, with two exceptions that take metres:

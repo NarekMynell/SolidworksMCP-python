@@ -53,6 +53,21 @@ _MM_PER_UNIT = {
 }
 #: ``swSolidworksWeldmentEndCondOptions_e`` for each corner treatment.
 CORNER_TREATMENTS = {"none": 0, "miter": 1, "butt1": 2, "butt2": 3}
+#: ``swSolidworksWeldmentEndCondOptions_e`` for each Trim/Extend corner type.
+TRIM_CORNERS = {"end_trim": 4, "miter": 1, "butt1": 2, "butt2": 3}
+#: ``swWeldmentTrimExtendOptionType_e`` flags.
+_TRIM_EXTEND_TRIMMED = 1
+_TRIM_EXTEND_TRIMMING = 2
+_TRIM_COPED = 4
+_TRIM_WELD_GAP = 8
+#: ``swBodyType_e.swSolidBody``.
+_SOLID_BODY = 0
+#: A member body whose volume moved less than this (mm3), and whose centre
+#: of mass moved less than ``_UNMOVED_MM``, wasn't trimmed.
+_UNCHANGED_MM3 = 1.0
+_UNMOVED_MM = 0.001
+#: The most body names an error lists.
+_LISTED = 20
 #: ``swMirrorProfileOrAlignmentAxis_e``.
 MIRROR_AXES = {"horizontal": 1, "vertical": 2}
 #: ``swConnectedSegmentsOption_e.swConnectedSegments_SimpleCut``.
@@ -331,6 +346,113 @@ class SolidWorksWeldmentsMixin:
             adapter._handle_com_operation("create_structural_members", run),
         )
 
+    async def create_trim_extend(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Trim or extend members to a boundary: SolidWorks' Trim/Extend feature.
+
+        ``IFeatureManager::InsertWeldmentTrimFeature2(corner, options, gap,
+        bodies, boundary)`` with the bodies as ``VT_DISPATCH`` arrays (checked
+        live on SolidWorks 2025 SP4: seven IPE160 joists coped to two IPE240
+        beams with a 5 mm gap came out 3983.8 mm, the 4000 mm between beam
+        centres less the 6.2 mm web and both gaps). Names are structural
+        member features (all their bodies) or bodies (``Joists[3]``). Each
+        member body's volume is read before and after, so one the trim
+        didn't reach is reported; SolidWorks renames the bodies it trims,
+        so each member's new name is given too (:func:`_trimmed`).
+
+        Args:
+            params: ``members`` and ``boundary`` (names), ``corner_type``
+                (``end_trim``, ``miter``, ``butt1``, ``butt2``), ``cut``
+                (``simple`` or ``coped``), ``weld_gap_mm``,
+                ``allow_extension`` and ``name``.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``feature``, ``corner_type``,
+            ``cut``, ``weld_gap_mm``, ``members`` (each body's ``name``,
+            ``now`` and ``volume_change_mm3``), ``boundary`` (body names),
+            ``unchanged`` and ``bodies_after``.
+        """
+        adapter = self._adapter(self)
+        if wrong := _need_part(adapter, "create_trim_extend"):
+            return wrong
+        corner = str(params.get("corner_type") or "end_trim")
+        cut = str(params.get("cut") or "simple")
+        gap_mm = float(params.get("weld_gap_mm") or 0.0)
+
+        def run() -> dict[str, Any]:
+            model = adapter.currentModel
+            part = _sw_type_info.flagged(model, "IPartDoc")
+            members = _named_bodies(adapter, model, part, params.get("members") or [])
+            boundary = _named_bodies(adapter, model, part, params.get("boundary") or [])
+            both = sorted(set(members) & set(boundary))
+            if both:
+                raise ValueError(
+                    f"{', '.join(both)} can't be both trimmed and the boundary"
+                )
+            if corner != "end_trim" and (len(members), len(boundary)) != (1, 1):
+                raise ValueError(
+                    f"A {corner} corner joins two members: give one member body and "
+                    f"one boundary body (got {len(members)} and {len(boundary)})"
+                )
+            options = _TRIM_COPED if cut == "coped" else 0
+            if params.get("allow_extension", True):
+                options |= _TRIM_EXTEND_TRIMMED
+                if corner != "end_trim":
+                    options |= _TRIM_EXTEND_TRIMMING
+            if gap_mm > 0:
+                options |= _TRIM_WELD_GAP
+            existing = set(_bodies(adapter, part))
+            before = {name: _mass(adapter, body) for name, body in members.items()}
+            manager = _sw_type_info.flagged(model.FeatureManager, "IFeatureManager")
+            feature = _feature(
+                adapter._attempt(
+                    lambda: manager.InsertWeldmentTrimFeature2(
+                        TRIM_CORNERS[corner],
+                        options,
+                        gap_mm / 1000.0,
+                        dispatch_array(list(members.values())),
+                        dispatch_array(list(boundary.values())),
+                    )
+                )
+            )
+            if feature is None:
+                raise Exception(
+                    "SolidWorks refused the Trim/Extend: check each member reaches "
+                    "the boundary or points at it (allow_extension extends it), and "
+                    "that a miter or butt corner names two members that meet"
+                )
+            if params.get("name"):
+                feature.Name = str(params["name"])
+            after = _bodies(adapter, part)
+            changes = _trimmed(
+                before,
+                {name: _mass(adapter, body) for name, body in after.items()},
+                existing,
+            )
+            unchanged = [c["name"] for c in changes if c["changed"] is False]
+            data: dict[str, Any] = {
+                "feature": str(feature.Name),
+                "corner_type": corner,
+                "cut": cut,
+                "weld_gap_mm": gap_mm,
+                "members": changes,
+                "boundary": list(boundary),
+                "unchanged": unchanged,
+                "bodies_after": len(after),
+            }
+            if unchanged:
+                data["warning"] = (
+                    f"{len(unchanged)} member(s) didn't change: {', '.join(unchanged)}; "
+                    "the boundary may not reach them."
+                )
+            return data
+
+        return cast(
+            AdapterResult[dict[str, Any]],
+            adapter._handle_com_operation("create_trim_extend", run),
+        )
+
     def _resolve_profile(self, params: dict[str, Any]) -> Profile:
         """The profile ``params`` name: a library entry, or a file and size."""
         size = str(params.get("size") or "")
@@ -563,6 +685,142 @@ def _insert_members(
         )
     )
     return _feature(inserted)
+
+
+def _bodies(adapter: Any, part: Any) -> dict[str, Any]:
+    """The part's solid bodies by name, hidden ones too."""
+    found: dict[str, Any] = {}
+    for raw in as_list(
+        adapter._attempt(lambda: part.GetBodies2(_SOLID_BODY, False), default=None)
+    ):
+        body = _sw_type_info.flagged(raw, "IBody2")
+        found[str(body.Name)] = body
+    return found
+
+
+#: A body's centre of mass (m) and volume (m3), or ``None`` when unreadable.
+Mass = tuple[tuple[float, float, float], float] | None
+
+
+def _mass(adapter: Any, body: Any) -> Mass:
+    """A body's centre of mass and volume (``IBody2::GetMassProperties``)."""
+    values = as_list(
+        adapter._attempt(lambda: body.GetMassProperties(1.0), default=None)
+    )
+    if len(values) < 4:
+        return None
+    return (float(values[0]), float(values[1]), float(values[2])), float(values[3])
+
+
+def _trimmed(
+    before: dict[str, Mass], after: dict[str, Mass], existing: set[str]
+) -> list[dict[str, Any]]:
+    """What a Trim/Extend did to each member body.
+
+    SolidWorks renames the bodies it trims after the feature (``Joists[1]``
+    becomes ``Trim/Extend1[1]``, seen live), so a member whose name is gone
+    is matched to the new body whose centre of mass is nearest its own: a
+    trim moves the centre by a fraction of the cut, members lie far apart.
+
+    Args:
+        before: Each member body's mass, by its name before the trim.
+        after: Every body's mass after the trim, by name.
+        existing: Every body's name before the trim.
+
+    Returns:
+        list[dict[str, Any]]: Each member's ``name``, ``now`` (its name after
+        the trim), ``volume_change_mm3`` and ``changed`` (``None`` when
+        unreadable). A mitre keeps the volume (the corner gained outside is
+        the corner cut inside) but moves the centre of mass, so either
+        counts as a change.
+    """
+    fresh: dict[str, tuple[tuple[float, float, float], float]] = {
+        n: m for n, m in after.items() if n not in existing and m is not None
+    }
+    changes = []
+    for name, mass in before.items():
+        now: str | None = name if name in after else None
+        if now is None and mass is not None and fresh:
+            centre = mass[0]
+            now = min(fresh, key=lambda n: math.dist(centre, fresh[n][0]))
+            fresh.pop(now)
+        moved = after.get(now) if now else None
+        if mass is None or moved is None:
+            change, changed = None, None
+        else:
+            change = (moved[1] - mass[1]) * 1e9
+            shift = math.dist(moved[0], mass[0]) * 1000.0
+            changed = abs(change) >= _UNCHANGED_MM3 or shift >= _UNMOVED_MM
+        changes.append(
+            {
+                "name": name,
+                "now": now,
+                "volume_change_mm3": None if change is None else round(change, 3),
+                "changed": changed,
+            }
+        )
+    return changes
+
+
+def _feature_bodies(adapter: Any, feature: Any) -> list[str]:
+    """The names of the bodies a feature made, from the faces it made."""
+    names: list[str] = []
+    for raw in as_list(adapter._attempt(lambda: feature.GetFaces(), default=None)):
+        face = _sw_type_info.flagged(raw, "IFace2")
+        name = adapter._attempt(
+            lambda f=face: str(_sw_type_info.flagged(f.GetBody(), "IBody2").Name),
+            default="",
+        )
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def _member_features(model: Any) -> list[str]:
+    """The structural member features' names, in tree order."""
+    names: list[str] = []
+    feature = _feature(model.FirstFeature())
+    while feature is not None:
+        if feature.GetTypeName2() == "WeldMemberFeat":
+            names.append(str(feature.Name))
+        feature = _feature(feature.GetNextFeature())
+    return names
+
+
+def _named_bodies(
+    adapter: Any, model: Any, part: Any, names: list[str]
+) -> dict[str, Any]:
+    """The bodies ``names`` name: a body by its name, or every body of a feature.
+
+    Raises:
+        LookupError: A name that is neither a body nor a feature with bodies;
+            the message lists the members and (when few) the bodies.
+    """
+    bodies = _bodies(adapter, part)
+    chosen: dict[str, Any] = {}
+    for name in names:
+        if name in bodies:
+            chosen[name] = bodies[name]
+            continue
+        feature = _feature(adapter._attempt(lambda n=name: model.FeatureByName(n)))
+        owned = (
+            [b for b in _feature_bodies(adapter, feature) if b in bodies]
+            if (feature is not None)
+            else []
+        )
+        if not owned:
+            listed = (
+                f"; its bodies are {', '.join(bodies)}"
+                if len(bodies) <= _LISTED
+                else f" and {len(bodies)} bodies, named '<member>[n]'"
+            )
+            raise LookupError(
+                f"No structural member or body named {name!r}; the part has the "
+                f"members {', '.join(_member_features(model)) or 'none'}{listed}"
+            )
+        for body_name in owned:
+            chosen[body_name] = bodies[body_name]
+    return chosen
 
 
 def _cut_list_folders(adapter: Any, model: Any, update: bool) -> list[Any]:

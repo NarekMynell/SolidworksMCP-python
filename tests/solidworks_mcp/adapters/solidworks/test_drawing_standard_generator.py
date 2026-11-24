@@ -895,6 +895,52 @@ async def test_a_bom_that_cannot_be_measured_stops_the_build(
 
 
 @pytest.mark.asyncio
+async def test_a_weldment_gets_its_cut_list_and_no_profile_dimensions(files) -> None:
+    """A weldment part's model dimensions are its profiles' sizes (an IPE's
+    flange and web), so they are left out; its cut list goes where an
+    assembly's BOM goes, and is moved there rather than checked where it
+    first lands (the template's table is wider than the cell)."""
+    adapter = _adapter(files)
+    opened = adapter.open_model
+
+    async def open_weldment(path):
+        result = await opened(path)
+        adapter.currentModel.IsWeldment = lambda: True
+        return result
+
+    adapter.open_model = open_weldment
+    table_an = _Annotation("cut list")
+    table = SimpleNamespace(GetAnnotation=lambda: table_an)
+    inserted: list[Any] = []
+
+    def insert(view, x_mm, y_mm, check_sheet=True):
+        table_an.position = (x_mm / 1000, y_mm / 1000, 0.0)
+        inserted.append((view, check_sheet))
+        return table, {"view": view, "row_count": 7}
+
+    adapter._insert_cut_list = insert
+    adapter._table_box = lambda _t: (
+        table_an.position[0],
+        table_an.position[1],
+        table_an.position[0] + 0.11,
+        table_an.position[1] + 0.05,
+    )
+
+    result = await adapter.create_standard_drawing(
+        files.part, write_model_properties=False
+    )
+
+    assert result.is_success, result.error
+    assert inserted == [("Drawing View1", False)]
+    assert result.data["cut_list"]["row_count"] == 7 and "bom" not in result.data
+    assert result.data["dimensions"] == {
+        "dimensions_added": 0,
+        "note": std.WELDMENT_DIMENSIONS,
+    }
+    assert not [c for c in adapter.calls if c[0] == "import_dimensions"]
+
+
+@pytest.mark.asyncio
 async def test_an_assemblys_own_material_is_left_as_set(files) -> None:
     # A link to an assembly's material shows "<not specified>", so its own
     # Material property (set by the caller) is not overwritten.

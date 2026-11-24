@@ -99,7 +99,9 @@ class SetMaterialInput(CompatInput):
         min_length=1,
     )
     database: str | None = Field(
-        default=None, description="Library; 'SOLIDWORKS Materials' when omitted"
+        default=None,
+        description="Library; omit it and the library that holds the name is used "
+        "(e.g. 'SolidWorks DIN Materials' for '1.0037 (S235JR)')",
     )
     configuration: str | None = Field(
         default=None, description="Configuration; all configurations when omitted"
@@ -319,14 +321,17 @@ async def register_engineering_data_tools(
         """Assign a library material to the active part, e.g. "AISI 1020" or "6061-T6 (SS)".
 
         The material sets the mass and what a title block's Material field shows. The
-        name must match the library exactly; find it with `list_available_materials`.
-        The material is read back, so success means it applied. Needs: an open, active
-        part. Changes: the part's material. Returns: `data` with `material`, `database`
-        and `configuration`.
+        name must match the library exactly; find it with `list_available_materials`
+        (structural steels: search 'S235' or 'S355'). The library holding the name is
+        found by itself; a name no library holds is refused with the library names
+        that contain it. The material is read back, so success means it applied.
+        Needs: an open, active part. Changes: the part's material. Returns: `data`
+        with `material`, `database` and `configuration`.
 
         Args:
             input_data: The material. `material_name` is required; `database`
-                ("SOLIDWORKS Materials") and `configuration` (all) have defaults.
+                (the library holding the name) and `configuration` (all) have
+                defaults.
 
         Returns:
             dict[str, Any]: The material assigned.
@@ -422,12 +427,16 @@ async def register_engineering_data_tools(
 
     @mcp.tool()
     async def export_flat_pattern(input_data: ExportFlatPatternInput) -> dict[str, Any]:
-        """Export the active sheet-metal part's flat pattern to DXF or DWG, for laser or waterjet cutting.
+        """Export the active part's cutting blank to DXF or DWG, for a laser, plasma or waterjet table.
 
-        It writes the flat outline only, without bend lines or sketches. A part with no
-        sheet-metal body is `not_found` and nothing is written. Needs: an open, active
-        sheet-metal part. Changes: writes the file, replacing one already there.
-        Returns: `data` with `file_path` and `size_bytes`.
+        A sheet-metal part gives its flat pattern: the outline only, without bend
+        lines or sketches. A plain plate (one body, e.g. an extruded base plate)
+        gives its largest flat face: its outline and holes at 1:1. A part of
+        several bodies, none sheet metal, is `not_found` and nothing is written.
+        Needs: an open, active part, saved once. Changes: writes the file,
+        replacing one already there. Returns: `data` with `file_path`,
+        `size_bytes` and `source` (`flat_pattern`, or `face` with its
+        `face_area_mm2`).
 
         Args:
             input_data: The export. `file_path` (ending in .dxf or .dwg) is

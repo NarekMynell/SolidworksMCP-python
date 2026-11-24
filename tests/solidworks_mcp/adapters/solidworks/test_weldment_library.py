@@ -17,6 +17,7 @@ _SIZES = {
     "ipe.sldlfp": ["IPE100", "IPE200", "IPE300"],
     "hea.sldlfp": ["HE300A", "HE400B", "HE400M"],
     "shs.sldlfp": ["RHS100x100x5", "RHS250x250x12.5"],
+    "l.sldlfp": ["L50x50x4", "L50x50x5", "L50x50x6", "L100x50x8"],
 }
 
 
@@ -26,6 +27,7 @@ def library(tmp_path: Path) -> ProfileLibrary:
     (tmp_path / "DIN").mkdir()
     (tmp_path / "DIN" / "ipe.sldlfp").write_bytes(b"")
     (tmp_path / "DIN" / "hea.sldlfp").write_bytes(b"")
+    (tmp_path / "DIN" / "l.sldlfp").write_bytes(b"")
     (tmp_path / "BSI").mkdir()
     (tmp_path / "BSI" / "shs.sldlfp").write_bytes(b"")
     old = tmp_path / "ansi inch" / "c channel"
@@ -61,7 +63,7 @@ def test_normalise(text: str, reduced: str) -> None:
 
 def test_standards_and_types(library: ProfileLibrary) -> None:
     assert library.standards() == ["ansi inch", "BSI", "DIN"]
-    assert library.types("din") == ["hea", "ipe"]
+    assert library.types("din") == ["hea", "ipe", "l"]
     assert library.types("ANSI INCH") == ["c channel"]
 
 
@@ -94,7 +96,7 @@ def test_resolve_an_old_style_file_per_size(library: ProfileLibrary) -> None:
             ("ISO", "ipe", "IPE100"),
             "No weldment profile standard 'ISO'; the library has",
         ),
-        (("DIN", "ipn", "IPN100"), "No profile type 'ipn' in DIN; it has hea, ipe."),
+        (("DIN", "ipn", "IPN100"), "No profile type 'ipn' in DIN; it has hea, ipe, l."),
         (("DIN", "ipe", "IPE330"), "the closest IPE300"),
     ],
 )
@@ -114,6 +116,17 @@ def test_search_finds_sizes_by_every_word(library: ProfileLibrary) -> None:
     assert [(p.standard, p.size) for p in by_beam] == [("DIN", "HE400B")]
     assert [p.size for p in by_words] == ["IPE300"]
     assert len(library.search("", limit=2)) == 2
+
+
+def test_an_equal_angle_by_its_shop_name_comes_first(library: ProfileLibrary) -> None:
+    """``L50x5`` is the equal angle L50x50x5; it leads the other L50x50 sizes."""
+    short = library.search("L50x5")
+    full = library.search("L50x50x6", limit=1)
+    unequal = library.search("L100x50")
+
+    assert [p.size for p in short] == ["L50x50x5", "L50x50x4", "L50x50x6"]
+    assert [p.size for p in full] == ["L50x50x6"]
+    assert [p.size for p in unequal] == ["L100x50x8"]
 
 
 def test_an_empty_library_has_no_standards(tmp_path: Path) -> None:

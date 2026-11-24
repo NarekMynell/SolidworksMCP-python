@@ -614,11 +614,24 @@ async def test_only_a_simple_hole_falls_back(picks: list[Any]) -> None:
     assert "HoleWizard5 made no hole" in (result.error or "")
 
 
+class _SketchPoint:
+    """An ``ISketchPoint``: ``SetCoords`` moves it unless ``stuck``."""
+
+    def __init__(self, x: float, y: float, z: float, stuck: bool = False) -> None:
+        self.X, self.Y, self.Z = x, y, z
+        self.stuck = stuck
+
+    def SetCoords(self, x: float, y: float, z: float) -> bool:
+        if not self.stuck:
+            self.X, self.Y, self.Z = x, y, z
+        return not self.stuck
+
+
 class _PositionSketch:
     """An ``ISketch`` whose points grow as the sketch manager adds them."""
 
-    def __init__(self, points: list[list[float]]) -> None:
-        self.points = [SimpleNamespace(X=x, Y=y, Z=z) for x, y, z in points]
+    def __init__(self, points: list[list[float]], stuck: bool = False) -> None:
+        self.points = [_SketchPoint(x, y, z, stuck) for x, y, z in points]
 
     def GetSketchPoints2(self) -> list[Any]:
         return list(self.points)
@@ -650,7 +663,7 @@ def sketch_space(monkeypatch: pytest.MonkeyPatch) -> None:
 def _adding(adapter: FakeAdapter, sketch: _PositionSketch, keep: bool = True) -> None:
     def create_point(x: float, y: float, z: float) -> None:
         if keep:
-            sketch.points.append(SimpleNamespace(X=x, Y=y, Z=z))
+            sketch.points.append(_SketchPoint(x, y, z))
 
     adapter.currentModel.SketchManager.CreatePoint.side_effect = create_point
 
@@ -660,8 +673,10 @@ async def test_positions_go_into_the_hole_sketch(
     picks: list[Any], sketch_space: None
 ) -> None:
     """Each position is a point of the hole's position sketch: one feature,
-    three holes (the Hole Wizard's Positions tab, done through the API)."""
-    sketch = _PositionSketch([[0.0, 0.0, 0.0]])
+    three holes (the Hole Wizard's Positions tab, done through the API). The
+    first hole, which SolidWorks put 0.5 mm off where it picked the face
+    through the screen, is moved exactly onto its point."""
+    sketch = _PositionSketch([[0.0004, -0.0003, 0.0]])
     hole = _hole_with_sketch(sketch, ("HoleWzdProfile", "ProfileFeature"))
     adapter = FakeAdapter([1000.0, 700.0], feature=hole)
     _adding(adapter, sketch)
@@ -672,23 +687,66 @@ async def test_positions_go_into_the_hole_sketch(
 
     assert result.data["hole_count"] == 3
     assert result.data["positions_mm"] == [[10, 0, 20], [0, 10, 20]]
-    manager = adapter.currentModel.SketchManager
-    assert [c.args for c in manager.CreatePoint.call_args_list] == [
+    assert [(p.X, p.Y, p.Z) for p in sketch.points] == [
+        (0.0, 0.0, 0.0),
         (0.01, 0.0, 0.0),
         (0.0, 0.01, 0.0),
     ]
+    manager = adapter.currentModel.SketchManager
     assert manager.AddToDB is False
     manager.InsertSketch.assert_called_once_with(True)
     adapter.currentModel.EditSketch.assert_called_once()
     assert adapter.deleted == []
+    assert "warnings" not in result.data
+
+
+@pytest.mark.asyncio
+async def test_a_single_hole_is_moved_exactly_onto_its_point(
+    picks: list[Any], sketch_space: None
+) -> None:
+    sketch = _PositionSketch([[-0.00055, 0.0002, 0.0]])
+    adapter = FakeAdapter([1000.0, 900.0], feature=_hole_with_sketch(sketch))
+
+    result = await adapter.create_hole([12, 30, 20], "simple", "iso", "M6")
+
+    assert result.is_success, result.error
+    assert result.data["hole_count"] == 1
+    assert [(p.X, p.Y, p.Z) for p in sketch.points] == [(0.012, 0.03, 0.0)]
+    adapter.currentModel.SketchManager.CreatePoint.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_hole_whose_sketch_cannot_be_read_is_kept_with_a_warning(
+    picks: list[Any],
+) -> None:
+    adapter = FakeAdapter([1000.0, 900.0])
+
+    result = await adapter.create_hole([0, 0, 20], "counterbore", "iso", "M6")
+
+    assert result.data["hole_count"] == 1
+    assert "position sketch couldn't be read" in result.data["warnings"][-1]
+    assert adapter.deleted == []
 
 
 @pytest.mark.parametrize(
-    ("positions", "sketch_points", "keep", "message"),
+    ("positions", "sketch_points", "keep", "stuck", "message"),
     [
-        ([[10, 0, 25]], [[0.0, 0.0, 0.0]], True, "is 5.000 mm off the face"),
-        ([[10, 0, 20]], [[0.05, 0.0, 0.0]], True, "position sketch couldn't be found"),
-        ([[10, 0, 20]], [[0.0, 0.0, 0.0]], False, "has 1 points after adding 1"),
+        ([[10, 0, 25]], [[0.0, 0.0, 0.0]], True, False, "is 5.000 mm off the face"),
+        (
+            [[10, 0, 20]],
+            [[0.2, 0.0, 0.0]],
+            True,
+            False,
+            "position sketch couldn't be found",
+        ),
+        ([[10, 0, 20]], [[0.0, 0.0, 0.0]], False, False, "has 1 points after adding 1"),
+        (
+            [[10, 0, 20]],
+            [[0.0005, 0.0, 0.0]],
+            True,
+            True,
+            "A hole is 0.5000 mm from its point",
+        ),
     ],
 )
 @pytest.mark.asyncio
@@ -698,9 +756,10 @@ async def test_a_failed_position_removes_the_hole(
     positions: list[list[float]],
     sketch_points: list[list[float]],
     keep: bool,
+    stuck: bool,
     message: str,
 ) -> None:
-    sketch = _PositionSketch(sketch_points)
+    sketch = _PositionSketch(sketch_points, stuck)
     adapter = FakeAdapter([1000.0], feature=_hole_with_sketch(sketch))
     _adding(adapter, sketch, keep)
 
@@ -751,8 +810,11 @@ async def test_a_size_the_library_lacks_makes_no_com_call(picks: list[Any]) -> N
 
 
 @pytest.mark.asyncio
-async def test_a_named_fastener_and_a_bare_diameter(picks: list[Any]) -> None:
-    adapter = FakeAdapter([1000.0, 900.0])
+async def test_a_named_fastener_and_a_bare_diameter(
+    picks: list[Any], sketch_space: None
+) -> None:
+    sketch = _PositionSketch([[0.0, 0.0, 0.0]])
+    adapter = FakeAdapter([1000.0, 900.0], feature=_hole_with_sketch(sketch))
 
     result = await adapter.create_hole(
         [0, 0, 20], "simple", "iso", "6", "blind", 5, fastener="drill sizes"
@@ -766,13 +828,14 @@ async def test_a_named_fastener_and_a_bare_diameter(picks: list[Any]) -> None:
 
 @pytest.mark.asyncio
 async def test_an_unreadable_library_tries_the_default_with_a_warning(
-    picks: list[Any], monkeypatch: pytest.MonkeyPatch
+    picks: list[Any], sketch_space: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def missing() -> Any:
         raise pf.HoleLibraryError("No Hole Wizard library found.")
 
     monkeypatch.setattr(pf, "find_library", missing)
-    adapter = FakeAdapter([1000.0, 900.0])
+    sketch = _PositionSketch([[0.0, 0.0, 0.0]])
+    adapter = FakeAdapter([1000.0, 900.0], feature=_hole_with_sketch(sketch))
 
     made = await adapter.create_hole([0, 0, 20], "counterbore", "din", "M6")
     refused = await adapter.create_hole(

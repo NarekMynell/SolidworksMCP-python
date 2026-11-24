@@ -78,7 +78,7 @@ Create a new, empty part document and make it active, ready for `create_sketch`.
 
 ### `create_assembly`
 
-Create a new, empty assembly document and make it active, ready for `insert_component`.
+Create a new, empty assembly document and make it active, ready for `add_components`.
 
 **Prerequisite:** SolidWorks running
 

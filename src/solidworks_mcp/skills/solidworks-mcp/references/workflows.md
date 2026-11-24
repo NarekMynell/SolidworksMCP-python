@@ -79,7 +79,8 @@ A cut or a `create_hole` hole that already exists can be repeated instead:
   hole's centre goes, the `hole_type` and a size from `list_hole_sizes`
   (`M6`, `#10`; on a simple hole `M6` is a clearance hole, `6` a drilled
   one). An unknown size is refused with the nearest ones. More holes on the same face go in
-  `positions` (points in mm): one feature, a hole at each point. A
+  `positions` (points in mm): one feature, a hole at each point, each
+  exactly where asked. A
   regular row or grid can also use `pattern_linear`. A simple hole can't
   be through all in SolidWorks: it is made blind through the part, and the
   reply says so.
@@ -108,6 +109,49 @@ A cut or a `create_hole` hole that already exists can be repeated instead:
    fixed; read the reply's box to see which.
 5. `set_flat_pattern` with `flat: true` gives the blank's size; check it,
    `export_flat_pattern` for the DXF, then `flat: false` to fold it back.
+
+## A steel frame, truss or platform (weldments)
+
+Model it as one weldment part: structural members on centre lines, never
+profiles sketched and extruded one by one.
+
+1. Plan the centre lines in model axes, mm: y is up, the Top plane is the
+   floor (x, z). A member's profile is centred on its line, so a beam
+   sitting on a column has its line half the beam's depth above the
+   column's top, and joists flush with the beams' tops sit half their own
+   depth below the top of steel.
+2. `list_weldment_profiles` with `query` for each size: `HEB160` finds DIN
+   `HE160B` (type `hea`), `IPE240` type `ipe`, `L50x5` the equal angle
+   `L50x50x5`, `100x100x5` a hollow section. Use the `standard`, `type`
+   and `size` it returns.
+3. `create_part`, then `create_structural_members` once per kind of
+   member: columns, beams, joists, bracing, each with its own `name`. Give
+   all the members of a kind as `segments` in one call; a continuous member
+   (a chord) is one segment.
+4. `create_trim_extend` wherever one member frames into another, else they
+   overlap and the cut list gives centre-line lengths: joists into beams
+   with tops flush, `cut: coped`; beams into a column's flange, `simple`;
+   two members at a corner, `corner_type: miter`. `weld_gap_mm` leaves the
+   weld gap. Members are named by their feature (`Joists`); the reply's
+   `now` gives the new body names, and `unchanged` lists any member the
+   boundary didn't reach.
+5. `set_material` with a structural steel: `list_available_materials`
+   with `search` `S235` or `S355` gives names such as `1.0037 (S235JR)`;
+   the library is found by itself.
+6. `get_cut_list` with an `export_path` (.csv) for the shop: each item's
+   quantity, length, end angles and mass. Its total mass equals the
+   part's; check the lengths against your plan.
+7. `generate_drawing_package` draws it with the cut list above the
+   isometric (a weldment gets no model dimensions: they are its profiles'
+   sizes). Then `add_balloons` on the isometric view (`Drawing View4`)
+   with `layout: "left"` numbers the members to match the cut list, clear
+   of the table, and `save_file` and `export_pdf` keep them.
+
+Plates (base plates, gussets, end plates): a rectangle extruded to the
+plate's thickness (or `create_base_flange` for sheet metal), `create_hole`
+with `positions` for the bolt holes, `save_file`, then `export_flat_pattern`
+for the DXF the cutting table needs: a plain plate gives its largest flat
+face, outline and holes at 1:1.
 
 ## Changing an existing model
 
@@ -155,9 +199,14 @@ otherwise (unlike `set_dimension`, which changes the active one). On
 
 ## An assembly
 
-1. Save each part first (`save_file`): `insert_component` takes a file path.
-2. `create_assembly`, then `insert_component` for each part, with a
-   position in mm.
+1. Save each part first (`save_file`): components are inserted from files.
+2. `create_assembly`, then `add_components` with every part in one call:
+   each item's `file_path` and where its origin goes (`x`, `y`, `z` mm),
+   turned `rx`, `ry`, `rz` degrees; a file may repeat (four base plates are
+   four items). `fix: true` fixes them all, for a structure placed by
+   coordinates with no mates. `insert_component` adds one part.
+   `set_component_position` moves or turns components afterwards, and
+   `set_component_state` with `components` fixes or floats many at once.
 3. `list_components` for the instance names (e.g. "plate-1").
 4. `add_mate` between components. Each side is a reference plane or axis
    name (`entity_a`: "Front Plane", "Axis1") or a face (`face_a`: a point on

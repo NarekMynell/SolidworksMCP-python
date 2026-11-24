@@ -196,15 +196,17 @@ class MockWeldmentsMixin:
             "each": len(segments),
             "auto": len(chains(ends)),
         }[grouping]
-        for s in segments:
-            length = math.dist(s[:3], s[3:])
-            state["bodies"].append((profile["size"], round(length, 3), per_metre))
         state["features"] += 1
         self._operation_count += 1
         name = (
             params.get("name")
             or f"{profile['type']} {profile['size']}({state['features']})"
         )
+        for index, s in enumerate(segments, 1):
+            length = math.dist(s[:3], s[3:])
+            state["bodies"].append(
+                (profile["size"], round(length, 3), per_metre, name, f"{name}[{index}]")
+            )
         return AdapterResult(
             status=AdapterResultStatus.SUCCESS,
             data={
@@ -215,6 +217,77 @@ class MockWeldmentsMixin:
                 "groups": groups,
                 "grouping": grouping,
                 "bodies_after": len(state["bodies"]),
+            },
+        )
+
+    def _trim_bodies(self, names: list[str]) -> list[int] | str:
+        """Indexes of the bodies ``names`` name (bodies or members), or an error."""
+        bodies = self._weld_state()["bodies"]
+        chosen: list[int] = []
+        for name in names:
+            hits = [i for i, b in enumerate(bodies) if name in (b[3], b[4])]
+            if not hits:
+                members = ", ".join(dict.fromkeys(b[3] for b in bodies)) or "none"
+                return (
+                    f"No structural member or body named {name!r}; the part has "
+                    f"the members {members}"
+                )
+            chosen.extend(i for i in hits if i not in chosen)
+        return chosen
+
+    async def create_trim_extend(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock Trim/Extend: each member is cut a nominal ``max(gap, 1)`` mm short."""
+        if error := self._part_error("create_trim_extend"):
+            return error
+        members = self._trim_bodies(list(params.get("members") or []))
+        if isinstance(members, str):
+            return _error(members)
+        boundary = self._trim_bodies(list(params.get("boundary") or []))
+        if isinstance(boundary, str):
+            return _error(boundary)
+        bodies = self._weld_state()["bodies"]
+        both = sorted(bodies[i][4] for i in set(members) & set(boundary))
+        if both:
+            return _error(f"{', '.join(both)} can't be both trimmed and the boundary")
+        corner = str(params.get("corner_type") or "end_trim")
+        if corner != "end_trim" and (len(members), len(boundary)) != (1, 1):
+            return _error(
+                f"A {corner} corner joins two members: give one member body and "
+                f"one boundary body (got {len(members)} and {len(boundary)})"
+            )
+        gap = float(params.get("weld_gap_mm") or 0.0)
+        cut_mm = max(gap, 1.0)
+        state = self._weld_state()
+        state["trims"] = state.get("trims", 0) + 1
+        self._operation_count += 1
+        feature_name = params.get("name") or f"Trim/Extend{state['trims']}"
+        changes = []
+        for count, i in enumerate(members, 1):
+            size, length, per_metre, member, body = bodies[i]
+            now = f"{feature_name}[{count}]"  # SolidWorks renames trimmed bodies
+            bodies[i] = (size, round(length - cut_mm, 3), per_metre, member, now)
+            area_mm2 = per_metre / 7850.0 * 1e6
+            changes.append(
+                {
+                    "name": body,
+                    "now": now,
+                    "volume_change_mm3": round(-area_mm2 * cut_mm, 3),
+                    "changed": True,
+                }
+            )
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "feature": feature_name,
+                "corner_type": corner,
+                "cut": str(params.get("cut") or "simple"),
+                "weld_gap_mm": gap,
+                "members": changes,
+                "boundary": [bodies[i][4] for i in boundary],
+                "unchanged": [],
+                "bodies_after": len(bodies),
             },
         )
 
@@ -237,7 +310,7 @@ class MockWeldmentsMixin:
         steel = material.get("classification") == "Steel" or _STEEL.search(name)
         density_factor = 1.0 if steel else 1000.0 / 7850.0
         groups: dict[tuple[str, float], list[float]] = {}
-        for size, length, per_metre in bodies:
+        for size, length, per_metre, *_names in bodies:
             groups.setdefault((size, length), []).append(per_metre)
         items = []
         for index, ((size, length), masses) in enumerate(groups.items(), 1):

@@ -1975,6 +1975,16 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             input_dict={"params": params},
         )
 
+    async def create_trim_extend(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Trim or extend structural members, through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "create_trim_extend",
+            lambda: self.adapter.create_trim_extend(params),
+            input_dict={"params": params},
+        )
+
     async def get_cut_list(
         self, update: bool = True, export_path: str | None = None
     ) -> AdapterResult[dict[str, Any]]:

@@ -174,14 +174,32 @@ def _to_sketch(adapter: Any, sketch: Any, point_m: list[float]) -> list[float]:
     return [float(v) for v in as_list(moved.ArrayData)[:3]]
 
 
+def _sketch_point_objects(adapter: Any, sketch: Any) -> list[Any]:
+    """The ``ISketchPoint`` objects of an ``ISketch``."""
+    return as_list(adapter._attempt(lambda: sketch.GetSketchPoints2(), default=None))
+
+
 def _sketch_points(adapter: Any, sketch: Any) -> list[list[float]]:
     """The points of an ``ISketch``, ``[x, y, z]`` in sketch metres."""
-    points = as_list(adapter._attempt(lambda: sketch.GetSketchPoints2(), default=None))
-    return [[float(p.X), float(p.Y), float(p.Z)] for p in points]
+    return [
+        [float(p.X), float(p.Y), float(p.Z)]
+        for p in _sketch_point_objects(adapter, sketch)
+    ]
 
 
-def _position_sketch(adapter: Any, feature: Any, first_m: list[float]) -> Any:
-    """The hole's position sketch feature: its sketch has a point at ``first_m``.
+#: How far from the point asked for SolidWorks may put a Hole Wizard hole.
+#: ``HoleWizard5`` places the hole where ``SelectByID2`` picked the face, and
+#: that pick goes through the screen: the point lands up to about a pixel of
+#: the view away (0.55 mm on a 300 mm plate, seen live), more when zoomed out.
+_PICK_SEARCH_M = 0.05
+#: The most a hole may be from its point once it has been moved there.
+_PLACED_TOLERANCE_M = 1e-6
+
+
+def _position_sketch(
+    adapter: Any, feature: Any, first_m: list[float]
+) -> tuple[Any, Any, Any, float]:
+    """The hole's position sketch, and the point SolidWorks put the hole on.
 
     Args:
         adapter: The connected adapter.
@@ -189,12 +207,15 @@ def _position_sketch(adapter: Any, feature: Any, first_m: list[float]) -> Any:
         first_m: The first hole's point, metres, model space.
 
     Returns:
-        ``(sketch_feature, sketch)``.
+        ``(sketch_feature, sketch, point, distance_m)``: the sketch point
+        nearest ``first_m`` and how far from it SolidWorks put the hole.
 
     Raises:
-        LookupError: When no sub-feature sketch holds that point.
+        LookupError: When no sub-feature sketch has a point within
+            :data:`_PICK_SEARCH_M` of ``first_m``.
     """
     hole = sw_type_info.flagged(feature, "IFeature")
+    best: tuple[Any, Any, Any, float] | None = None
     sub = adapter._attempt(lambda: hole.GetFirstSubFeature(), default=None)
     while sub is not None:
         sub = sw_type_info.flagged(sub, "IFeature")
@@ -206,27 +227,34 @@ def _position_sketch(adapter: Any, feature: Any, first_m: list[float]) -> Any:
             )
             if sketch is not None:
                 at = _to_sketch(adapter, sketch, first_m)
-                if any(
-                    math.dist(at, p) <= _PICK_TOLERANCE_M
-                    for p in _sketch_points(adapter, sketch)
-                ):
-                    return sub, sketch
+                for point in _sketch_point_objects(adapter, sketch):
+                    gap = math.dist(
+                        at, [float(point.X), float(point.Y), float(point.Z)]
+                    )
+                    if best is None or gap < best[3]:
+                        best = (sub, sketch, point, gap)
         sub = adapter._attempt(lambda s=sub: s.GetNextSubFeature(), default=None)
-    raise LookupError("The hole's position sketch couldn't be found.")
+    if best is None or best[3] > _PICK_SEARCH_M:
+        raise LookupError("The hole's position sketch couldn't be found.")
+    return best
 
 
-def _add_hole_positions(
+def _place_holes(
     adapter: Any,
     model: Any,
     feature: Any,
     first_mm: list[float],
     positions_mm: list[list[float]],
 ) -> int:
-    """Put a hole at every point of ``positions_mm`` (Hole Wizard positions).
+    """Put the holes exactly on their points: the first moved, the rest added.
 
-    Each point is added to the hole's position sketch, as clicking sketch
-    points on the Hole Wizard's Positions tab does; closing the sketch
-    rebuilds the hole at every point.
+    ``HoleWizard5`` puts the first hole where SolidWorks picked the face, up
+    to about a pixel of the view from ``first_mm``. The hole's position
+    sketch is opened, that point moved exactly onto ``first_mm``
+    (``ISketchPoint::SetCoords``), a point added for each of
+    ``positions_mm`` (as clicking on the Hole Wizard's Positions tab does),
+    and the sketch closed, which rebuilds the hole at every point. The points
+    are read back, so a hole that isn't where it was asked for is an error.
 
     Args:
         adapter: The connected adapter.
@@ -239,17 +267,19 @@ def _add_hole_positions(
         The number of points in the position sketch afterwards.
 
     Raises:
+        LookupError: When the position sketch can't be found.
         ValueError: A point that is off the face's plane.
-        RuntimeError: When the sketch didn't take every point.
+        RuntimeError: When the sketch didn't take every point exactly.
     """
-    sketch_feature, sketch = _position_sketch(
+    sketch_feature, sketch, first, _gap = _position_sketch(
         adapter, feature, [_mm(v) for v in first_mm]
     )
-    local = [_to_sketch(adapter, sketch, [_mm(v) for v in p]) for p in positions_mm]
-    for point, at in zip(positions_mm, local, strict=True):
+    targets = [list(first_mm), *(list(p) for p in positions_mm)]
+    local = [_to_sketch(adapter, sketch, [_mm(v) for v in p]) for p in targets]
+    for point, at in zip(targets[1:], local[1:], strict=True):
         if abs(at[2]) > _PICK_TOLERANCE_M:
             raise ValueError(
-                f"Position {list(point)} mm is {abs(at[2]) * 1000:.3f} mm off the "
+                f"Position {point} mm is {abs(at[2]) * 1000:.3f} mm off the "
                 "face the hole is on; give points on that face."
             )
     model.ClearSelection2(True)
@@ -258,19 +288,27 @@ def _add_hole_positions(
     manager = sw_type_info.flagged(model.SketchManager, "ISketchManager")
     manager.AddToDB = True  # no snapping onto the first hole
     try:
-        for x, y, _z in local:
+        sw_type_info.flagged(first, "ISketchPoint").SetCoords(
+            local[0][0], local[0][1], 0.0
+        )
+        for x, y, _z in local[1:]:
             manager.CreatePoint(x, y, 0.0)
     finally:
         manager.AddToDB = False
         manager.InsertSketch(True)
-    count = len(_sketch_points(adapter, sketch))
-    expected = 1 + len(positions_mm)
-    if count != expected:
+    points = _sketch_points(adapter, sketch)
+    if len(points) != len(targets):
         raise RuntimeError(
-            f"The hole's position sketch has {count} points after adding "
-            f"{len(positions_mm)}; expected {expected}."
+            f"The hole's position sketch has {len(points)} points after adding "
+            f"{len(positions_mm)}; expected {len(targets)}."
         )
-    return count
+    worst = max(min(math.dist([x, y, 0.0], p) for p in points) for x, y, _ in local)
+    if worst > _PLACED_TOLERANCE_M:
+        raise RuntimeError(
+            f"A hole is {worst * 1000:.4f} mm from its point after placing it; "
+            "SolidWorks didn't move it there."
+        )
+    return len(points)
 
 
 def _feature_name(adapter: Any, feature: Any) -> str | None:
@@ -735,11 +773,13 @@ class SolidWorksPartFeaturesMixin:
     ) -> AdapterResult[dict[str, Any]]:
         """Hole Wizard holes at points on a flat face (``HoleWizard5``).
 
-        The face is selected at ``face_point`` with ``SelectByID2``, and the
-        hole is placed at that selection point. Dimensions not given are -1,
-        which leaves them to the standard's table for the size. Each point of
-        ``positions`` is added to the hole's position sketch, so one feature
-        holds every hole (:func:`_add_hole_positions`). A simple hole that
+        The face is selected at ``face_point`` with ``SelectByID2``, and
+        SolidWorks places the hole at that selection point, which goes through
+        the screen and can be a fraction of a millimetre off; the hole's
+        position sketch point is then moved exactly onto ``face_point``, and
+        each point of ``positions`` added to that sketch, so one feature holds
+        every hole (:func:`_place_holes`). Dimensions not given are -1, which
+        leaves them to the standard's table for the size. A simple hole that
         SolidWorks won't make through all is made blind through the part
         (:func:`_through_depth_m`).
 
@@ -830,11 +870,17 @@ class SolidWorksPartFeaturesMixin:
                 if hole_type == "tapped" and end_condition == "blind" and depth
                 else None
             )
-            count = (
-                _add_hole_positions(adapter, model, feature, list(face_point), extra)
-                if extra
-                else 1
-            )
+            try:
+                count = _place_holes(adapter, model, feature, list(face_point), extra)
+            except LookupError:
+                if extra:
+                    raise
+                count = 1
+                warnings.append(
+                    "The hole's position sketch couldn't be read, so the hole is "
+                    "where SolidWorks picked the face, which can be a fraction of "
+                    "a millimetre from face_point; check it with measure_entities."
+                )
             made["name"] = None  # finished: nothing to clean up
             data: dict[str, Any] = {
                 "name": name,

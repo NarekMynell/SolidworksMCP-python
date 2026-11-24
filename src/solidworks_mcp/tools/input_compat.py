@@ -33,7 +33,7 @@ REMOVED_INPUTS: dict[str, dict[str, str]] = {
     "CreateExtrusionInput": {"direction": "use `end_condition`"},
     "CreateRevolveInput": {"direction": "use `both_directions`"},
     "CreateAssemblyInput": {
-        "components": "call `insert_component` for each part",
+        "components": "insert the parts with `add_components`, all in one call",
     },
     "CreateDrawingInput": {
         "model_path": "place views with `create_drawing_view`, or " + _DRAWING_PACKAGE,

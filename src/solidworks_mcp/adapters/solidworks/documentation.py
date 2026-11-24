@@ -41,6 +41,8 @@ _SW_CUSTOM_INFO_TEXT = 30
 _SW_CUSTOM_PROPERTY_REPLACE_VALUE = 2
 # swExportToDWG_e
 _SW_EXPORT_SHEET_METAL = 1
+#: ``swExportToDWG_e.swExportToDWG_ExportSelectedFacesOrLoops``.
+_SW_EXPORT_SELECTED_FACES = 2
 # swBodyType_e
 _SW_SOLID_BODY = 0
 # swInsertAnnotation_e
@@ -754,13 +756,18 @@ class SolidWorksDocumentationMixin:
 
         Wraps ``IPartDoc::SetMaterialPropertyName2`` (a ``void`` call), then
         reads the material back - the read-back is the only proof it applied.
-        A name the library does not hold leaves the part unchanged and is
-        reported as not found.
+        SolidWorks needs the library as well as the name, so with no
+        ``database`` the library holding the name is looked up
+        (:meth:`_material_library`): a DIN steel such as ``1.0037 (S235JR)``
+        is in "SolidWorks DIN Materials", not the default. A name no library
+        holds leaves the part unchanged and is reported as not found, with
+        the library names that contain it.
 
         Args:
             material_name: Material name exactly as in the library, e.g.
                 ``"AISI 1020"`` or ``"6061-T6 (SS)"``.
-            database: Library name; ``"SOLIDWORKS Materials"`` when omitted.
+            database: Library name; the one holding the name when omitted,
+                else ``"SOLIDWORKS Materials"``.
             configuration: Configuration name; ``""`` (all) when omitted.
 
         Returns:
@@ -773,18 +780,20 @@ class SolidWorksDocumentationMixin:
             return AdapterResult(
                 status=AdapterResultStatus.ERROR, error="material_name is required"
             )
-        library = database or _DEFAULT_MATERIAL_DATABASE
 
         def _set() -> dict[str, Any]:
+            library = database or self._material_library(material_name)
             part = _sw_type_info.flagged(self.currentModel, "IPartDoc")
             part.SetMaterialPropertyName2(configuration or "", library, material_name)
             self._attempt(lambda: self.currentModel.EditRebuild3(), default=None)
             applied, _library = _read_material(part, configuration)
             if applied.lower() != material_name.lower():
                 # SolidWorks ignores a name its library does not hold.
+                close = self._close_materials(material_name)
+                hint = f" Library names with it: {'; '.join(close)}." if close else ""
                 raise LookupError(
                     f"Material {material_name!r} not found in {library!r}; the "
-                    f"part still reports {applied or 'no material'}. Use "
+                    f"part still reports {applied or 'no material'}.{hint} Use "
                     "list_available_materials for the exact name and library."
                 )
             return {
@@ -797,6 +806,56 @@ class SolidWorksDocumentationMixin:
             "AdapterResult[dict[str, Any]]",
             self._handle_com_operation("set_material", _set),
         )
+
+    def _material_library(self, name: str) -> str:
+        """The library that holds ``name``: SolidWorks' own first, then the rest.
+
+        Args:
+            name: The material's name, exactly as a library has it.
+
+        Returns:
+            str: The library's name, or ``"SOLIDWORKS Materials"`` when no
+            library file holds the name (or none can be read).
+        """
+        app = getattr(self, "swApp", None)
+        if app is None:
+            return _DEFAULT_MATERIAL_DATABASE
+        entry = self._attempt(
+            lambda: _material_entry(
+                _library_files(self._material_folders(app)),
+                name,
+                _DEFAULT_MATERIAL_DATABASE,
+            ),
+            default=None,
+        )
+        return str(entry[0]) if entry else _DEFAULT_MATERIAL_DATABASE
+
+    def _close_materials(self, name: str, limit: int = 5) -> list[str]:
+        """Library materials whose name contains ``name``, as "name (library)".
+
+        A name in brackets matching exactly comes first, so "S235JR" offers
+        "1.0037 (S235JR)" before "1.0036 (S235JRG1)"; then shorter names.
+
+        Args:
+            name: The name that wasn't found.
+            limit: The most names to give.
+
+        Returns:
+            list[str]: Up to ``limit`` names with their library.
+        """
+        app = getattr(self, "swApp", None)
+        needle = name.strip().lower()
+        if app is None or not needle:
+            return []
+        found: list[dict[str, str]] = []
+        for path in _library_files(self._material_folders(app)):
+            found.extend(
+                m for m in _parse_material_library(path) if needle in m["name"].lower()
+            )
+        found.sort(
+            key=lambda m: (f"({needle})" not in m["name"].lower(), len(m["name"]))
+        )
+        return [f"{m['name']} ({m['database']})" for m in found[:limit]]
 
     def _material_folders(self, app: Any) -> list[str]:
         """The material library folders SolidWorks reads, in its order.
@@ -983,17 +1042,23 @@ class SolidWorksDocumentationMixin:
     async def export_flat_pattern(
         self, file_path: str
     ) -> AdapterResult[dict[str, Any]]:
-        """Export the active sheet-metal part's flat pattern to DXF or DWG.
+        """Export the active part's cutting blank to DXF or DWG.
 
-        Wraps ``IPartDoc::ExportToDWG2`` with ``swExportToDWG_ExportSheetMetal``.
-        SheetMetalOptions ``1`` exports the flat-pattern geometry only (no bend
-        lines or sketches).
+        A sheet-metal part's flat pattern: ``IPartDoc::ExportToDWG2`` with
+        ``swExportToDWG_ExportSheetMetal``; SheetMetalOptions ``1`` exports the
+        flat-pattern geometry only (no bend lines or sketches). A plain plate
+        (one solid body, made by extruding a sketch, as agents usually model a
+        base plate) has no flat pattern, so its largest flat face is exported
+        instead, with ``swExportToDWG_ExportSelectedFacesOrLoops``: its outline
+        and holes at 1:1 (a 250 mm plate with four holes gave exactly four lines
+        and four circles, live on SW 2025 SP4).
 
         Args:
             file_path: Output ``.dxf`` or ``.dwg`` path.
 
         Returns:
-            AdapterResult[dict[str, Any]]: The written path and its size.
+            AdapterResult[dict[str, Any]]: The written path, its size and
+            ``source`` (``flat_pattern``, or ``face`` with its ``face_area_mm2``).
         """
         guard = self._require_doc_type({1}, "export_flat_pattern")
         if guard is not None:
@@ -1013,16 +1078,26 @@ class SolidWorksDocumentationMixin:
                     lambda: part.GetBodies2(_SW_SOLID_BODY, True), default=None
                 )
             )
-            if not any(
+            sheet_metal = any(
                 self._attempt(
                     lambda b=b: _as_com(self, b, "IBody2").IsSheetMetal(), default=False
                 )
                 for b in bodies
-            ):
-                raise LookupError(
-                    "The active part has no sheet-metal body, so it has no flat "
-                    "pattern to export"
-                )
+            )
+            face: tuple[float, Any] | None = None
+            if not sheet_metal:
+                if len(bodies) != 1:
+                    raise LookupError(
+                        f"The active part has {len(bodies)} solid bodies and none is "
+                        "sheet metal: export one plate at a time (a part of one "
+                        "body, or a sheet-metal part)"
+                    )
+                face = self._largest_flat_face(bodies[0])
+                if face is None:
+                    raise LookupError(
+                        "The active part has no sheet-metal body and no flat face "
+                        "to export"
+                    )
             os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
             model_path = str(
                 self._attempt(lambda: model.GetPathName(), default="") or ""
@@ -1033,25 +1108,56 @@ class SolidWorksDocumentationMixin:
                     "The part has never been saved; save it with save_file, "
                     "then export its flat pattern."
                 )
+            action, options = _SW_EXPORT_SHEET_METAL, 1
+            if face is not None:
+                model.ClearSelection2(True)
+                if not _as_com(self, face[1], "IEntity").Select4(
+                    False, _null_callout()
+                ):
+                    raise Exception("The plate's flat face could not be selected")
+                action, options = _SW_EXPORT_SELECTED_FACES, 0
             ok = part.ExportToDWG2(
-                out,
-                model_path,
-                _SW_EXPORT_SHEET_METAL,
-                True,
-                None,
-                False,
-                False,
-                1,
-                None,
+                out, model_path, action, True, None, False, False, options, None
             )
+            if face is not None:
+                self._attempt(lambda: model.ClearSelection2(True))
             if not ok or not os.path.exists(out):
                 raise Exception(f"ExportToDWG2 did not write {out} (returned {ok!r})")
-            return {"file_path": out, "size_bytes": os.path.getsize(out)}
+            data: dict[str, Any] = {
+                "file_path": out,
+                "size_bytes": os.path.getsize(out),
+                "source": "flat_pattern" if face is None else "face",
+            }
+            if face is not None:
+                data["face_area_mm2"] = round(face[0] * 1e6, 1)
+            return data
 
         return cast(
             "AdapterResult[dict[str, Any]]",
             self._handle_com_operation("export_flat_pattern", _export),
         )
+
+    def _largest_flat_face(self, body: Any) -> tuple[float, Any] | None:
+        """A body's largest planar face and its area (m2), or ``None``.
+
+        For a plate, the face that carries its outline and holes.
+        """
+        best: tuple[float, Any] | None = None
+        faces = _sequence(
+            self._attempt(lambda: _as_com(self, body, "IBody2").GetFaces(), None)
+        )
+        for raw in faces:
+            face = _as_com(self, raw, "IFace2")
+            planar = self._attempt(
+                lambda f=face: bool(
+                    _as_com(self, f.GetSurface(), "ISurface").IsPlane()
+                ),
+                default=False,
+            )
+            area = self._attempt(lambda f=face: float(f.GetArea()), default=None)
+            if planar and area is not None and (best is None or area > best[0]):
+                best = (area, face)
+        return best
 
     # ------------------------------------------------------------------
     # Drawing documentation
