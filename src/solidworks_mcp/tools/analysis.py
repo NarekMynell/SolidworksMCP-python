@@ -380,7 +380,9 @@ async def register_analysis_tools(
         return await _measure_mass()
 
     @mcp.tool()
-    async def check_interference(input_data: InterferenceCheckInput) -> dict[str, Any]:
+    async def check_interference(
+        input_data: InterferenceCheckInput | None = None,
+    ) -> dict[str, Any]:
         """Find where the components of the active assembly overlap (Tools > Interference Detection).
 
         Use it after inserting and mating components. A count of 0 is a real
@@ -405,6 +407,7 @@ async def register_analysis_tools(
             "directly (Tools > Interference Detection) to check this "
             "assembly.",
         )
+        input_data = normalize_input(input_data, InterferenceCheckInput)
         options = input_data.model_dump()
         options["ignore_hidden"] = not input_data.include_hidden
         result = await adapter.check_interference(options)

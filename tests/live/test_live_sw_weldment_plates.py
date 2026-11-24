@@ -44,6 +44,12 @@ async def _tools(adapter: Any) -> dict[str, Any]:
     return {t.name: t.fn for t in await mcp.list_tools()}
 
 
+def _volume(reply: dict[str, Any]) -> float:
+    """The volume a get_mass_properties reply gives, mm³."""
+    volume = reply["mass_properties"]["volume"]
+    return float(volume["value"] if isinstance(volume, dict) else volume)
+
+
 def _ok(reply: dict[str, Any]) -> dict[str, Any]:
     assert reply["status"] == "success", reply
     return reply
@@ -202,3 +208,36 @@ async def test_the_server_stack_forwards_the_plate_and_tree_tools() -> None:
             await tools["close_model"]({"save": False})
     finally:
         await adapter.disconnect()
+
+
+async def test_vent_and_drain_holes_through_one_wall(scratch: Any) -> None:
+    """A post and a rail of SHS 80x80x5, hung as built: each gets a vent near
+    its higher end through the wall facing up (or, plumb, one side) and a drain
+    near its lower end through the opposite wall, one wall thick each."""
+    tools = await _tools(scratch.adapter)
+    _ok(await tools["create_part"]({"name": "vents"}))
+    _ok(
+        await tools["create_structural_members"](
+            {
+                **_SHS,
+                "segments": [[0, 0, 0, 0, 2000, 0], [500, 1000, 0, 2500, 1000, 0]],
+                "grouping": "each",
+                "name": "Tubes",
+                "folder": "Frame",
+            }
+        )
+    )
+    before = _volume(_ok(await tools["get_mass_properties"]({})))
+    vents = _ok(
+        await tools["create_vent_holes"]({"members": ["Tubes"], "diameter": 12})
+    )["vents"]
+    assert [h["kind"] for h in vents["holes"]] == ["vent", "drain", "vent", "drain"]
+    assert vents["skipped"] == []
+    after = _volume(_ok(await tools["get_mass_properties"]({})))
+    one_hole = math.pi * 6**2 * 5  # Ø12 through a 5 mm wall
+    removed = before - after
+    assert 3.5 * one_hole < removed < 4.5 * one_hole, removed
+    rail = [h for h in vents["holes"] if h["at_mm"][1] != 0 and h["at_mm"][0] > 400]
+    assert {round(h["at_mm"][1]) for h in rail} == {1040, 960}
+    audit = _ok(await tools["check_feature_tree"]({}))["audit"]
+    assert audit["not_fully_defined"] == []

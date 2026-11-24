@@ -35,6 +35,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and a plane tied to the main planes (plates on one level share it). A
   `plates_file` takes hundreds. Stable, checked live: four 250 x 250 x 15
   base plates with four Ø22 holes and a tilted gusset.
+- **`create_vent_holes`: vent and drain holes for hot-dip galvanizing.** A
+  closed hollow member bursts in the zinc bath. For each member the tool
+  reads its walls from the body (no profile orientation needed), then cuts a
+  vent near the end that hangs higher through the wall facing up and a drain
+  near the lower end through the wall facing down, each through the near wall
+  only, on a fully defined sketch, in a folder. Round tubes are skipped with
+  the reason.
 - **`export_plate_dxfs`: the cutting table's files.** One 1:1 DXF of each
   distinct plate's face (holes included), named
   `<mark>_t<thickness>_x<quantity>.dxf`, and `plates.csv`. Stable, checked

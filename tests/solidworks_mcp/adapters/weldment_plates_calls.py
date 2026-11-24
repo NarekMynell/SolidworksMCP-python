@@ -7,6 +7,7 @@ from typing import Any
 CALLS: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = [
     ("create_plates", ({"plates": [{"name": "Base plate"}], "folder": "Plates"},), {}),
     ("export_plate_dxfs", ({"output_dir": "C:/dxf"},), {}),
+    ("create_vent_holes", ({"members": ["Rails"], "diameter": 12},), {}),
     ("set_feature_folders", ({"rename": {"Plane7": "Splice plane"}},), {}),
     ("check_feature_tree", ({"max_listed": 5},), {}),
 ]

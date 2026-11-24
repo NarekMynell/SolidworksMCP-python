@@ -1966,6 +1966,22 @@ class SolidWorksAdapter(ABC):
             error="create_plates is not implemented by this adapter",
         )
 
+    async def create_vent_holes(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Cut vent and drain holes in hollow members for galvanizing.
+
+        Args:
+            params (dict[str, Any]): The members, hole size and hanging direction.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The result, or error.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="create_vent_holes is not implemented by this adapter",
+        )
+
     async def export_plate_dxfs(
         self, params: dict[str, Any]
     ) -> AdapterResult[dict[str, Any]]:

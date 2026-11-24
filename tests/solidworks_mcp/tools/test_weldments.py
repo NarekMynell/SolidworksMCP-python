@@ -15,6 +15,7 @@ from solidworks_mcp.tools.weldments import (
     CreatePlatesInput,
     CreateStructuralMembersInput,
     CreateTrimExtendInput,
+    CreateVentHolesInput,
     register_weldment_tools,
 )
 
@@ -658,3 +659,50 @@ async def test_plates_need_a_part(mcp_server, mock_adapter, tmp_path) -> None:
     assert (await tools["export_plate_dxfs"]({"output_dir": str(tmp_path)}))[
         "status"
     ] == "error"
+
+
+@pytest.mark.asyncio
+async def test_vent_holes_in_hollow_members_only(mcp_server, mock_adapter) -> None:
+    tools = await _tools(mcp_server, mock_adapter)
+    await mock_adapter.create_part()
+    await tools["create_structural_members"](
+        {
+            "standard": "BSI",
+            "profile_type": "shs",
+            "size": "RHS100x100x5",
+            "segments": [[0, 0, 0, 0, 3000, 0]],
+            "name": "Posts",
+        }
+    )
+    await tools["create_structural_members"](
+        {
+            "standard": "DIN",
+            "profile_type": "ipe",
+            "size": "IPE200",
+            "segments": [[0, 3000, 0, 4000, 3000, 0]],
+            "name": "Beam",
+        }
+    )
+    reply = await tools["create_vent_holes"](
+        {"members": ["Posts", "Beam"], "diameter": 14}
+    )
+    assert reply["status"] == "success", reply
+    assert [h["kind"] for h in reply["vents"]["holes"]] == ["vent", "drain"]
+    assert reply["vents"]["skipped"][0]["member"] == "Beam[1]"
+    assert reply["warning"].startswith("1 member(s) skipped")
+    assert reply["vents"]["folder"]["folder"] == "Vent holes"
+    missing = await tools["create_vent_holes"]({"members": ["Ghost"], "diameter": 14})
+    assert missing["status"] == "error"
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"members": [], "diameter": 12}, "at least 1"),
+        ({"members": ["Posts"], "diameter": 0}, "greater than 0"),
+        ({"members": ["Posts"], "diameter": 12, "hang": [0, 1]}, "at least 3"),
+    ],
+)
+def test_vent_input_refusals(kwargs: dict[str, Any], message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        CreateVentHolesInput(**kwargs)

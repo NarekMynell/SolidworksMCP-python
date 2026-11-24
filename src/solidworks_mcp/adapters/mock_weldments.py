@@ -419,6 +419,63 @@ class MockWeldmentsMixin:
             },
         )
 
+    async def create_vent_holes(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock vents: a vent and a drain in each hollow body named (HxBxT sizes)."""
+        if error := self._part_error("create_vent_holes"):
+            return error
+        state = self._weld_state()
+        lines = state.get("lines", {})
+        by_feature: dict[str, list[tuple[str, str]]] = {}
+        for size, _length, _kg, feature, body in state["bodies"]:
+            by_feature.setdefault(feature, []).append((body, size))
+        holes: list[dict[str, Any]] = []
+        skipped: list[dict[str, str]] = []
+        for name in params["members"]:
+            targets = by_feature.get(name) or [
+                (body, size)
+                for f in by_feature.values()
+                for body, size in f
+                if body == name
+            ]
+            if not targets:
+                return _error(f"No structural member or body named {name!r}")
+            for body, size in targets:
+                if not re.search(r"\d\s*x\s*\d+(\.\d+)?\s*x", str(size), re.IGNORECASE):
+                    skipped.append(
+                        {
+                            "member": body,
+                            "why": "no flat walls (a round tube, or not a member)",
+                        }
+                    )
+                    continue
+                line = lines.get(body, [0, 0, 0, 0, 0, 0])
+                for kind, at in (("vent", line[3:]), ("drain", line[:3])):
+                    holes.append(
+                        {
+                            "member": body,
+                            "kind": kind,
+                            "feature": f"{body} {kind}",
+                            "at_mm": list(at),
+                        }
+                    )
+        self._operation_count += 1
+        folder = params.get("folder")
+        tree = state.setdefault("tree", [])
+        for hole in holes:
+            tree.append(_tree_item(hole["feature"], "Cut", absorbed=False))
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "holes": holes,
+                "skipped": skipped,
+                "folder": _into_folder(tree, str(folder), [h["feature"] for h in holes])
+                if folder and holes
+                else None,
+            },
+        )
+
     async def export_plate_dxfs(
         self, params: dict[str, Any]
     ) -> AdapterResult[dict[str, Any]]:

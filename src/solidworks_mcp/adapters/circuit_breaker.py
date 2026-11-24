@@ -2015,6 +2015,16 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             input_dict={"params": params},
         )
 
+    async def create_vent_holes(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Cut vent and drain holes in hollow members, through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "create_vent_holes",
+            lambda: self.adapter.create_vent_holes(params),
+            input_dict={"params": params},
+        )
+
     async def export_plate_dxfs(
         self, params: dict[str, Any]
     ) -> AdapterResult[dict[str, Any]]:

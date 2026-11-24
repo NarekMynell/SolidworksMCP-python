@@ -15,7 +15,7 @@ bracing) on centre lines in model axes (y up), `create_trim_extend`
 wherever one member frames into another, `check_joints` until no member
 runs into another, `create_end_caps` on the open hollow ends,
 `create_plates` for base, splice and connection plates with their bolt
-holes, `set_material`, then `get_cut_list`, `export_plate_dxfs` for the
+holes, `create_vent_holes` in closed hollow members of galvanized work, `set_material`, then `get_cut_list`, `export_plate_dxfs` for the
 cutting table and `check_feature_tree` before the model is handed over.
 
 Every sketch these tools draw comes out fully defined: a skeleton's nodes
@@ -188,6 +188,33 @@ Add plates to a weldment in one call: base, splice, cap, gusset and connection p
 
 ```json
 {"plates": [{"name": "Base plate", "mark": "BP-1", "thickness": 15, "width": 250, "height": 250, "origin": [0, 0, 0], "normal": [0, -1, 0], "holes": [{"diameter": 22, "positions": [[-85, -85], [85, -85], [85, 85], [-85, 85]]}]}]}
+```
+
+---
+
+### `create_vent_holes`
+
+Cut the vent and drain holes hot-dip galvanizing needs in closed hollow members.
+
+**Prerequisite:** An open weldment part, no sketch open
+
+**SolidWorks automation note:** Each member body's flat faces are read (`IFace2.Normal`, `ISurface.PlaneParams`, the vertices of `IFace2.GetEdges`); the axis is square to its two largest non-parallel faces, the outer walls are the faces facing away from the axis through the body's centre of mass, and each wall's extent along the axis comes from its own vertices, so mitred and coped ends are measured, not assumed. Near the end that hangs higher (`hang`), a vent through the wall facing up; near the lower end, a drain through the wall facing down; a member hanging plumb takes two opposite walls. Each hole is a circle sketched on the wall's face (`SelectByID2` on the face, dimensioned from the origin), cut blind by `FeatureCut4` to the member's axis, so only the near wall is cut. Round tubes have no flat wall and are skipped with the reason.
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `members` | `list[str]` | ✅ | | Structural member feature names (every body of them) or body names |
+| `diameter` | `float` | ✅ | | Hole diameter, mm: the galvanizer's table, never under 10 mm |
+| `from_end_mm` | `float` | — | `30.0` | Hole centre from the member's end, mm |
+| `hang` | `list[float]` | — | `[0, 1, 0]` | Up while the piece hangs in the zinc bath |
+| `folder` | `str?` | — | `Vent holes` | Feature-tree folder for the holes, made if missing |
+| `define` | `str` | — | `dimensions` | `dimensions` fully defines each hole's sketch; `none` leaves it under defined |
+
+**Sample call:**
+
+```json
+{"members": ["Rails"], "diameter": 12, "from_end_mm": 30}
 ```
 
 ---

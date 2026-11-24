@@ -1865,6 +1865,15 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             lambda adapter: adapter.create_plates(params),
         )
 
+    async def create_vent_holes(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Cut vent and drain holes in hollow members, using pool."""
+        return await self._execute_with_pool(
+            "create_vent_holes",
+            lambda adapter: adapter.create_vent_holes(params),
+        )
+
     async def export_plate_dxfs(
         self, params: dict[str, Any]
     ) -> AdapterResult[dict[str, Any]]:

@@ -1,8 +1,8 @@
 {
  "tools": {
-  "total": 169,
+  "total": 170,
   "by_level": {
-   "stable": 161,
+   "stable": 162,
    "beta": 0,
    "experimental": 0,
    "planned": 0,
@@ -491,6 +491,13 @@
     "level": "stable",
     "reason": "",
     "summary": "Trim or extend structural members where they meet: beams to columns, joists coped to beams, braces to the frame (Trim/Extend)."
+   },
+   {
+    "name": "create_vent_holes",
+    "family": "weldments",
+    "level": "stable",
+    "reason": "",
+    "summary": "Cut the vent and drain holes hot-dip galvanizing needs in closed hollow members (RHS, SHS)."
    },
    {
     "name": "delete_configuration",

@@ -919,7 +919,9 @@ async def register_file_management_tools(
         }
 
     @mcp.tool()
-    async def list_features(input_data: ListFeaturesInput) -> dict[str, Any]:
+    async def list_features(
+        input_data: ListFeaturesInput | None = None,
+    ) -> dict[str, Any]:
         """List the feature tree of the active part or assembly, in order.
 
         Use it before editing a model, to find a feature's exact name for
@@ -936,7 +938,7 @@ async def register_file_management_tools(
         Returns:
             dict[str, Any]: The feature list.
         """
-        input_data = _coerce_input(ListFeaturesInput, input_data)
+        input_data = _coerce_input(ListFeaturesInput, input_data or {})
         require_capability(
             adapter, "list_features", "Active adapter does not support list_features"
         )

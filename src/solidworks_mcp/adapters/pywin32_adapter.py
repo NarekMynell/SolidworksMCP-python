@@ -41,6 +41,7 @@ from .solidworks import (
     SolidWorksTemplatesMixin,
     SolidWorksWeldmentPlatesMixin,
     SolidWorksWeldmentsMixin,
+    SolidWorksWeldmentVentsMixin,
     bitmap,
 )
 from .solidworks.dialog_watch import DialogWatch, waited_message
@@ -1731,6 +1732,7 @@ class PyWin32Adapter(
     SolidWorksAssemblyMixin,
     SolidWorksSheetMetalMixin,
     SolidWorksWeldmentPlatesMixin,
+    SolidWorksWeldmentVentsMixin,
     SolidWorksWeldmentsMixin,
     SolidWorksFeatureTreeMixin,
     SolidWorksTemplatesMixin,

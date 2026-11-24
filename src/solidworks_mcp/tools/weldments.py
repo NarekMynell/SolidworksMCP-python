@@ -586,6 +586,52 @@ def load_plates(path: str) -> list[dict[str, Any]]:
     return plates
 
 
+class CreateVentHolesInput(CompatInput):
+    """Input schema for galvanizing vent and drain holes.
+
+    Attributes:
+        members (list[str]): Member feature or body names.
+        diameter (float): Hole diameter, mm.
+        from_end_mm (float): Hole centre from the member's end, mm.
+        hang (list[float]): Up while the piece hangs in the bath.
+        folder (str | None): The feature-tree folder.
+        define (str): How the hole sketches are tied down.
+    """
+
+    members: list[str] = Field(
+        min_length=1,
+        description="Hollow members: structural member feature names (every body "
+        "of them) or body names, as create_trim_extend takes them",
+    )
+    diameter: float = Field(
+        gt=0,
+        le=100,
+        description="Hole diameter, mm: the galvanizer's table; never under 10 mm",
+    )
+    from_end_mm: float = Field(
+        default=30.0,
+        ge=5.0,
+        description="Hole centre from the member's end, mm: as near the joint as "
+        "the weld allows",
+    )
+    hang: list[float] = Field(
+        default_factory=lambda: [0.0, 1.0, 0.0],
+        min_length=3,
+        max_length=3,
+        description="Which way is up while the piece hangs in the zinc bath; "
+        "the vent goes near the higher end, the drain near the lower",
+    )
+    folder: str | None = Field(
+        default="Vent holes",
+        description="Feature-tree folder for the holes (made if missing); null for none",
+    )
+    define: Literal["dimensions", "none"] = Field(
+        default="dimensions",
+        description="'dimensions' dimensions each hole's sketch from the origin "
+        "(fully defined); 'none' leaves it under defined",
+    )
+
+
 class ExportPlateDxfsInput(CompatInput):
     """Input schema for the plates' DXFs.
 
@@ -921,6 +967,49 @@ async def register_weldment_tools(
         return reply
 
     @mcp.tool()
+    async def create_vent_holes(input_data: CreateVentHolesInput) -> dict[str, Any]:
+        """Cut the vent and drain holes hot-dip galvanizing needs in closed hollow members (RHS, SHS).
+
+        Use it on every member whose inside the zinc can't reach otherwise,
+        before the cut list and drawings: a sealed tube bursts in the bath.
+        For each member it finds the walls from the body itself, then cuts a
+        vent near the end that hangs higher, through the wall facing up, and
+        a drain near the lower end, through the wall facing down (diagonally
+        opposite, as EN ISO 14713-2 asks). Each hole goes through the near
+        wall only. Size and number come from the galvanizer; `hang` is up in
+        the bath. Round tubes are skipped (no flat wall). Needs: an open
+        weldment part, no sketch open. Changes: one cut per hole, in `folder`.
+        Returns: `vents` with `holes` (each `member`, `kind`, `feature`,
+        `at_mm`), `skipped` and `folder`.
+
+        Args:
+            input_data: `members` and `diameter`; `from_end_mm` (30), `hang`
+                (up), `folder` and `define` have defaults.
+
+        Returns:
+            dict[str, Any]: The holes cut and the members skipped.
+        """
+        input_data = normalize_input(input_data, CreateVentHolesInput)
+        require_capability(
+            adapter, "create_vent_holes", "Active adapter can't cut vent holes"
+        )
+        result = await adapter.create_vent_holes(input_data.model_dump())
+        require_success(result, context="Failed to cut the vent holes")
+        data = result.data or {}
+        holes = data.get("holes") or []
+        reply: dict[str, Any] = {
+            "status": "success",
+            "message": f"Cut {len(holes)} vent and drain hole(s)",
+            "vents": data,
+            "execution_time": result.execution_time,
+        }
+        if data.get("skipped"):
+            reply["warning"] = (
+                f"{len(data['skipped'])} member(s) skipped; see skipped for why"
+            )
+        return reply
+
+    @mcp.tool()
     async def export_plate_dxfs(input_data: ExportPlateDxfsInput) -> dict[str, Any]:
         """Write a DXF of every distinct plate in the weldment for the laser or plasma table, with a plates.csv list.
 
@@ -994,4 +1083,4 @@ async def register_weldment_tools(
             reply["warning"] = warning
         return reply
 
-    return 8
+    return 9
