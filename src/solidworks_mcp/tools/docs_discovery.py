@@ -595,7 +595,13 @@ class EnumLookup(BaseModel):
     members: list[ApiEnumMember] | None = Field(
         default=None, description="Members in declaration order, with their values"
     )
-    note: str | None = Field(default=None, description="Why there is no match")
+    member_count: int | None = Field(
+        default=None, description="How many members the enum has in all"
+    )
+    note: str | None = Field(
+        default=None,
+        description="Why there is no match, or that a long enum is listed in part",
+    )
 
 
 class SearchMatch(BaseModel):
@@ -1036,6 +1042,12 @@ def _lookup_interface(index: dict[str, Any], interface: str) -> InterfaceLookup:
     )
 
 
+#: Enums up to this many members come back whole when a member is asked for.
+_ENUM_LISTED_WHOLE = 40
+#: Past that, the members each side of the one asked for.
+_ENUM_NEIGHBOURS = 5
+
+
 def _lookup_enum(index: dict[str, Any], name: str) -> EnumLookup:
     """An enum's members and values, found by its name or a member's.
 
@@ -1057,13 +1069,25 @@ def _lookup_enum(index: dict[str, Any], name: str) -> EnumLookup:
             )
             if matched is None:
                 continue
+        members, note = enum.members, None
+        if matched is not None and len(members) > _ENUM_LISTED_WHOLE:
+            # swUserPreferenceToggle_e has 818 members: a member's lookup gives
+            # its neighbours (related options sit together), not all of them.
+            at = next(i for i, m in enumerate(members) if m.name == matched)
+            members = members[max(0, at - _ENUM_NEIGHBOURS) : at + _ENUM_NEIGHBOURS + 1]
+            note = (
+                f"{enum_name} has {len(enum.members)} members; these are the "
+                f"{len(members)} around {matched}. Ask for {enum_name} for all."
+            )
         return EnumLookup(
             found=True,
             name=name,
             enum=enum_name,
             matched_member=matched,
             description=enum.description,
-            members=enum.members,
+            members=members,
+            member_count=len(enum.members),
+            note=note,
         )
     note = index.get("enums_note") or (
         f"'{name}' is neither an enum nor an enum member in the indexed "
@@ -1560,8 +1584,10 @@ async def register_docs_discovery_tools(
         Use this when a call takes an enum value, such as a unit system or a
         user preference, instead of guessing the number: the values aren't in
         the API help pages. Give the enum (``swUnitSystem_e``) or one of its
-        members (``swUnitSystem_IPS``); a member's name returns its whole
-        enum with ``matched_member`` set. Names match regardless of case. The
+        members (``swUnitSystem_IPS``); a member's name returns its enum with
+        ``matched_member`` set: all of it, or for an enum of more than 40
+        members the 11 around the one asked for (``member_count`` says how
+        many there are). Names match regardless of case. The
         values come from SolidWorks' constants type library installed on this
         machine.
 

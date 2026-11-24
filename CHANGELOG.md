@@ -75,8 +75,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`insert_component` loads the part without a window** and no longer
   rebuilds the assembly or walks its components twice; parts it inserted
   were left open as windows.
+- **`get_api_enum` gives a long enum's neighbours, not all of it.** Asked for
+  one member of `swUserPreferenceToggle_e`, it returned all 818 members; an
+  enum of more than 40 now returns the 11 around the member asked for, with
+  `member_count`. The enum's own name still returns every member.
+- **`delete_feature` and `suppress_feature` take `feature_name` too**, the
+  name `select_feature` uses: a test agent sent it twice and was refused.
 
 ### Fixed
+
+- **The server's skill couldn't be read with toolsets set.** The toolsets
+  filter (`SOLIDWORKS_MCP_TOOLSETS`) hid every untagged component, so
+  `skill://solidworks-mcp/SKILL.md`, which the server instructions tell each
+  agent to read, was missing from the resource list and refused. Toolsets
+  now choose tools only; resources, templates and prompts stay.
+- **`export_image` hides planes, axes, sketches and origins while it
+  captures** (View > Hide All Types, put back as it was): they showed in
+  every picture two test agents took of a 20 m weldment.
 
 - **Hole Wizard holes landed up to 0.55 mm from their point.** SolidWorks
   puts a hole where it picked the face through the screen, a pixel's worth

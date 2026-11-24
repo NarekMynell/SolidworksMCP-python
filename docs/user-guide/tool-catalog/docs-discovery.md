@@ -104,7 +104,7 @@ Look up one SolidWorks API method or property: parameters, return type, descript
 
 Look up a SolidWorks API enum's members and their integer values.
 
-Give the enum or one of its members; a member's name returns its whole enum with `matched_member` set. The values come from SolidWorks' constants type library (`swconst.tlb`), so a call that takes an enum value never needs a guessed number.
+Give the enum or one of its members; a member's name returns its enum with `matched_member` set: all of it, or for an enum of more than 40 members the 11 around the one asked for, with `member_count`. The values come from SolidWorks' constants type library (`swconst.tlb`), so a call that takes an enum value never needs a guessed number.
 
 **Parameters:**
 

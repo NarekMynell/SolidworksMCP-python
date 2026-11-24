@@ -1090,6 +1090,27 @@ class TestFeatureEditingTools:
         assert "warning" not in result  # nothing else went
 
     @pytest.mark.asyncio
+    async def test_delete_and_suppress_take_feature_name_too(
+        self, mcp_server, mock_adapter, mock_config
+    ):
+        """select_feature's feature_name works here too: agents carry it over (seen live)."""
+        from fastmcp import Client
+
+        from solidworks_mcp.tools.modeling import SuppressFeatureInput
+
+        await register_modeling_tools(mcp_server, mock_adapter, mock_config)
+        name = await self._part_with_extrusion(mock_adapter)
+        assert SuppressFeatureInput.model_validate({"feature_name": name}).name == name
+
+        async with Client(mcp_server) as client:
+            result = await client.call_tool(
+                "delete_feature", {"input_data": {"feature_name": name}}
+            )
+
+        assert result.structured_content["status"] == "success"
+        assert result.structured_content["data"]["deleted"] == name
+
+    @pytest.mark.asyncio
     async def test_deleting_a_sketch_warns_that_its_cut_went_too(
         self, mcp_server, mock_adapter, mock_config
     ):

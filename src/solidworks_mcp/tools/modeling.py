@@ -8,7 +8,7 @@ import re
 from typing import Any, Literal, cast
 
 from fastmcp import FastMCP
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 from ..adapters.base import (
     AdapterResult,
@@ -697,8 +697,10 @@ class DeleteFeatureInput(CompatInput):
         name (str): Feature or sketch name to delete.
     """
 
+    # select_feature calls it feature_name; agents carry that over (seen live).
     name: str = Field(
-        description="Feature or sketch name, e.g. 'Boss-Extrude1' or 'Sketch1'"
+        description="Feature or sketch name, e.g. 'Boss-Extrude1' or 'Sketch1'",
+        validation_alias=AliasChoices("name", "feature_name"),
     )
 
 
@@ -711,7 +713,10 @@ class SuppressFeatureInput(CompatInput):
         configurations (str | list[str]): "this", "all" or configuration names.
     """
 
-    name: str = Field(description="Feature name, e.g. 'Fillet1'")
+    name: str = Field(
+        description="Feature name, e.g. 'Fillet1'",
+        validation_alias=AliasChoices("name", "feature_name"),
+    )
     suppress: bool = Field(
         default=True, description="True to suppress, False to unsuppress"
     )

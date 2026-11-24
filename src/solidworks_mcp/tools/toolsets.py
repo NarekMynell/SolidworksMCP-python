@@ -102,6 +102,10 @@ def apply_tool_visibility(mcp: Any, toolsets: tuple[str, ...], mode: str) -> Non
     families = families_for(toolsets)
     if families is not None:
         mcp.enable(tags=set(families), only=True)
+        # The allowlist hides every component type, so turn the untagged ones
+        # back on: toolsets choose tools, and the skill:// resources the server
+        # instructions point to must stay readable.
+        mcp.enable(components={"resource", "template", "prompt"})
     if mode == "search":
         mcp.disable(tags={DEPRECATED_TAG})
         mcp.add_transform(

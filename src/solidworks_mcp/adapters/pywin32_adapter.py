@@ -184,6 +184,11 @@ _DOCUMENT_OPERATIONS = frozenset(
 _DEFAULT_COM_SETTLE_SECONDS = 0.25
 _DEFAULT_DOC_SETTLE_SECONDS = 1.0
 
+#: swUserPreferenceToggle_e.swViewDisplayHideAllTypes and
+#: swUserPreferenceOption_e.swDetailingNoOptionSpecified (get_api_enum, SW 2025).
+_SW_VIEW_DISPLAY_HIDE_ALL_TYPES = 198
+_SW_NO_OPTION_SPECIFIED = 0
+
 
 def _settle_seconds(variable: str, default: float) -> float:
     """Read a non-negative settle pause from the environment."""
@@ -2217,6 +2222,50 @@ class PyWin32Adapter(
                 )
         self._attempt(lambda: target_doc.GraphicsRedraw2())
 
+    def _hide_reference_types(self, target_doc: Any) -> bool | None:
+        """Turn on the document's View > Hide All Types for a capture.
+
+        Planes, axes, sketches and origins showed in every exported picture,
+        and zoom to fit framed the planes too, so a large weldment filled a
+        small part of the frame (seen live on two test runs). Returns the
+        setting it found, for :meth:`_restore_reference_types`; ``None`` when
+        it couldn't be read, and then nothing is changed.
+        """
+        extension = self._attempt(lambda: target_doc.Extension)
+        if extension is None:
+            return None
+        self._attempt(
+            lambda: sw_type_info.flag_members(
+                extension, "GetUserPreferenceToggle", "SetUserPreferenceToggle"
+            )
+        )
+        before = self._attempt(
+            lambda: extension.GetUserPreferenceToggle(
+                _SW_VIEW_DISPLAY_HIDE_ALL_TYPES, _SW_NO_OPTION_SPECIFIED
+            )
+        )
+        if before is None:
+            return None
+        if not before:
+            self._attempt(
+                lambda: extension.SetUserPreferenceToggle(
+                    _SW_VIEW_DISPLAY_HIDE_ALL_TYPES, _SW_NO_OPTION_SPECIFIED, True
+                )
+            )
+        return bool(before)
+
+    def _restore_reference_types(self, target_doc: Any, before: bool | None) -> None:
+        """Put Hide All Types back as :meth:`_hide_reference_types` found it."""
+        if before is not False:
+            return
+        extension = self._attempt(lambda: target_doc.Extension)
+        if extension is not None:
+            self._attempt(
+                lambda: extension.SetUserPreferenceToggle(
+                    _SW_VIEW_DISPLAY_HIDE_ALL_TYPES, _SW_NO_OPTION_SPECIFIED, False
+                )
+            )
+
     def _save_screenshot_sized(
         self, target_doc: Any, resolved_path: str, width: int, height: int
     ) -> bool:
@@ -2414,19 +2463,23 @@ class PyWin32Adapter(
                 view_const = _VIEW_CONSTANTS[orientation]
                 self._set_view_orientation(target_doc, orientation, view_const)
 
-            # Zoom to fit so the model fills the viewport before capture
-            self._zoom_to_fit(target_doc)
+            hidden_before = self._hide_reference_types(target_doc)
+            try:
+                # Zoom to fit so the model fills the viewport before capture
+                self._zoom_to_fit(target_doc)
 
-            # Remove any pre-existing file so SolidWorks never shows the
-            # "already exists — replace?" confirmation dialog.
-            if _os.path.exists(resolved):
-                _os.remove(resolved)
+                # Remove any pre-existing file so SolidWorks never shows the
+                # "already exists — replace?" confirmation dialog.
+                if _os.path.exists(resolved):
+                    _os.remove(resolved)
 
-            # SaveBMP at the requested size; SaveAs3 (window size) otherwise.
-            saved = self._save_screenshot_sized(target_doc, resolved, width, height)
-            if not saved:
-                self._save_screenshot_with_saveas3(target_doc, resolved)
-                saved = _os.path.exists(resolved)
+                # SaveBMP at the requested size; SaveAs3 (window size) otherwise.
+                saved = self._save_screenshot_sized(target_doc, resolved, width, height)
+                if not saved:
+                    self._save_screenshot_with_saveas3(target_doc, resolved)
+                    saved = _os.path.exists(resolved)
+            finally:
+                self._restore_reference_types(target_doc, hidden_before)
 
             if not saved:
                 raise RuntimeError(

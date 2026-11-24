@@ -855,6 +855,32 @@ def test_a_member_by_name_gives_its_enum_whatever_the_case() -> None:
     )
 
 
+def test_a_member_of_a_long_enum_gives_its_neighbours_not_all() -> None:
+    # Seen live: one member of swUserPreferenceToggle_e returned all 818.
+    long_enum = {
+        "description": None,
+        "members": [{"name": f"swToggle{i}", "value": i} for i in range(100)],
+    }
+    index = {
+        "version": INDEX_FORMAT,
+        "com_objects": {},
+        "enums": {"swToggle_e": long_enum},
+    }
+
+    member = _dump(_lookup_enum(index, "swToggle50"))
+    whole = _dump(_lookup_enum(index, "swToggle_e"))
+    first = _dump(_lookup_enum(index, "swToggle0"))
+
+    assert [m["value"] for m in member["members"]] == list(range(45, 56))
+    assert member["member_count"] == 100
+    assert member["note"] == (
+        "swToggle_e has 100 members; these are the 11 around swToggle50. "
+        "Ask for swToggle_e for all."
+    )
+    assert len(whole["members"]) == 100 and whole["note"] is None
+    assert [m["value"] for m in first["members"]] == list(range(6))
+
+
 def test_an_unknown_enum_name_says_so() -> None:
     result = _dump(_lookup_enum(_ENUM_INDEX, "swNoSuch_e"))
 

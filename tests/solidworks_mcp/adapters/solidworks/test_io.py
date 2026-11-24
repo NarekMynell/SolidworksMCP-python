@@ -4324,6 +4324,86 @@ async def test_export_image_reports_the_size_actually_written(
     assert result.data["requested_dimensions"] == "640x480"
 
 
+def _extension_with_hide_all_types(before: bool) -> SimpleNamespace:
+    """A document extension whose Hide All Types (198) reads ``before``."""
+    return SimpleNamespace(
+        GetUserPreferenceToggle=Mock(return_value=before),
+        SetUserPreferenceToggle=Mock(return_value=True),
+    )
+
+
+@pytest.mark.asyncio
+async def test_export_image_hides_planes_and_sketches_then_restores(
+    monkeypatch, tmp_path
+) -> None:
+    """Planes showed in every picture (seen live): Hide All Types is on for the capture."""
+    adapter = _build_adapter(monkeypatch)
+    extension = _extension_with_hide_all_types(False)
+    order: list[str] = []
+    extension.SetUserPreferenceToggle.side_effect = lambda *a: order.append(
+        f"hide={a[2]}"
+    )
+
+    def _save_bmp(path, width, height):
+        order.append("capture")
+        _write_bmp(path, width, height)
+        return True
+
+    target_doc = SimpleNamespace(
+        SaveBMP=Mock(side_effect=_save_bmp), Extension=extension
+    )
+    adapter.currentModel = target_doc
+    adapter.swApp = SimpleNamespace(ActiveDoc=None, Frame=SimpleNamespace())
+
+    result = await adapter.export_image({"file_path": str(tmp_path / "shot.png")})
+
+    assert result.is_success, result.error
+    assert order == ["hide=True", "capture", "hide=False"]
+    extension.GetUserPreferenceToggle.assert_called_once_with(198, 0)
+
+
+@pytest.mark.asyncio
+async def test_export_image_restores_hide_all_types_when_the_capture_fails(
+    monkeypatch, tmp_path
+) -> None:
+    adapter = _build_adapter(monkeypatch)
+    extension = _extension_with_hide_all_types(False)
+    target_doc = SimpleNamespace(
+        SaveBMP=Mock(return_value=False),
+        SaveAs3=Mock(side_effect=RuntimeError("no window")),
+        Extension=extension,
+    )
+    adapter.currentModel = target_doc
+    adapter.swApp = SimpleNamespace(ActiveDoc=None, Frame=SimpleNamespace())
+
+    result = await adapter.export_image({"file_path": str(tmp_path / "shot.png")})
+
+    assert not result.is_success
+    assert [c.args for c in extension.SetUserPreferenceToggle.call_args_list] == [
+        (198, 0, True),
+        (198, 0, False),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_export_image_leaves_hide_all_types_alone_when_it_was_on(
+    monkeypatch, tmp_path
+) -> None:
+    adapter = _build_adapter(monkeypatch)
+    extension = _extension_with_hide_all_types(True)
+    target_doc = SimpleNamespace(
+        SaveBMP=Mock(side_effect=lambda p, w, h: _write_bmp(p, w, h) or True),
+        Extension=extension,
+    )
+    adapter.currentModel = target_doc
+    adapter.swApp = SimpleNamespace(ActiveDoc=None, Frame=SimpleNamespace())
+
+    result = await adapter.export_image({"file_path": str(tmp_path / "shot.png")})
+
+    assert result.is_success, result.error
+    extension.SetUserPreferenceToggle.assert_not_called()
+
+
 @pytest.mark.asyncio
 async def test_export_image_with_an_unreadable_size(monkeypatch, tmp_path) -> None:
     adapter = _build_adapter(monkeypatch)

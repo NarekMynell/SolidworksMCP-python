@@ -99,6 +99,32 @@ async def test_the_toolsets_list_their_families_only(families: dict[str, str]) -
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["list", "search"])
+async def test_toolsets_leave_the_skill_resources_readable(mode: str) -> None:
+    # Seen live: SOLIDWORKS_MCP_TOOLSETS hid skill://solidworks-mcp/SKILL.md,
+    # which the server instructions tell every agent to read.
+    from fastmcp.server.providers.skills import SkillProvider
+
+    from solidworks_mcp.skills import SKILL_DIR
+
+    adapter = MockSolidWorksAdapter({})
+    await adapter.connect()
+    mcp = FastMCP("toolsets")
+    mcp.add_provider(SkillProvider(SKILL_DIR))
+    await register_tools(mcp, adapter, {})
+    apply_tool_visibility(mcp, ("core", "drawing", "automation", "docs"), mode)
+
+    async with Client(mcp) as client:
+        listed = {str(r.uri) for r in await client.list_resources()}
+        read = await client.read_resource("skill://solidworks-mcp/SKILL.md")
+        tools = {t.name for t in await client.list_tools()}
+
+    assert "skill://solidworks-mcp/SKILL.md" in listed
+    assert "SolidWorks" in read[0].text
+    assert "generate_vba_extrusion" not in tools
+
+
+@pytest.mark.asyncio
 async def test_search_mode_finds_and_calls_the_same_tools() -> None:
     mcp = await _server(("core",), "search")
 
