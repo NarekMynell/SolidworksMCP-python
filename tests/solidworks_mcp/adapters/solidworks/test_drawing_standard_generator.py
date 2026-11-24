@@ -230,6 +230,13 @@ class _Drawing:
         self.sheet = _Sheet()
         self.notes: list[_Annotation] = []
         self.preferences: dict[int, Any] = {}
+        self.units: dict[int, int] = {}
+        self.Extension = SimpleNamespace(
+            SetUserPreferenceInteger=lambda pref, _opt, value: (
+                self.units.__setitem__(pref, value) is None
+            ),
+            GetUserPreferenceInteger=lambda pref, _opt: self.units.get(pref, 5),
+        )
         self.format_notes = _title_block() if format_notes is None else format_notes
         for note, after in zip(self.format_notes, self.format_notes[1:], strict=False):
             note.next = after
@@ -363,7 +370,18 @@ class _Harness(std.SolidWorksDrawingStandardMixin):
         return {}, [], {}
 
     async def open_model(self, file_path):
-        self.currentModel = SimpleNamespace(path=file_path)
+        self.preferences: dict[int, int] = {}
+        self.currentModel = SimpleNamespace(
+            path=file_path,
+            Extension=SimpleNamespace(
+                SetUserPreferenceInteger=lambda pref, _opt, value: (
+                    self.preferences.__setitem__(pref, value) is None
+                ),
+                GetUserPreferenceInteger=lambda pref, _opt: self.preferences.get(
+                    pref, 5
+                ),
+            ),
+        )
         return self._result("open_model", file_path)
 
     async def get_material(self, configuration=None):

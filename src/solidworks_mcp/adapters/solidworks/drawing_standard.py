@@ -296,7 +296,9 @@ def title_block_properties(
     model_props = {
         "Description": description,
         "Material": f'"SW-Material@{base}"',
-        "Weight": f'"SW-Mass@{base}"',
+        # Mass in kg (the model is set to kg, one decimal, before this is
+        # written): the MMGS template gave grams with no unit, 1342638.59.
+        "Weight": f'"SW-Mass@{base}" kg',
     }
     drawing_props = {
         "DrawnBy": author,
@@ -533,8 +535,44 @@ def _step(steps: list[dict[str, Any]], name: str, result: AdapterResult[Any]) ->
     )
 
 
+#: ``swUserPreferenceIntegerValue_e``: the mass unit and its decimals of
+#: mass properties; ``swUnitsMassPropMass_e.swUnitsMassPropMass_Kilograms``.
+_SW_MASS_UNIT, _SW_MASS_DECIMALS, _SW_KILOGRAMS = 259, 261, 3
+#: ``swUserPreferenceIntegerValue_e.swUnitSystem`` and
+#: ``swUnitSystem_e.swUnitSystem_Custom``.
+_SW_UNIT_SYSTEM, _SW_UNIT_SYSTEM_CUSTOM = 263, 4
+
+
 class SolidWorksDrawingStandardMixin:
     """Create complete standard A3 drawings, BOM tables and the sheet scale."""
+
+    def _mass_in_kg(self) -> AdapterResult[dict[str, Any]]:
+        """Set the active document's mass properties to kilograms, one decimal.
+
+        Run on the model (its SW-Mass) and on the drawing, which evaluates a
+        linked mass in its own units.
+        """
+        adapter = cast(Any, self)
+
+        def run() -> dict[str, Any]:
+            extension = adapter.currentModel.Extension
+            # MMGS fixes mass in grams; the Custom system starts from the
+            # document's current units (mm stays mm) and lets mass be kg.
+            system = extension.GetUserPreferenceInteger(_SW_UNIT_SYSTEM, 0)
+            if system != _SW_UNIT_SYSTEM_CUSTOM:
+                extension.SetUserPreferenceInteger(
+                    _SW_UNIT_SYSTEM, 0, _SW_UNIT_SYSTEM_CUSTOM
+                )
+            unit = extension.SetUserPreferenceInteger(_SW_MASS_UNIT, 0, _SW_KILOGRAMS)
+            decimals = extension.SetUserPreferenceInteger(_SW_MASS_DECIMALS, 0, 1)
+            if not (unit and decimals):
+                raise Exception("SolidWorks refused the mass unit (kg, one decimal)")
+            return {"mass_unit": "kg", "decimals": 1}
+
+        return cast(
+            AdapterResult[dict[str, Any]],
+            adapter._handle_com_operation("mass_in_kg", run),
+        )
 
     if TYPE_CHECKING:
         currentModel: Any
@@ -2080,6 +2118,7 @@ class SolidWorksDrawingStandardMixin:
             # "<not specified>". Its own Material property is left as set.
             model_props.pop("Material")
         if write_model_properties:
+            _step(steps, "mass_in_kg", self._mass_in_kg())
             for name, value in model_props.items():
                 _step(
                     steps,
@@ -2113,6 +2152,9 @@ class SolidWorksDrawingStandardMixin:
         if not created.is_success:
             return failed(f"Could not create drawing: {created.error}")
         _step(steps, "drawing_units_mm", await self.set_units("mm"))
+        # The title block's WEIGHT link is evaluated in the drawing's units:
+        # the part in kg still showed grams (1342638.59) on an MMGS drawing.
+        _step(steps, "drawing_mass_in_kg", self._mass_in_kg())
 
         # 3. The sheet, one COM step at a time.
         s = _Sheet(

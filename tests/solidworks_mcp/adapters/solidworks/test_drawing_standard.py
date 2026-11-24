@@ -102,7 +102,7 @@ class TestSheetMaths:
         assert model == {
             "Description": "Mounting Plate - Rev A",
             "Material": '"SW-Material@Mounting Plate.SLDPRT"',
-            "Weight": '"SW-Mass@Mounting Plate.SLDPRT"',
+            "Weight": '"SW-Mass@Mounting Plate.SLDPRT" kg',
         }
         assert drawing == {
             "DrawnBy": "saiq",
@@ -851,3 +851,42 @@ class TestCutListTable:
             adapter._insert_cut_list("Drawing View1", 10.0, 10.0)
         with pytest.raises(LookupError, match="No view named 'Side'"):
             adapter._insert_cut_list("Side", 10.0, 10.0)
+
+
+def test_the_model_mass_goes_to_kilograms_or_says_it_could_not() -> None:
+    from types import SimpleNamespace
+
+    from solidworks_mcp.adapters.base import AdapterResult, AdapterResultStatus
+    from solidworks_mcp.adapters.solidworks.drawing_standard import (
+        SolidWorksDrawingStandardMixin,
+    )
+
+    class _Adapter(SolidWorksDrawingStandardMixin):
+        def __init__(self, accept: bool) -> None:
+            self.set: dict[int, int] = {}
+
+            def setter(pref: int, _option: int, value: int) -> bool:
+                self.set[pref] = value
+                return accept
+
+            self.currentModel = SimpleNamespace(
+                Extension=SimpleNamespace(
+                    SetUserPreferenceInteger=setter,
+                    GetUserPreferenceInteger=lambda pref, _option: self.set.get(
+                        pref, 5
+                    ),
+                )
+            )
+
+        def _handle_com_operation(self, _name, fn):
+            try:
+                return AdapterResult(status=AdapterResultStatus.SUCCESS, data=fn())
+            except Exception as exc:
+                return AdapterResult(status=AdapterResultStatus.ERROR, error=str(exc))
+
+    taken = _Adapter(True)
+    assert taken._mass_in_kg().data == {"mass_unit": "kg", "decimals": 1}
+    assert taken.set == {263: 4, 259: 3, 261: 1}
+    refused = _Adapter(False)._mass_in_kg()
+    assert refused.status == AdapterResultStatus.ERROR
+    assert "kg" in str(refused.error)
