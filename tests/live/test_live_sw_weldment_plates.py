@@ -164,3 +164,41 @@ async def test_a_frame_on_base_plates_tidy_and_cut(
         assert Path(file["file"]).stat().st_size > 1000
     with open(dxfs["csv"], encoding="utf-8") as handle:
         assert len(list(csv.DictReader(handle))) == 2
+
+
+async def test_the_server_stack_forwards_the_plate_and_tree_tools() -> None:
+    """Through the adapter the server builds (load_config + create_adapter): an
+    agent's run once got "create_plates is not implemented" there while the
+    direct adapter worked."""
+    from solidworks_mcp import adapters
+    from solidworks_mcp.config import load_config
+
+    adapter = await adapters.create_adapter(load_config())
+    await adapter.connect()
+    try:
+        tools = await _tools(adapter)
+        _ok(await tools["create_part"]({"name": "stack_plates"}))
+        try:
+            plate = {
+                "name": "Base plate",
+                "mark": "BP-9",
+                "thickness": 20,
+                "width": 300,
+                "height": 300,
+                "origin": [0, 0, 0],
+                "normal": [0, 1, 0],
+                "holes": [{"diameter": 18, "positions": [[-115, -115], [115, 115]]}],
+            }
+            made = _ok(await tools["create_plates"]({"plates": [plate]}))
+            assert made["plates"]["plates"][0]["definition"] == "fully defined"
+            audit = _ok(await tools["check_feature_tree"]({}))["audit"]
+            assert audit["verdict"] == "clean"
+            _ok(
+                await tools["set_feature_folders"](
+                    {"rename": {"BP-9 Base plate": "BP-9 Foot"}}
+                )
+            )
+        finally:
+            await tools["close_model"]({"save": False})
+    finally:
+        await adapter.disconnect()
