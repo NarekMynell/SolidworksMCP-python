@@ -39,6 +39,7 @@ from .solidworks import (
     SolidWorksSheetMetalMixin,
     SolidWorksSketchMixin,
     SolidWorksTemplatesMixin,
+    SolidWorksWeldmentCutsMixin,
     SolidWorksWeldmentPlatesMixin,
     SolidWorksWeldmentsMixin,
     SolidWorksWeldmentVentsMixin,
@@ -1731,6 +1732,7 @@ class _FeatureSelectionService:
 class PyWin32Adapter(
     SolidWorksAssemblyMixin,
     SolidWorksSheetMetalMixin,
+    SolidWorksWeldmentCutsMixin,
     SolidWorksWeldmentPlatesMixin,
     SolidWorksWeldmentVentsMixin,
     SolidWorksWeldmentsMixin,

@@ -1998,6 +1998,22 @@ class SolidWorksAdapter(ABC):
             error="export_plate_dxfs is not implemented by this adapter",
         )
 
+    async def create_cuts(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Cut bolt holes, copes and notches in a weldment's members.
+
+        Args:
+            params (dict[str, Any]): The cuts, folder and definition.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The result, or error.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="create_cuts is not implemented by this adapter",
+        )
+
     async def pack_and_go_assembly(
         self, source_path: str, target_dir: str
     ) -> AdapterResult[dict[str, Any]]:

@@ -18,6 +18,7 @@ from fastmcp import FastMCP
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from ..adapters.base import SolidWorksAdapter
+from ..adapters.solidworks.weldment_cuts import check_cut
 from ..adapters.solidworks.weldment_plates import check_plate, plate_frame
 from .input_compat import CompatInput
 from .tool_boundary import (
@@ -546,44 +547,190 @@ class CreatePlatesInput(CompatInput):
         return self
 
 
+def _load(
+    path: str, key: str, spec: type[BaseModel], most: int
+) -> list[dict[str, Any]]:
+    """The items a JSON file holds (a list, or ``{key: [...]}``), each checked by ``spec``.
+
+    Raises:
+        InvalidInputError: The file is missing, isn't JSON, holds too many
+            items, or an item is wrong.
+    """
+    source = f"{key}_file"
+    if not os.path.isfile(path):
+        raise InvalidInputError(f"{source} {path!r} doesn't exist")
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            data = json.load(f)
+    except (OSError, ValueError) as error:
+        raise InvalidInputError(
+            f"{source} {path!r} isn't readable JSON: {error}"
+        ) from error
+    if isinstance(data, dict):
+        data = data.get(key)
+    if not isinstance(data, list) or not data:
+        raise InvalidInputError(
+            f'{source} {path!r} must hold a list of {key}, or {{"{key}": [...]}}'
+        )
+    if len(data) > most:
+        raise InvalidInputError(
+            f"{source} {path!r} has {len(data)} {key}; one call takes {most}: split it"
+        )
+    items = []
+    for index, item in enumerate(data):
+        try:
+            items.append(spec.model_validate(item).model_dump())
+        except ValidationError as error:
+            first = error.errors()[0]
+            where = ".".join(str(p) for p in first.get("loc", ()))
+            raise InvalidInputError(
+                f"{source} entry {index}{' ' + where if where else ''}: "
+                f"{first.get('msg')} ({path})"
+            ) from error
+    return items
+
+
 def load_plates(path: str) -> list[dict[str, Any]]:
     """The plates a JSON file holds, each checked like ``plates``.
 
     Raises:
         InvalidInputError: The file is missing, isn't JSON, or a plate is wrong.
     """
-    if not os.path.isfile(path):
-        raise InvalidInputError(f"plates_file {path!r} doesn't exist")
-    try:
-        with open(path, encoding="utf-8-sig") as f:
-            data = json.load(f)
-    except (OSError, ValueError) as error:
-        raise InvalidInputError(
-            f"plates_file {path!r} isn't readable JSON: {error}"
-        ) from error
-    if isinstance(data, dict):
-        data = data.get("plates")
-    if not isinstance(data, list) or not data:
-        raise InvalidInputError(
-            f'plates_file {path!r} must hold a list of plates, or {{"plates": [...]}}'
-        )
-    if len(data) > MAX_PLATES:
-        raise InvalidInputError(
-            f"plates_file {path!r} has {len(data)} plates; one call takes "
-            f"{MAX_PLATES}: split it"
-        )
-    plates = []
-    for index, item in enumerate(data):
-        try:
-            plates.append(PlateSpec.model_validate(item).model_dump())
-        except ValidationError as error:
-            first = error.errors()[0]
-            where = ".".join(str(p) for p in first.get("loc", ()))
-            raise InvalidInputError(
-                f"plates_file entry {index}{' ' + where if where else ''}: "
-                f"{first.get('msg')} ({path})"
-            ) from error
-    return plates
+    return _load(path, "plates", PlateSpec, MAX_PLATES)
+
+
+#: The most cuts one call takes.
+MAX_CUTS = 500
+
+
+class CutSpec(BaseModel):
+    """One cut in the members: holes, a cope or a notch, where it sits and how deep.
+
+    Attributes:
+        name (str): What the cut is.
+        origin (list[float]): The cut's reference point, mm.
+        normal (list[float]): The direction it goes through.
+        x_axis (list[float] | None): The cut's own x direction.
+        outline (list[list[float]] | None): The steel to remove, in its x/y.
+        width (float | None): A centred rectangle's width, mm.
+        height (float | None): A centred rectangle's height, mm.
+        holes (list[PlateHoles]): Holes, by size.
+        depth (float): How far it reaches, half each side, mm.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(
+        min_length=1,
+        description="What the cut is, e.g. 'FJ-1 end cope', 'MB-1 web holes A'",
+    )
+    origin: list[float] = Field(
+        min_length=3,
+        max_length=3,
+        description="The cut's reference point [x, y, z] mm (its own x, y = 0), in "
+        "the middle of the steel it cuts: on the web's centre plane for web "
+        "holes or a cope",
+    )
+    normal: list[float] = Field(
+        min_length=3,
+        max_length=3,
+        description="The direction the cut goes through [x, y, z], any length: "
+        "square to the web for web holes and copes, along the bolts",
+    )
+    x_axis: list[float] | None = Field(
+        default=None,
+        min_length=3,
+        max_length=3,
+        description="The cut's own x direction; default: model x for a level cut, "
+        "otherwise its y runs up",
+    )
+    outline: list[list[float]] | None = Field(
+        default=None,
+        min_length=3,
+        description="Corners [x, y] of the steel to remove, in the cut's x/y, mm, "
+        "in order: a cope or notch, drawn past the member's end and flange",
+    )
+    width: float | None = Field(
+        default=None,
+        gt=0,
+        description="A width x height opening centred on origin instead of outline, mm",
+    )
+    height: float | None = Field(
+        default=None, gt=0, description="The opening's height, mm"
+    )
+    holes: list[PlateHoles] = Field(
+        default_factory=list,
+        description="Holes, by size, in the cut's x/y; none inside the outline",
+    )
+    depth: float = Field(
+        gt=0,
+        le=5000,
+        description="How far the cut reaches, mm, half each side of origin's "
+        "plane: through the web and a plate on it, short of the next member",
+    )
+
+    @model_validator(mode="after")
+    def _shape(self) -> CutSpec:
+        """An outline or an opening (or neither, for holes), and holes clear of it."""
+        if self.outline is not None and (self.width or self.height):
+            raise ValueError("give outline, or width and height, not both")
+        if (self.width is None) != (self.height is None):
+            raise ValueError("give width and height together")
+        if self.outline is not None and any(len(p) != 2 for p in self.outline):
+            raise ValueError("each outline corner is [x, y]")
+        check_cut(self.model_dump())
+        plate_frame(self.origin, self.normal, self.x_axis)
+        return self
+
+
+class CreateCutsInput(CompatInput):
+    """Input schema for holes, copes and notches in weldment members.
+
+    Attributes:
+        cuts (list[CutSpec] | None): The cuts.
+        cuts_file (str | None): A JSON file of them instead.
+        folder (str | None): The feature-tree folder.
+        define (str): How the cut sketches are tied down.
+    """
+
+    cuts: list[CutSpec] | None = Field(
+        default=None,
+        min_length=1,
+        max_length=MAX_CUTS,
+        description="The cuts, each with name, origin, normal, depth and an "
+        "outline (or width and height), holes, or both",
+    )
+    cuts_file: str | None = Field(
+        default=None,
+        description='A .json file of cuts instead (a list, or {"cuts": [...]}), '
+        "such as a script writes for every joist end",
+    )
+    folder: str | None = Field(
+        default="Cuts",
+        description="Feature-tree folder for the cuts (made if missing); null for none",
+    )
+    define: Literal["dimensions", "none"] = Field(
+        default="dimensions",
+        description="'dimensions' dimensions every corner and hole of each cut "
+        "from the origin and each hole's diameter (fully defined sketches); "
+        "'none' leaves them under defined",
+    )
+
+    @model_validator(mode="after")
+    def _one_source(self) -> CreateCutsInput:
+        """Cuts or a file of them, not both."""
+        if (self.cuts is None) == (self.cuts_file is None):
+            raise ValueError("give cuts or cuts_file, one of them")
+        return self
+
+
+def load_cuts(path: str) -> list[dict[str, Any]]:
+    """The cuts a JSON file holds, each checked like ``cuts``.
+
+    Raises:
+        InvalidInputError: The file is missing, isn't JSON, or a cut is wrong.
+    """
+    return _load(path, "cuts", CutSpec, MAX_CUTS)
 
 
 class CreateVentHolesInput(CompatInput):
@@ -967,6 +1114,59 @@ async def register_weldment_tools(
         return reply
 
     @mcp.tool()
+    async def create_cuts(input_data: CreateCutsInput) -> dict[str, Any]:
+        """Cut bolt holes, copes and notches in weldment members in one call.
+
+        Use it for the holes a bolted joint needs in a beam's web or flange
+        and for the copes at beam ends, instead of sketches and cuts one by
+        one; a plate's own holes go in `create_plates`. Each cut is an
+        `outline` (or `width` x `height`), `holes`, or both, in its own x/y,
+        placed by `origin` (on the middle of the steel it cuts), `normal` (the
+        way it goes through) and optionally `x_axis`, and reaching `depth`
+        mm, half each side: through a web and the fin plate on it, short of
+        the next member. Each sketch is dimensioned from the origin (fully
+        defined) on a plane tied to the main planes, the cut is named, and
+        `bodies` lists what it went through. Many cuts: give `cuts_file`.
+        Needs: an open part with the members in, no sketch open. Changes:
+        adds planes, sketches and one cut per entry, in `folder`. Returns:
+        `cuts` with `cuts` (each `name`, `feature`, `sketch`, `plane`,
+        `holes`, `bodies`, `definition`), `planes_made` and `folder`.
+
+        Args:
+            input_data: `cuts` (or `cuts_file`); `folder` ('Cuts') and
+                `define` ('dimensions') have defaults.
+
+        Returns:
+            dict[str, Any]: The cuts made.
+        """
+        input_data = normalize_input(input_data, CreateCutsInput)
+        require_capability(adapter, "create_cuts", "Active adapter can't cut members")
+        params = input_data.model_dump(exclude={"cuts_file"})
+        if input_data.cuts_file:
+            params["cuts"] = load_cuts(input_data.cuts_file)
+        result = await adapter.create_cuts(params)
+        require_success(result, context="Failed to cut the members")
+        data = result.data or {}
+        cuts = data.get("cuts") or []
+        loose = [
+            c["name"]
+            for c in cuts
+            if c.get("definition") not in ("fully defined", "not checked")
+        ]
+        bodies = {b for c in cuts for b in c.get("bodies") or []}
+        reply: dict[str, Any] = {
+            "status": "success",
+            "message": f"Made {len(cuts)} cut(s), "
+            f"{sum(c.get('holes', 0) for c in cuts)} hole(s)"
+            + (f", through {len(bodies)} body(ies)" if bodies else ""),
+            "cuts": data,
+            "execution_time": result.execution_time,
+        }
+        if loose:
+            reply["warning"] = f"Not fully defined: {', '.join(loose[:10])}"
+        return reply
+
+    @mcp.tool()
     async def create_vent_holes(input_data: CreateVentHolesInput) -> dict[str, Any]:
         """Cut the vent and drain holes hot-dip galvanizing needs in closed hollow members (RHS, SHS).
 
@@ -1083,4 +1283,4 @@ async def register_weldment_tools(
             reply["warning"] = warning
         return reply
 
-    return 9
+    return 10

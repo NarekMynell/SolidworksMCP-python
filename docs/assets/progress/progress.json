@@ -1,8 +1,8 @@
 {
  "tools": {
-  "total": 170,
+  "total": 171,
   "by_level": {
-   "stable": 162,
+   "stable": 163,
    "beta": 0,
    "experimental": 0,
    "planned": 0,
@@ -337,6 +337,13 @@
     "level": "stable",
     "reason": "",
     "summary": "Cut material from the active part with a closed sketch profile: holes, slots, windows."
+   },
+   {
+    "name": "create_cuts",
+    "family": "weldments",
+    "level": "stable",
+    "reason": "",
+    "summary": "Cut bolt holes, copes and notches in weldment members in one call."
    },
    {
     "name": "create_detail_view",

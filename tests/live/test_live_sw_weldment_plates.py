@@ -210,6 +210,92 @@ async def test_the_server_stack_forwards_the_plate_and_tree_tools() -> None:
         await adapter.disconnect()
 
 
+async def test_holes_through_a_joist_and_its_fin_plate_and_a_cope(
+    scratch: Any,
+) -> None:
+    """An IPE160 joist along z (its web the x = 0 plane) with an 8 mm fin
+    plate on its web: two Ø18 holes go through web and plate in one cut, a
+    cope takes the top flange off the last 90 mm; each sketch fully defined,
+    each cut through the bodies it should reach and no other, and the plate
+    still described in the cut list after its holes were cut."""
+    tools = await _tools(scratch.adapter)
+    _ok(await tools["create_part"]({"name": "cuts"}))
+    _ok(
+        await tools["create_structural_members"](
+            {
+                "standard": "DIN",
+                "profile_type": "ipe",
+                "size": "IPE160",
+                "segments": [[0, 0, 0, 0, 0, 2000]],
+                "name": "Joist",
+                "folder": "Frame",
+            }
+        )
+    )
+    _ok(
+        await tools["create_plates"](
+            {
+                "plates": [
+                    {
+                        "name": "Fin plate",
+                        "mark": "FP-1",
+                        "thickness": 8,
+                        "width": 100,
+                        "height": 95,
+                        "origin": [2.5, -10, 1950],
+                        "normal": [1, 0, 0],
+                    }
+                ]
+            }
+        )
+    )
+    before = _volume(_ok(await tools["get_mass_properties"]({})))
+    holes = {
+        "name": "FJ-1 web holes",
+        "origin": [4, -10, 1950],
+        "normal": [1, 0, 0],
+        "holes": [{"diameter": 18, "positions": [[0, -27.5], [0, 27.5]]}],
+        "depth": 30,
+    }
+    cope = {
+        "name": "FJ-1 end cope",
+        "origin": [0, 80, 2000],
+        "normal": [1, 0, 0],
+        "outline": [[-10, -30], [90, -30], [90, 10], [-10, 10]],
+        "depth": 100,
+    }
+    made = _ok(await tools["create_cuts"]({"cuts": [holes, cope]}))["cuts"]
+    by_name = {c["name"]: c for c in made["cuts"]}
+    assert [c["definition"] for c in made["cuts"]] == ["fully defined"] * 2
+    assert len(by_name["FJ-1 web holes"]["bodies"]) == 2, by_name
+    assert len(by_name["FJ-1 end cope"]["bodies"]) == 1, by_name
+    assert made["folder"]["refused"] == []
+    removed = before - _volume(_ok(await tools["get_mass_properties"]({})))
+    holes_mm3 = 2 * math.pi * 9**2 * (5.0 + 8.0)  # web 5 mm, plate 8 mm
+    flange_mm3 = 82 * 7.4 * 90  # the top flange over the cope's length
+    assert holes_mm3 + flange_mm3 < removed < holes_mm3 + flange_mm3 + 25_000, removed
+    items = _ok(await tools["get_cut_list"]({}))["cut_list"]["items"]
+    assert "PL8 100x95" in {i["description"] for i in items}, items
+    audit = _ok(await tools["check_feature_tree"]({}))["audit"]
+    assert audit["verdict"] == "clean", audit
+
+    missed = await tools["create_cuts"](
+        {
+            "cuts": [
+                {
+                    "name": "In the air",
+                    "origin": [500, 500, 500],
+                    "normal": [1, 0, 0],
+                    "holes": [{"diameter": 18, "positions": [[0, 0]]}],
+                    "depth": 10,
+                }
+            ]
+        }
+    )
+    assert missed["status"] == "error"
+    assert "no steel within 10 mm" in missed["message"]
+
+
 async def test_vent_and_drain_holes_through_one_wall(scratch: Any) -> None:
     """A post and a rail of SHS 80x80x5, hung as built: each gets a vent near
     its higher end through the wall facing up (or, plumb, one side) and a drain

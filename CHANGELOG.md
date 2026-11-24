@@ -14,6 +14,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`create_cuts`: bolt holes, copes and notches in weldment members in one
+  call.** A platform built from a description spent about 100 calls on
+  sketches, circles, Fix relations and cuts for its beams' end copes and web
+  holes, twice over when the first sketches came out under defined. Each cut
+  is an outline, holes or both in its own x/y, placed like a plate and cut
+  mid-plane through `depth`, so holes go through a web and the fin plate on
+  it and a cope takes one joist's flange, not the next joist's. Every sketch
+  is fully defined, each cut is named and foldered, and the reply lists the
+  bodies it went through. Stable, checked live on SolidWorks 2025.
 - **Models a CAD specialist can open and edit: fully defined sketches,
   folders and names.** Two agent-built 20 m weldments came back with every
   sketch (75) under defined, so anything dragged moved, no folders and
@@ -117,6 +126,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Drawings no longer fill with the generated sketches' dimensions.** Every
+  dimension the skeleton and plate sketches get is unmarked for drawings,
+  and `generate_drawing_package` leaves model dimensions off an assembly of
+  weldments: a platform's assembly drawing had imported 385 of them and
+  failed its overlap check.
+- **`add_note` sizes its text.** `font_size` was passed where SolidWorks
+  takes a text format, so every note kept the drawing's size; it now
+  applies, the reply carries `text_height_mm`, and left out the drawing's
+  own size is kept.
+- **`pack_and_go_assembly` works through the server.** The circuit breaker
+  and the connection pool didn't forward it ("object has no attribute");
+  a test now checks that both forward every adapter method a tool calls.
 - **The server's skill couldn't be read with toolsets set.** The toolsets
   filter (`SOLIDWORKS_MCP_TOOLSETS`) hid every untagged component, so
   `skill://solidworks-mcp/SKILL.md`, which the server instructions tell each

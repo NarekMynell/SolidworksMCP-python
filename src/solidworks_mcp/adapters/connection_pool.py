@@ -1901,6 +1901,14 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             lambda adapter: adapter.check_feature_tree(params),
         )
 
+    async def create_cuts(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Cut holes, copes and notches in members, using pool."""
+        return await self._execute_with_pool(
+            "create_cuts", lambda adapter: adapter.create_cuts(params)
+        )
+
     async def pack_and_go_assembly(
         self, source_path: str, target_dir: str
     ) -> AdapterResult[dict[str, Any]]:

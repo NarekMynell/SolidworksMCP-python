@@ -15,7 +15,8 @@ bracing) on centre lines in model axes (y up), `create_trim_extend`
 wherever one member frames into another, `check_joints` until no member
 runs into another, `create_end_caps` on the open hollow ends,
 `create_plates` for base, splice and connection plates with their bolt
-holes, `create_vent_holes` in closed hollow members of galvanized work, `set_material`, then `get_cut_list`, `export_plate_dxfs` for the
+holes, `create_cuts` for the bolt holes and copes in the members,
+`create_vent_holes` in closed hollow members of galvanized work, `set_material`, then `get_cut_list`, `export_plate_dxfs` for the
 cutting table and `check_feature_tree` before the model is handed over.
 
 Every sketch these tools draw comes out fully defined: a skeleton's nodes
@@ -188,6 +189,31 @@ Add plates to a weldment in one call: base, splice, cap, gusset and connection p
 
 ```json
 {"plates": [{"name": "Base plate", "mark": "BP-1", "thickness": 15, "width": 250, "height": 250, "origin": [0, 0, 0], "normal": [0, -1, 0], "holes": [{"diameter": 22, "positions": [[-85, -85], [85, -85], [85, 85], [-85, 85]]}]}]}
+```
+
+---
+
+### `create_cuts`
+
+Cut bolt holes, copes and notches in weldment members in one call.
+
+**Prerequisite:** An open part with the members in, no sketch open
+
+**SolidWorks automation note:** A cut is drawn like a plate (`create_plates`): its outline and holes in its own x/y, on a main plane, a plane offset from it (named `Cuts Y+2760`, shared by the cuts on that level) or, for a tilted cut, a plane square to a line in a "Cut axes" 3D sketch; every corner and hole centre is dimensioned from the origin and every hole's diameter, so the sketch is fully defined. `IFeatureManager.FeatureCut4` then cuts it mid-plane (`swEndCondMidPlane`) through `depth`, so it removes steel within half the depth each side of the plane and nothing further: a joist's web and the fin plate bolted to it, not the next joist. The bodies it went through are read from the cut's faces (`IFeature.GetFaces`, `IFace2.GetBody`). A hole inside the outline is refused (SolidWorks would leave it standing as an island), as are overlapping holes; a cut that reaches no steel is refused with what to check.
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `cuts` | `list[object]?` | — | `None` | The cuts: `name`, `origin` `[x, y, z]` (in the middle of the steel it cuts), `normal` (the way it goes through), `depth` (mm, half each side), and an `outline` (corners `[x, y]` of the steel to remove) or `width` and `height` (an opening centred on `origin`), `holes` (each `diameter` and `positions`), or both; optionally `x_axis` |
+| `cuts_file` | `str?` | — | `None` | A `.json` file of cuts instead (a list, or `{"cuts": [...]}`); up to 500 |
+| `folder` | `str?` | — | `Cuts` | Feature-tree folder for the cuts, made if missing |
+| `define` | `str` | — | `dimensions` | `dimensions` fully defines each cut's sketch; `none` leaves it under defined |
+
+**Sample call:**
+
+```json
+{"cuts": [{"name": "FJ-1 end cope", "origin": [3987, 2920, 0], "normal": [0, 0, 1], "outline": [[-80, 0], [10, 0], [10, 90], [-80, 90]], "holes": [{"diameter": 18, "positions": [[-40, -40], [-40, -95]]}], "depth": 120}]}
 ```
 
 ---

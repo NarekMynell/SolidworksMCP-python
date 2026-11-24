@@ -21,6 +21,7 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from .base import AdapterResult, AdapterResultStatus
+from .solidworks.weldment_cuts import check_cut
 from .solidworks.weldment_library import chains, normalise
 from .solidworks.weldment_plates import check_plate, description, main_axis, plate_frame
 
@@ -86,6 +87,36 @@ def _into_folder(
         else:
             missing.append(name)
     return {"folder": folder, "moved": moved, "missing": missing, "refused": []}
+
+
+def _sketch_plane(
+    frame: Any,
+    label: str,
+    planes: dict[tuple[int, float], str],
+    tree: list[dict[str, Any]],
+    made: list[str],
+    prefix: str,
+) -> tuple[str, bool]:
+    """The plane a mock plate or cut is drawn on, and whether it was made for it alone.
+
+    As live: a main plane at offset 0, a plane offset from it shared per call
+    (``<prefix> Y+2745``), or a tilted plane of its own.
+    """
+    along = main_axis(frame.n)
+    if along is None:
+        plane = f"{label} plane"
+        tree.append(_tree_item(plane, "RefPlane"))
+        made.append(plane)
+        return plane, True
+    axis = along[0]
+    offset = round(frame.origin[axis], 6)
+    if abs(offset) < 1e-6:
+        return ("Right Plane", "Top Plane", "Front Plane")[axis], False
+    if (axis, offset) not in planes:
+        planes[(axis, offset)] = f"{prefix} {'XYZ'[axis]}{offset:+g}"
+        tree.append(_tree_item(planes[(axis, offset)], "RefPlane"))
+        made.append(planes[(axis, offset)])
+    return planes[(axis, offset)], False
 
 
 def _area(points: list[tuple[float, float]]) -> float:
@@ -354,24 +385,8 @@ class MockWeldmentsMixin:
                 if spec.get("mark")
                 else str(spec["name"])
             )
-            along = main_axis(frame.n)
-            if along is None:
-                tilted += 1
-                plane = f"{label} plane"
-                tree.append(_tree_item(plane, "RefPlane"))
-                made.append(plane)
-            else:
-                axis = along[0]
-                offset = round(frame.origin[axis], 6)
-                if abs(offset) < 1e-6:
-                    plane = ("Right Plane", "Top Plane", "Front Plane")[axis]
-                elif (axis, offset) in planes:
-                    plane = planes[(axis, offset)]
-                else:
-                    plane = f"Plates {'XYZ'[axis]}{offset:+g}"
-                    planes[(axis, offset)] = plane
-                    tree.append(_tree_item(plane, "RefPlane"))
-                    made.append(plane)
+            plane, own = _sketch_plane(frame, label, planes, tree, made, "Plates")
+            tilted += own
             tree.append(
                 _tree_item(
                     f"{label} sketch", "ProfileFeature", defined=defined, absorbed=True
@@ -416,6 +431,61 @@ class MockWeldmentsMixin:
                 "planes_made": len(planes) + tilted,
                 "folder": _into_folder(tree, str(folder), made) if folder else None,
                 "bodies_after": len(state["bodies"]),
+            },
+        )
+
+    async def create_cuts(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock cuts: a sketch and a cut each, on planes named as the real ones.
+
+        Bodies aren't modelled as solids here, so which bodies a cut went
+        through is reported as unknown (``None``), never guessed.
+        """
+        if error := self._part_error("create_cuts"):
+            return error
+        state = self._weld_state()
+        tree = state.setdefault("tree", [])
+        defined = str(params.get("define") or "dimensions") == "dimensions"
+        made: list[str] = []
+        planes: dict[tuple[int, float], str] = {}
+        tilted = 0
+        results: list[dict[str, Any]] = []
+        for spec in params["cuts"]:
+            try:
+                check_cut(spec)
+                frame = plate_frame(spec["origin"], spec["normal"], spec.get("x_axis"))
+            except ValueError as error:
+                return _error(str(error))
+            label = str(spec["name"]).strip()
+            plane, own = _sketch_plane(frame, label, planes, tree, made, "Cuts")
+            tilted += own
+            tree.append(
+                _tree_item(
+                    f"{label} sketch", "ProfileFeature", defined=defined, absorbed=True
+                )
+            )
+            tree.append(_tree_item(label, "Cut"))
+            made.append(label)
+            results.append(
+                {
+                    "name": label,
+                    "feature": label,
+                    "sketch": f"{label} sketch",
+                    "plane": plane,
+                    "holes": sum(len(h["positions"]) for h in spec.get("holes") or []),
+                    "bodies": None,
+                    "definition": "fully defined" if defined else "not checked",
+                }
+            )
+        self._operation_count += 1
+        folder = params.get("folder")
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "cuts": results,
+                "planes_made": len(planes) + tilted,
+                "folder": _into_folder(tree, str(folder), made) if folder else None,
             },
         )
 

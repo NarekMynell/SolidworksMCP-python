@@ -9,8 +9,10 @@ import pytest
 
 from solidworks_mcp.adapters.base import AdapterResult, AdapterResultStatus
 from solidworks_mcp.tools.weldments import (
+    MAX_CUTS,
     MAX_PLATES,
     CheckJointsInput,
+    CreateCutsInput,
     CreateEndCapsInput,
     CreatePlatesInput,
     CreateStructuralMembersInput,
@@ -649,6 +651,162 @@ async def test_a_plate_left_loose_is_flagged(
     tools = await _tools(mcp_server, mock_adapter)
     reply = await tools["create_plates"]({"plates": [_PLATE]})
     assert reply["warning"] == "Not fully defined: BP-1 Base plate"
+
+
+#: A joist end: a cope through the top flange and two holes in the web below.
+_CUT = {
+    "name": "FJ-1 end cope",
+    "origin": [2000, 2920, 0],
+    "normal": [0, 0, 1],
+    "outline": [[-80, 0], [10, 0], [10, 90], [-80, 90]],
+    "holes": [{"diameter": 18, "positions": [[-40, -40], [-40, -95]]}],
+    "depth": 120,
+}
+
+
+@pytest.mark.parametrize(
+    ("cut", "message"),
+    [
+        ({**_CUT, "width": 40}, "not both"),
+        ({**_CUT, "outline": None, "width": 40}, "width and height together"),
+        ({**_CUT, "outline": [[0, 0], [10, 0, 1], [0, 10]]}, "each outline corner is"),
+        ({**_CUT, "outline": None, "holes": []}, "give an outline"),
+        (
+            {**_CUT, "holes": [{"diameter": 18, "positions": [[-40, 40]]}]},
+            "inside the outline",
+        ),
+        ({**_CUT, "depth": 0}, "greater than 0"),
+        ({**_CUT, "normal": [0, 0, 0]}, "normal has no length"),
+        ({**_CUT, "colour": "red"}, "Extra inputs"),
+    ],
+    ids=[
+        "outline and width",
+        "width alone",
+        "bad corner",
+        "nothing to cut",
+        "hole inside",
+        "no depth",
+        "no normal",
+        "unknown field",
+    ],
+)
+def test_cut_input_refusals(cut: dict[str, Any], message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        CreateCutsInput(cuts=[cut])
+
+
+def test_cuts_or_a_file_not_both() -> None:
+    with pytest.raises(ValueError, match="cuts or cuts_file"):
+        CreateCutsInput()
+    with pytest.raises(ValueError, match="cuts or cuts_file"):
+        CreateCutsInput(cuts=[_CUT], cuts_file="c.json")
+
+
+@pytest.mark.asyncio
+async def test_copes_and_holes_in_one_call(mcp_server, mock_adapter) -> None:
+    tools = await _tools(mcp_server, mock_adapter)
+    await mock_adapter.create_part()
+    flange = {
+        "name": "MB-1 flange holes",
+        "origin": [0, 2760, 0],
+        "normal": [0, 1, 0],
+        "holes": [{"diameter": 18, "positions": [[-45, -35], [45, 35]]}],
+        "depth": 40,
+    }
+
+    made = await tools["create_cuts"]({"cuts": [_CUT, flange]})
+
+    assert made["status"] == "success", made
+    assert made["message"] == "Made 2 cut(s), 4 hole(s)"
+    data = made["cuts"]
+    assert [c["plane"] for c in data["cuts"]] == ["Front Plane", "Cuts Y+2760"]
+    assert data["planes_made"] == 1
+    assert data["folder"]["folder"] == "Cuts"
+    assert data["cuts"][0]["bodies"] is None  # the mock has no solids to cut
+    tree = (await mock_adapter.check_feature_tree({})).data
+    assert tree["not_fully_defined"] == []
+
+
+@pytest.mark.asyncio
+async def test_cuts_from_a_file(mcp_server, mock_adapter, tmp_path) -> None:
+    tools = await _tools(mcp_server, mock_adapter)
+    await mock_adapter.create_part()
+    good = tmp_path / "cuts.json"
+    good.write_text(json.dumps({"cuts": [_CUT]}), encoding="utf-8")
+    made = await tools["create_cuts"]({"cuts_file": str(good), "define": "none"})
+    assert made["status"] == "success", made
+    assert made["cuts"]["cuts"][0]["definition"] == "not checked"
+
+    cases = {
+        "many.json": (json.dumps([_CUT] * (MAX_CUTS + 1)), "split it"),
+        "entry.json": (json.dumps([_CUT, {**_CUT, "depth": -1}]), "entry 1 depth"),
+        "shape.json": ('{"cuts": 3}', "must hold a list of cuts"),
+    }
+    for name, (text, message) in cases.items():
+        path = tmp_path / name
+        path.write_text(text, encoding="utf-8")
+        reply = await tools["create_cuts"]({"cuts_file": str(path)})
+        assert reply["status"] == "error", name
+        assert message in reply["message"], (name, reply["message"])
+
+
+@pytest.mark.asyncio
+async def test_a_cut_through_bodies_says_how_many_and_flags_a_loose_sketch(
+    mcp_server, mock_adapter, monkeypatch
+) -> None:
+    async def cut(_params: dict[str, Any]) -> AdapterResult[dict[str, Any]]:
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "cuts": [
+                    {
+                        "name": "FJ-1 end cope",
+                        "holes": 2,
+                        "bodies": ["IPE160 joist", "FP-1 fin plate"],
+                        "definition": "under defined",
+                    }
+                ]
+            },
+        )
+
+    monkeypatch.setattr(mock_adapter, "create_cuts", cut)
+    tools = await _tools(mcp_server, mock_adapter)
+    reply = await tools["create_cuts"]({"cuts": [_CUT]})
+    assert reply["message"] == "Made 1 cut(s), 2 hole(s), through 2 body(ies)"
+    assert reply["warning"] == "Not fully defined: FJ-1 end cope"
+
+
+@pytest.mark.asyncio
+async def test_a_cut_the_adapter_refuses_is_an_error(
+    mcp_server, mock_adapter, monkeypatch
+) -> None:
+    async def refuse(_params: dict[str, Any]) -> AdapterResult[dict[str, Any]]:
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="SolidWorks made no cut for FJ-1 end cope: no steel within 120 mm",
+        )
+
+    monkeypatch.setattr(mock_adapter, "create_cuts", refuse)
+    tools = await _tools(mcp_server, mock_adapter)
+    reply = await tools["create_cuts"]({"cuts": [_CUT]})
+    assert reply["status"] == "error"
+    assert "no steel within 120 mm" in reply["message"]
+
+
+@pytest.mark.asyncio
+async def test_cuts_need_a_part(mcp_server, mock_adapter) -> None:
+    tools = await _tools(mcp_server, mock_adapter)
+    await mock_adapter.create_assembly()
+    assert (await tools["create_cuts"]({"cuts": [_CUT]}))["status"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_a_mock_cut_the_checks_refuse_is_an_error(mock_adapter) -> None:
+    await mock_adapter.create_part()
+    result = await mock_adapter.create_cuts(
+        {"cuts": [{"name": "empty", "origin": [0, 0, 0], "normal": [0, 0, 1]}]}
+    )
+    assert "give an outline" in str(result.error)
 
 
 @pytest.mark.asyncio

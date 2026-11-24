@@ -475,12 +475,18 @@ class SolidWorksWeldmentPlatesMixin:
 
 
 def _draw_axes(
-    adapter: Any, model: Any, manager: Any, frames: list[Frame], define: bool
+    adapter: Any,
+    model: Any,
+    manager: Any,
+    frames: list[Frame],
+    define: bool,
+    name: str = "Plate axes",
 ) -> tuple[str, list[tuple[Any, Any]]]:
     """A 3D sketch of one short line per tilted plate, from its origin along its normal.
 
     Returns:
-        tuple: The sketch's name, and each line's segment and start point.
+        tuple: The sketch's name (``name``, numbered when taken), and each
+        line's segment and start point.
     """
     model.ClearSelection2(True)
     solve_on(adapter, manager)
@@ -501,7 +507,7 @@ def _draw_axes(
         manager.Insert3DSketch(True)
         manager.AddToDB = False
     feature = _flagged(model.FeatureByPositionReverse(0), "IFeature")
-    feature.Name = _free_name(model, "Plate axes")
+    feature.Name = _free_name(model, name)
     sketch = _flagged(feature.GetSpecificFeature2(), "ISketch")
     lines = []
     for segment in as_list(sketch.GetSketchSegments()):
@@ -533,8 +539,13 @@ def _plate_plane(
     axis_line: tuple[Any, Any] | None,
     label: str,
     shared: dict[tuple[int, float], Any],
+    prefix: str = "Plates",
 ) -> tuple[Any, bool]:
-    """The plane a plate's sketch goes on, and whether it was made for it."""
+    """The plane a plate's sketch goes on, and whether it was made for it.
+
+    A plane offset from a main plane is named ``<prefix> <axis><offset>``
+    (``Plates Y+2745``) and shared by every sketch on it in one call.
+    """
     along = main_axis(frame.n)
     if along is not None:
         axis = along[0]
@@ -556,7 +567,7 @@ def _plate_plane(
                 f"SolidWorks refused the plane for {label} ({_AXES[axis]} {offset:g} mm)"
             )
         plane = _flagged(made, "IFeature")
-        plane.Name = _free_name(model, f"Plates {_AXES[axis]}{offset:+g}")
+        plane.Name = _free_name(model, f"{prefix} {_AXES[axis]}{offset:+g}")
         _hide(model, plane)
         shared[key] = plane
         return plane, True

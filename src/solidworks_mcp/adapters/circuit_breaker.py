@@ -2055,6 +2055,16 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             input_dict={"params": params},
         )
 
+    async def create_cuts(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Cut holes, copes and notches in members, through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "create_cuts",
+            lambda: self.adapter.create_cuts(params),
+            input_dict={"params": params},
+        )
+
     async def pack_and_go_assembly(
         self, source_path: str, target_dir: str
     ) -> AdapterResult[dict[str, Any]]:
