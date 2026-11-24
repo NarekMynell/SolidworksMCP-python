@@ -1856,6 +1856,42 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             lambda adapter: adapter.create_end_caps(params),
         )
 
+    async def create_plates(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Add plates to a weldment, using pool."""
+        return await self._execute_with_pool(
+            "create_plates",
+            lambda adapter: adapter.create_plates(params),
+        )
+
+    async def export_plate_dxfs(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Write each distinct plate's DXF, using pool."""
+        return await self._execute_with_pool(
+            "export_plate_dxfs",
+            lambda adapter: adapter.export_plate_dxfs(params),
+        )
+
+    async def set_feature_folders(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Rename features and put them in folders, using pool."""
+        return await self._execute_with_pool(
+            "set_feature_folders",
+            lambda adapter: adapter.set_feature_folders(params),
+        )
+
+    async def check_feature_tree(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Audit the feature tree, using pool."""
+        return await self._execute_with_pool(
+            "check_feature_tree",
+            lambda adapter: adapter.check_feature_tree(params),
+        )
+
     async def get_cut_list(
         self, update: bool = True, export_path: str | None = None
     ) -> AdapterResult[dict[str, Any]]:

@@ -72,13 +72,26 @@ _SKETCH_TYPES = ("ProfileFeature", "3DProfileFeature")
 FOLDER_THRESHOLD = 12
 
 
-def _flagged(obj: Any, interface: str) -> Any:
-    """``obj`` with ``interface``'s methods flagged for late binding."""
-    return _sw_type_info.flagged(obj, interface)
+#: The ``IFeature`` methods these walks call; flagging only them is far
+#: cheaper than flagging the whole interface on every feature of a big tree.
+_FEATURE_MEMBERS = (
+    "GetTypeName2",
+    "GetNextFeature",
+    "GetSpecificFeature2",
+    "Select2",
+    "GetChildren",
+    "IsSuppressed",
+)
+
+
+def _feature(obj: Any) -> Any:
+    """``obj`` with the ``IFeature`` methods used here flagged."""
+    _sw_type_info.flag_members(obj, *_FEATURE_MEMBERS)
+    return obj
 
 
 def top_features(model: Any) -> list[Any]:
-    """The model's top-level features in tree order, flagged as ``IFeature``.
+    """The model's top-level features in tree order.
 
     Args:
         model: The ``IModelDoc2``.
@@ -89,10 +102,17 @@ def top_features(model: Any) -> list[Any]:
     found: list[Any] = []
     feature = model.FirstFeature()
     while feature is not None:
-        feature = _flagged(feature, "IFeature")
+        feature = _feature(feature)
         found.append(feature)
         feature = feature.GetNextFeature()
     return found
+
+
+def _contents(feature: Any) -> list[str]:
+    """The names of the features in a folder feature."""
+    folder = feature.GetSpecificFeature2()
+    _sw_type_info.flag_members(folder, "GetFeatures")
+    return [str(inner.Name) for inner in as_list(folder.GetFeatures())]
 
 
 def folders_of(features: list[Any]) -> dict[str, list[str]]:
@@ -109,20 +129,27 @@ def folders_of(features: list[Any]) -> dict[str, list[str]]:
         if feature.GetTypeName2() != "FtrFolder":
             continue
         name = str(feature.Name)
-        if name.endswith("___EndTag___"):
-            continue
-        folder = _flagged(feature.GetSpecificFeature2(), "IFeatureFolder")
-        folders[name] = [
-            str(_flagged(inner, "IFeature").Name)
-            for inner in as_list(folder.GetFeatures())
-        ]
+        if not name.endswith("___EndTag___"):
+            folders[name] = _contents(feature)
     return folders
+
+
+def _folder(model: Any, name: str) -> Any:
+    """The folder feature of that name, or None."""
+    feature = model.FeatureByName(name)
+    if feature is None:
+        return None
+    feature = _feature(feature)
+    return feature if feature.GetTypeName2() == "FtrFolder" else None
 
 
 def move_into_folder(
     adapter: Any, model: Any, folder: str, names: list[str]
 ) -> dict[str, Any]:
     """Put features in a folder, making the folder when the tree has none of that name.
+
+    Features are found by name and the folder's contents read back, so the
+    cost follows the features moved, not the size of the tree.
 
     Args:
         adapter: The connected adapter.
@@ -134,51 +161,56 @@ def move_into_folder(
         dict[str, Any]: ``folder``, ``moved`` (names now in it), ``missing``
         (no such feature) and ``refused`` (SolidWorks wouldn't move them).
     """
-    features = {str(f.Name): f for f in top_features(model)}
-    missing = [name for name in names if name not in features]
-    wanted = [name for name in names if name in features]
-    existing = folders_of(list(features.values()))
-    moved: list[str] = []
-    refused: list[str] = []
-    manager = _flagged(model.FeatureManager, "IFeatureManager")
-    if folder not in existing and wanted:
+    found = {name: model.FeatureByName(name) for name in names}
+    missing = [name for name, feature in found.items() if feature is None]
+    wanted = [name for name in names if found[name] is not None]
+    if not wanted:
+        return {"folder": folder, "moved": [], "missing": missing, "refused": []}
+    target = _folder(model, folder)
+    if target is None:
         model.ClearSelection2(True)
-        selected = [
-            name for i, name in enumerate(wanted) if features[name].Select2(i > 0, 0)
-        ]
+        for i, name in enumerate(wanted):
+            _feature(found[name]).Select2(i > 0, 0)
+        manager = model.FeatureManager
+        _sw_type_info.flag_members(manager, "InsertFeatureTreeFolder2")
         made = adapter._attempt(
             lambda: manager.InsertFeatureTreeFolder2(_FOLDER_CONTAINING), default=None
         )
         model.ClearSelection2(True)
         if made is None:
-            refused = list(wanted)
-        else:
-            _flagged(made, "IFeature").Name = folder
-            inside = folders_of(top_features(model)).get(folder, [])
-            moved = [name for name in selected if name in inside]
-            refused = [name for name in wanted if name not in inside]
-    elif wanted:
-        inside = list(existing.get(folder, []))
+            return {
+                "folder": folder,
+                "moved": [],
+                "missing": missing,
+                "refused": wanted,
+            }
+        made.Name = folder
+        inside = _contents(_feature(made))
+    else:
+        inside = _contents(target)
         for name in wanted:
             if name in inside:
                 continue
-            # Into the folder, else right after the folder's last feature: a
-            # member's sketch moved in first, the member must follow it.
-            tries = [(folder, _MOVE_TO_FOLDER)]
-            if inside:
-                tries.append((inside[-1], _MOVE_AFTER))
-            for target, where in tries:
-                adapter._attempt(
-                    lambda n=name, t=target, w=where: model.Extension.ReorderFeature(
-                        n, t, w
+            # Into the folder, else right after its last feature (a member's
+            # sketch moved in first: the member must follow it).
+            landed = adapter._attempt(
+                lambda n=name: bool(
+                    model.Extension.ReorderFeature(n, folder, _MOVE_TO_FOLDER)
+                ),
+                default=False,
+            )
+            if not landed and inside:
+                landed = adapter._attempt(
+                    lambda n=name, last=inside[-1]: bool(
+                        model.Extension.ReorderFeature(n, last, _MOVE_AFTER)
                     ),
                     default=False,
                 )
-                inside = folders_of(top_features(model)).get(folder, [])
-                if name in inside:
-                    break
-        moved = [name for name in wanted if name in inside]
-        refused = [name for name in wanted if name not in inside]
+            if landed:
+                inside.append(name)
+        inside = _contents(_folder(model, folder))
+    moved = [name for name in wanted if name in inside]
+    refused = [name for name in wanted if name not in inside]
     return {"folder": folder, "moved": moved, "missing": missing, "refused": refused}
 
 
@@ -215,9 +247,8 @@ class SolidWorksFeatureTreeMixin:
             renamed: dict[str, str] = {}
             missing: list[str] = []
             refused: list[str] = []
-            features = {str(f.Name): f for f in top_features(model)}
             for old, new in (params.get("rename") or {}).items():
-                feature = features.get(old)
+                feature = model.FeatureByName(old)
                 if feature is None:
                     missing.append(old)
                     continue
@@ -289,7 +320,8 @@ class SolidWorksFeatureTreeMixin:
             for feature in modelling:
                 if feature.GetTypeName2() not in _SKETCH_TYPES:
                     continue
-                sketch = _flagged(feature.GetSpecificFeature2(), "ISketch")
+                sketch = feature.GetSpecificFeature2()
+                _sw_type_info.flag_members(sketch, "GetConstrainedStatus")
                 state = DEFINITION.get(
                     int(
                         adapter._attempt(
@@ -372,7 +404,7 @@ def absorbed(feature: Any) -> bool:
         return False
     children = as_list(feature.GetChildren())
     return any(
-        str(_flagged(child, "IFeature").GetTypeName2()) not in _KEEPS_SKETCH_ON_TOP
+        str(_feature(child).GetTypeName2()) not in _KEEPS_SKETCH_ON_TOP
         for child in children
     )
 

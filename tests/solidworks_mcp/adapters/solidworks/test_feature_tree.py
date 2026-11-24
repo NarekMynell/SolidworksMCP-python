@@ -73,6 +73,9 @@ class _Model:
     def by_name(self, name: str) -> _Feature:
         return next(f for f in self.features if f.Name == name)
 
+    def FeatureByName(self, name: str) -> Any:
+        return next((f for f in self.features if f.Name == name), None)
+
     def FirstFeature(self) -> Any:
         return self.features[0] if self.features else None
 
@@ -274,3 +277,30 @@ async def test_no_model_is_an_error() -> None:
     adapter = _Adapter(None)
     assert (await adapter.check_feature_tree({})).status == AdapterResultStatus.ERROR
     assert (await adapter.set_feature_folders({})).status == AdapterResultStatus.ERROR
+
+
+def test_a_feature_refused_into_the_folder_goes_after_its_last_feature() -> None:
+    model = _Model(_part())
+    tree.move_into_folder(_Adapter(model), model, "Frame", ["Columns skeleton"])
+    calls: list[int] = []
+    original = model._reorder
+
+    def into_folder_refused(name: str, target: str, where: int) -> bool:
+        calls.append(where)
+        return False if where == tree._MOVE_TO_FOLDER else original(name, target, where)
+
+    model.Extension.ReorderFeature = into_folder_refused
+    placed = tree.move_into_folder(_Adapter(model), model, "Frame", ["Columns"])
+    assert calls == [tree._MOVE_TO_FOLDER, tree._MOVE_AFTER]
+    assert placed["moved"] == ["Columns"]
+
+
+def test_nothing_to_move_is_only_missing_names() -> None:
+    model = _Model(_part())
+    placed = tree.move_into_folder(_Adapter(model), model, "Frame", ["Ghost"])
+    assert placed == {
+        "folder": "Frame",
+        "moved": [],
+        "missing": ["Ghost"],
+        "refused": [],
+    }

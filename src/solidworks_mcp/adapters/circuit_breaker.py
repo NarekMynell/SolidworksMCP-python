@@ -2005,6 +2005,46 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             input_dict={"params": params},
         )
 
+    async def create_plates(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Add plates to a weldment, through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "create_plates",
+            lambda: self.adapter.create_plates(params),
+            input_dict={"params": params},
+        )
+
+    async def export_plate_dxfs(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Write each distinct plate's DXF, through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "export_plate_dxfs",
+            lambda: self.adapter.export_plate_dxfs(params),
+            input_dict={"params": params},
+        )
+
+    async def set_feature_folders(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Rename features and put them in folders, through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "set_feature_folders",
+            lambda: self.adapter.set_feature_folders(params),
+            input_dict={"params": params},
+        )
+
+    async def check_feature_tree(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Audit the feature tree, through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "check_feature_tree",
+            lambda: self.adapter.check_feature_tree(params),
+            input_dict={"params": params},
+        )
+
     async def get_cut_list(
         self, update: bool = True, export_path: str | None = None
     ) -> AdapterResult[dict[str, Any]]:
