@@ -8,6 +8,8 @@ import pytest
 
 from solidworks_mcp.adapters.base import AdapterResult, AdapterResultStatus
 from solidworks_mcp.tools.weldments import (
+    CheckJointsInput,
+    CreateEndCapsInput,
     CreateStructuralMembersInput,
     CreateTrimExtendInput,
     register_weldment_tools,
@@ -28,7 +30,7 @@ async def _tools(mcp_server: Any, adapter: Any) -> dict[str, Any]:
         ),
         (
             {"size": "IPE300", "standard": "DIN", "profile_type": "ipe"},
-            "segments or sketch",
+            "segments, segments_file or sketch",
         ),
         (
             {
@@ -38,11 +40,11 @@ async def _tools(mcp_server: Any, adapter: Any) -> dict[str, Any]:
                 "sketch": "S",
                 "segments": [[0, 0, 0, 1, 0, 0]],
             },
-            "segments or sketch",
+            "segments, segments_file or sketch",
         ),
         (
             {"size": "A", "profile_path": "p.sldlfp", "segments": [[0, 0, 0, 1, 0]]},
-            "has 5 numbers",
+            "isn't six numbers",
         ),
         (
             {"size": "A", "profile_path": "p.sldlfp", "segments": [[1, 1, 1, 1, 1, 1]]},
@@ -287,3 +289,177 @@ async def test_a_trim_warning_is_passed_on(
 
     assert reply["warning"] == "1 member(s) didn't change: J[2]"
     assert "warning" not in reply["trim"]
+
+
+_FRAME = {"standard": "DIN", "profile_type": "ipe", "size": "IPE200"}
+
+
+@pytest.mark.asyncio
+async def test_segments_from_a_file(mcp_server, mock_adapter, tmp_path) -> None:
+    tools = await _tools(mcp_server, mock_adapter)
+    await mock_adapter.create_part()
+    listed = tmp_path / "chords.json"
+    listed.write_text(
+        "[[0, 0, 0, 0, 3000, 0], [1000, 0, 0, 1000, 3000, 0]]", encoding="utf-8"
+    )
+    wrapped = tmp_path / "braces.json"
+    wrapped.write_text('{"segments": [[0, 0, 0, 1000, 1000, 0]]}', encoding="utf-8")
+    texts = {
+        "not_json": "[[0, 0,",
+        "empty": "[]",
+        "short": "[[0, 0, 0, 1]]",
+        "zero": "[[1, 1, 1, 1, 1, 1]]",
+        "words": '[[0, 0, 0, "a", 0, 0]]',
+        "many": "[" + ",".join(["[0,0,0,1,0,0]"] * 2001) + "]",
+    }
+    paths = {"missing": str(tmp_path / "nope.json")}
+    for name, text in texts.items():
+        path = tmp_path / f"{name}.json"
+        path.write_text(text, encoding="utf-8")
+        paths[name] = str(path)
+
+    chords = await tools["create_structural_members"](
+        {**_FRAME, "segments_file": str(listed)}
+    )
+    braces = await tools["create_structural_members"](
+        {**_FRAME, "segments_file": str(wrapped)}
+    )
+    errors = {
+        name: await tools["create_structural_members"](
+            {**_FRAME, "segments_file": path}
+        )
+        for name, path in paths.items()
+    }
+
+    assert chords["members"]["segments"] == 2 and braces["members"]["segments"] == 1
+    assert "doesn't exist" in errors["missing"]["message"]
+    assert "isn't readable JSON" in errors["not_json"]["message"]
+    assert "must hold a list" in errors["empty"]["message"]
+    assert "isn't six numbers" in errors["short"]["message"]
+    assert "has no length" in errors["zero"]["message"]
+    assert "isn't a number" in errors["words"]["message"]
+    assert "split it" in errors["many"]["message"]
+    assert all(e["error_type"] == "invalid_input" for e in errors.values())
+
+
+@pytest.mark.parametrize(
+    ("model", "kwargs", "message"),
+    [
+        (CreateEndCapsInput, {}, "give ends"),
+        (CreateEndCapsInput, {"ends": [[0, 0, 0]], "open_ends": True}, "give ends"),
+        (CreateEndCapsInput, {"ends": [[0, 0]]}, r"end 0 isn't \[x, y, z\]"),
+        (CreateEndCapsInput, {"open_ends": True, "thickness_mm": 0}, "greater than 0"),
+        (CheckJointsInput, {"contact_mm": 0}, "greater than 0"),
+        (CheckJointsInput, {"max_listed": 0}, "greater than or equal to 1"),
+    ],
+)
+def test_joint_and_cap_input_refusals(
+    model: Any, kwargs: dict[str, Any], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        model(**kwargs)
+
+
+@pytest.mark.asyncio
+async def test_a_portal_frame_checked_trimmed_and_capped(
+    mcp_server, mock_adapter
+) -> None:
+    tools = await _tools(mcp_server, mock_adapter)
+    await mock_adapter.create_part()
+    await tools["create_structural_members"](
+        {
+            **_FRAME,
+            "name": "Posts",
+            "grouping": "each",
+            "corner_treatment": "none",
+            "segments": [[0, 0, 0, 0, 3000, 0], [6000, 0, 0, 6000, 3000, 0]],
+        }
+    )
+    await tools["create_structural_members"](
+        {**_FRAME, "name": "Beam", "segments": [[0, 3000, 0, 6000, 3000, 0]]}
+    )
+    await tools["create_structural_members"](
+        {**_FRAME, "name": "Stray", "segments": [[0, 0, 9000, 1000, 0, 9000]]}
+    )
+
+    raw = await tools["check_joints"]()
+    posts_only = await tools["check_joints"]({"members": ["Posts"]})
+    unknown = await tools["check_joints"]({"members": ["Purlins"]})
+    await tools["create_trim_extend"]({"members": ["Posts"], "boundary": ["Beam"]})
+    trimmed = await tools["check_joints"]({"max_listed": 1})
+    capped = await tools["create_end_caps"](
+        {"open_ends": True, "thickness_mm": 6, "name": "Caps"}
+    )
+    missed = await tools["create_end_caps"]({"ends": [[50000, 0, 0]]})
+    done = await tools["check_joints"]()
+    none_left = await tools["create_end_caps"]({"open_ends": True})
+    at_point = await tools["create_end_caps"]({"ends": [[1000, 0, 9000]]})
+
+    assert raw["joints"]["overlaps"]["count"] == 2  # each post runs into the beam's end
+    assert raw["joints"]["loose"] == ["Stray[1]"] and raw["joints"]["groups"] == 2
+    assert raw["message"].startswith(
+        "2 overlapping pair(s), 4 open end(s), 1 loose body(ies)"
+    )
+    assert posts_only["joints"]["checked_bodies"] == 2
+    assert "No structural member or body named 'Purlins'" in unknown["message"]
+    assert trimmed["joints"]["overlaps"]["count"] == 0
+    assert len(trimmed["joints"]["open_ends"]["ends"]) == 1
+    assert (
+        capped["message"] == "Capped 4 end(s) as Caps"
+        and capped["caps"]["placement"] == "inward"
+    )
+    assert "No member end within 20 mm" in missed["message"]
+    assert done["joints"]["open_ends"]["count"] == 0
+    assert "No open member end to cap" in none_left["message"]
+    assert at_point["caps"]["caps"] == 1
+
+
+@pytest.mark.asyncio
+async def test_joint_tools_need_a_part_with_bodies(mcp_server, mock_adapter) -> None:
+    tools = await _tools(mcp_server, mock_adapter)
+    await mock_adapter.create_part()
+    empty = await tools["check_joints"]()
+    await mock_adapter.create_assembly()
+    joints = await tools["check_joints"]()
+    caps = await tools["create_end_caps"]({"open_ends": True})
+
+    assert "no bodies to check" in empty["message"]
+    assert "check_joints needs an open part" in joints["message"]
+    assert "create_end_caps needs an open part" in caps["message"]
+
+
+@pytest.mark.asyncio
+async def test_a_one_member_part_is_never_loose(mcp_server, mock_adapter) -> None:
+    tools = await _tools(mcp_server, mock_adapter)
+    await mock_adapter.create_part()
+    await tools["create_structural_members"](
+        {**_FRAME, "segments": [[0, 0, 0, 0, 1000, 0]]}
+    )
+
+    result = await tools["check_joints"]()
+
+    assert result["joints"]["loose"] == [] and result["joints"]["clean"] is True
+    assert result["message"].endswith("; clean")
+
+
+@pytest.mark.asyncio
+async def test_an_end_cap_warning_is_passed_on(
+    mcp_server, mock_adapter, monkeypatch
+) -> None:
+    async def fewer(_params: dict[str, Any]) -> AdapterResult[dict[str, Any]]:
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "feature": "End cap1",
+                "caps": 1,
+                "warning": "2 end(s) selected but 1 cap body(ies) made",
+            },
+        )
+
+    monkeypatch.setattr(mock_adapter, "create_end_caps", fewer)
+    tools = await _tools(mcp_server, mock_adapter)
+
+    reply = await tools["create_end_caps"]({"open_ends": True})
+
+    assert reply["warning"].startswith("2 end(s) selected")
+    assert "warning" not in reply["caps"]

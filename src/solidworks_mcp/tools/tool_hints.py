@@ -178,6 +178,8 @@ TOOL_HINTS: dict[str, ToolHints] = {
     "list_weldment_profiles": _reads("List Weldment Profiles"),
     "create_structural_members": _adds("Create Structural Members"),
     "create_trim_extend": _adds("Create Trim Extend"),
+    "check_joints": _reads("Check Joints"),
+    "create_end_caps": _adds("Create End Caps"),
     "get_cut_list": _sets("Get Cut List"),
     "list_equations": _reads("List Equations"),
     "set_equation": _sets("Set Equation"),

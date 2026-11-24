@@ -1,14 +1,17 @@
-"""Weldment tools: structural members, the profile library and the cut list.
+"""Weldment tools: structural members, the profile library, joints, end caps and the cut list.
 
 What a steel fabricator builds a frame, truss or platform with: one call puts
 a profile (IPE, HEB, SHS, RHS, UPN, angle...) from SolidWorks' weldment
-library on many sketch segments, and the cut list gives every member's
-length, end angles, quantity and mass for the shop.
+library on many sketch segments, the joint check measures where members run
+into each other or end in the air, end caps close hollow ends, and the cut
+list gives every member's length, end angles, quantity and mass for the shop.
 """
 
 from __future__ import annotations
 
+import json
 import math
+import os
 from typing import Any, Literal
 
 from fastmcp import FastMCP
@@ -17,6 +20,7 @@ from pydantic import Field, model_validator
 from ..adapters.base import SolidWorksAdapter
 from .input_compat import CompatInput
 from .tool_boundary import (
+    InvalidInputError,
     normalize_input,
     require_capability,
     require_success,
@@ -59,6 +63,61 @@ class ListWeldmentProfilesInput(CompatInput):
 
 #: One straight segment: start and end point, mm.
 Segment = list[float]
+#: The most segments one call takes.
+MAX_SEGMENTS = 2000
+
+
+def check_segments(segments: list[Any], where: str = "segment") -> list[list[float]]:
+    """Segments as six numbers each with a length, or ``ValueError`` naming the bad one."""
+    checked = []
+    for index, segment in enumerate(segments):
+        if not isinstance(segment, (list, tuple)) or len(segment) != 6:
+            raise ValueError(
+                f"{where} {index} isn't six numbers; give x1, y1, z1, x2, y2, z2"
+            )
+        try:
+            values = [float(v) for v in segment]
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                f"{where} {index} has a value that isn't a number"
+            ) from error
+        if math.dist(values[:3], values[3:]) < 0.001:
+            raise ValueError(f"{where} {index} has no length")
+        checked.append(values)
+    return checked
+
+
+def load_segments(path: str) -> list[list[float]]:
+    """The segments a JSON file holds: a list of six-number lists, or ``{"segments": [...]}``.
+
+    Raises:
+        InvalidInputError: The file is missing, isn't JSON, or holds anything else.
+    """
+    if not os.path.isfile(path):
+        raise InvalidInputError(f"segments_file {path!r} doesn't exist")
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            data = json.load(f)
+    except (OSError, ValueError) as error:
+        raise InvalidInputError(
+            f"segments_file {path!r} isn't readable JSON: {error}"
+        ) from error
+    if isinstance(data, dict):
+        data = data.get("segments")
+    if not isinstance(data, list) or not data:
+        raise InvalidInputError(
+            f"segments_file {path!r} must hold a list of [x1, y1, z1, x2, y2, z2] "
+            'segments, or {"segments": [...]}'
+        )
+    if len(data) > MAX_SEGMENTS:
+        raise InvalidInputError(
+            f"segments_file {path!r} has {len(data)} segments; one call takes "
+            f"{MAX_SEGMENTS}: split it"
+        )
+    try:
+        return check_segments(data, "segments_file entry")
+    except ValueError as error:
+        raise InvalidInputError(f"{error} ({path})") from error
 
 
 class CreateStructuralMembersInput(CompatInput):
@@ -99,9 +158,15 @@ class CreateStructuralMembersInput(CompatInput):
     segments: list[Segment] | None = Field(
         default=None,
         min_length=1,
-        max_length=2000,
+        max_length=MAX_SEGMENTS,
         description="Member axes to draw as a new 3D sketch, each "
         "[x1, y1, z1, x2, y2, z2] in mm; draw a continuous member as one segment",
+    )
+    segments_file: str | None = Field(
+        default=None,
+        description="A .json file of segments instead of segments: a list of "
+        '[x1, y1, z1, x2, y2, z2] in mm (or {"segments": [...]}), such as a '
+        "script writes for a lattice",
     )
     sketch: str | None = Field(
         default=None,
@@ -140,16 +205,12 @@ class CreateStructuralMembersInput(CompatInput):
         """A profile from the library or a file, on segments or a sketch."""
         if not self.profile_path and not (self.standard and self.profile_type):
             raise ValueError("give standard and profile_type, or profile_path")
-        if (self.segments is None) == (self.sketch is None):
-            raise ValueError("give segments or sketch, one of them")
-        for index, segment in enumerate(self.segments or []):
-            if len(segment) != 6:
-                raise ValueError(
-                    f"segment {index} has {len(segment)} numbers; give x1, y1, z1, "
-                    "x2, y2, z2"
-                )
-            if math.dist(segment[:3], segment[3:]) < 0.001:
-                raise ValueError(f"segment {index} has no length")
+        given = [
+            x is not None for x in (self.segments, self.segments_file, self.sketch)
+        ]
+        if sum(given) != 1:
+            raise ValueError("give segments, segments_file or sketch, one of them")
+        check_segments(self.segments or [])
         if self.segment_names and not self.sketch:
             raise ValueError("segment_names needs sketch")
         return self
@@ -208,6 +269,107 @@ class CreateTrimExtendInput(CompatInput):
                 f"a {self.corner_type} corner joins one member to one boundary "
                 "member; use end_trim for more"
             )
+        return self
+
+
+class CheckJointsInput(CompatInput):
+    """Input schema for measuring a weldment's joints.
+
+    Attributes:
+        members (list[str] | None): Only these member features or bodies.
+        overlap_mm3 (float): Shared volume that still counts as touching.
+        contact_mm (float): How near an end must come to count as closed.
+        max_listed (int): The most items each list gives.
+    """
+
+    members: list[str] | None = Field(
+        default=None,
+        description="Only these member features or bodies (e.g. 'Leg braces'): "
+        "their overlaps, ends and contacts; every body when omitted",
+    )
+    overlap_mm3: float = Field(
+        default=1.0,
+        ge=0,
+        description="Bodies sharing at most this volume, mm3, touch rather than overlap",
+    )
+    contact_mm: float = Field(
+        default=0.5,
+        gt=0,
+        le=20,
+        description="How near an end must come to another body to be closed, mm; "
+        "raise it above a weld gap a trim left",
+    )
+    max_listed: int = Field(
+        default=25,
+        ge=1,
+        le=500,
+        description="The most overlaps, open ends and loose bodies listed (counts are complete)",
+    )
+
+
+class CreateEndCapsInput(CompatInput):
+    """Input schema for end caps on structural members.
+
+    Attributes:
+        ends (list[list[float]] | None): Points at the ends to cap, mm.
+        open_ends (bool): Cap every open member end instead.
+        thickness_mm (float): The cap's thickness.
+        placement (str): ``inward``, ``outward`` or ``internal``.
+        inset_mm (float): Inset of the cap's edges from the profile's outside.
+        depth_mm (float): An internal cap's depth inside the end.
+        contact_mm (float): How near an end must come to something to be closed.
+        name (str | None): The feature's name.
+    """
+
+    ends: list[list[float]] | None = Field(
+        default=None,
+        min_length=1,
+        max_length=500,
+        description="Points [x, y, z] mm at the member ends to cap; each takes the "
+        "member end face nearest it, within 20 mm",
+    )
+    open_ends: bool = Field(
+        default=False,
+        description="Cap every member end that touches nothing (check_joints' open ends)",
+    )
+    thickness_mm: float = Field(
+        default=5.0, gt=0, le=100, description="Cap thickness, mm"
+    )
+    placement: Literal["inward", "outward", "internal"] = Field(
+        default="inward",
+        description="'inward' flush with the end (the member is shortened by the "
+        "thickness, so the overall size stays); 'outward' on the end (adds the "
+        "thickness); 'internal' inside the tube, depth_mm in",
+    )
+    inset_mm: float = Field(
+        default=0.0,
+        ge=0,
+        le=50,
+        description="Inset of the cap's edges from the profile's outside, mm (room "
+        "for a fillet weld)",
+    )
+    depth_mm: float = Field(
+        default=0.0,
+        ge=0,
+        le=500,
+        description="'internal' caps: depth inside the end, mm",
+    )
+    contact_mm: float = Field(
+        default=0.5,
+        gt=0,
+        le=20,
+        description="With open_ends: how near an end must come to another body to be closed, mm",
+    )
+    name: str | None = Field(default=None, description="Name for the new feature")
+
+    @model_validator(mode="after")
+    def _ends_or_open_ends(self) -> CreateEndCapsInput:
+        """Ends named by points, or every open end: one of them."""
+        if bool(self.ends) == bool(self.open_ends):
+            raise ValueError("give ends (points) or open_ends: true, one of them")
+        for index, point in enumerate(self.ends or []):
+            if len(point) != 3:
+                raise ValueError(f"end {index} isn't [x, y, z]")
         return self
 
 
@@ -306,15 +468,16 @@ async def register_weldment_tools(
         each call is one profile, so a truss is one call for the chords and one for
         the web. Segments are member centre lines in model axes (y up); where one
         member frames into another, finish with `create_trim_extend`. Find the
-        size with `list_weldment_profiles`. Needs: an open part.
+        size with `list_weldment_profiles`. Hundreds of segments: write them to
+        a JSON file and give `segments_file`. Needs: an open part.
         Changes: adds a weldment feature (first time), a 3D sketch and the members.
         Returns: `members` with `feature`, `profile`, `sketch`, `segments`, `groups`,
         `grouping` and `bodies_after`.
 
         Args:
             input_data: `size` plus `standard` and `profile_type` (or
-                `profile_path`), and `segments` or `sketch`; corner, rotation and
-                grouping options have defaults.
+                `profile_path`), and `segments`, `segments_file` or `sketch`;
+                corner, rotation and grouping options have defaults.
 
         Returns:
             dict[str, Any]: The new structural member feature.
@@ -323,9 +486,11 @@ async def register_weldment_tools(
         require_capability(
             adapter, "create_structural_members", "Active adapter can't make weldments"
         )
-        result = await adapter.create_structural_members(
-            input_data.model_dump(exclude_none=True)
-        )
+        params = input_data.model_dump(exclude_none=True)
+        if input_data.segments_file:
+            params["segments"] = load_segments(input_data.segments_file)
+            params.pop("segments_file", None)
+        result = await adapter.create_structural_members(params)
         require_success(result, context="Failed to create the structural members")
         data = result.data or {}
         profile = data.get("profile") or {}
@@ -389,6 +554,92 @@ async def register_weldment_tools(
         return reply
 
     @mcp.tool()
+    async def check_joints(
+        input_data: CheckJointsInput | None = None,
+    ) -> dict[str, Any]:
+        """Check a weldment's joints: members that run into each other, member ends left open, bodies touching nothing.
+
+        Use it after trimming, before calling a frame done: centre lines drawn
+        node to node overlap until `create_trim_extend` cuts them, and a
+        picture doesn't show a brace buried in a chord. `overlaps` lists each
+        pair sharing volume (mm3, and where); `open_ends` the member ends that
+        touch nothing (cap them with `create_end_caps`, or say why they stay
+        open); `partly_open_ends` ends that hang off what they meet; `loose`
+        the bodies touching nothing; `groups` how many separate pieces there
+        are. `clean` means no overlap, no loose body and no end half off. It
+        takes about 0.2 s a body: give `members` to check one group. Needs: an
+        open weldment part. Read-only. Returns: `joints` with `bodies`,
+        `checked_bodies`, `members`, `overlaps` (`count`, `volume_mm3`,
+        `pairs`), `open_ends`, `partly_open_ends`, `loose`, `loose_count`,
+        `groups`, `group_sizes`, `clean`, `pairs_checked` and `seconds`.
+
+        Args:
+            input_data: Optional `members`, `overlap_mm3` (1), `contact_mm`
+                (0.5) and `max_listed` (25).
+
+        Returns:
+            dict[str, Any]: The joint check.
+        """
+        input_data = normalize_input(input_data, CheckJointsInput)
+        require_capability(adapter, "check_joints", "Active adapter can't check joints")
+        result = await adapter.check_joints(input_data.model_dump(exclude_none=True))
+        require_success(result, context="Failed to check the joints")
+        data = result.data or {}
+        overlaps = data.get("overlaps", {}).get("count", 0)
+        open_ends = data.get("open_ends", {}).get("count", 0)
+        return {
+            "status": "success",
+            "message": f"{overlaps} overlapping pair(s), {open_ends} open end(s), "
+            f"{data.get('loose_count', 0)} loose body(ies) in {data.get('checked_bodies')} "
+            f"of {data.get('bodies')} bodies"
+            + ("; clean" if data.get("clean") else ""),
+            "joints": data,
+            "execution_time": result.execution_time,
+        }
+
+    @mcp.tool()
+    async def create_end_caps(input_data: CreateEndCapsInput) -> dict[str, Any]:
+        """Close the open ends of hollow structural members with end caps (End Cap).
+
+        Use it on the ends `check_joints` lists as open, before the frame goes
+        to the shop: an open tube fills with water, and a sealed one bursts in
+        the galvanizing bath (so galvanized work also needs vent holes). Give
+        `ends` (a point at each end, mm) or `open_ends: true` for every open
+        end. `placement` 'inward' keeps the overall size (the member gets
+        shorter by the cap); 'outward' adds the cap's thickness; 'internal'
+        sets it `depth_mm` inside. One feature caps them all, and each cap is a
+        cut-list plate. Needs: an open weldment part. Changes: adds an End Cap
+        feature and one body per cap. Returns: `caps` with `feature`, `caps`
+        (the count), `ends` (`body`, `at_mm`), `placement`, `thickness_mm`,
+        `inset_mm` and `bodies_after`.
+
+        Args:
+            input_data: `ends` or `open_ends`; `thickness_mm` (5),
+                `placement` (inward), `inset_mm` (0), `depth_mm`,
+                `contact_mm` and `name` have defaults.
+
+        Returns:
+            dict[str, Any]: The End Cap feature and the ends it capped.
+        """
+        input_data = normalize_input(input_data, CreateEndCapsInput)
+        require_capability(
+            adapter, "create_end_caps", "Active adapter can't add end caps"
+        )
+        result = await adapter.create_end_caps(input_data.model_dump(exclude_none=True))
+        require_success(result, context="Failed to add the end caps")
+        data = dict(result.data or {})
+        warning = data.pop("warning", None)
+        reply: dict[str, Any] = {
+            "status": "success",
+            "message": f"Capped {data.get('caps')} end(s) as {data.get('feature')}",
+            "caps": data,
+            "execution_time": result.execution_time,
+        }
+        if warning:
+            reply["warning"] = warning
+        return reply
+
+    @mcp.tool()
     async def get_cut_list(input_data: GetCutListInput | None = None) -> dict[str, Any]:
         """Read the active weldment part's cut list: every member size with its quantity, length, end angles and mass, ready for the shop.
 
@@ -425,4 +676,4 @@ async def register_weldment_tools(
             reply["warning"] = warning
         return reply
 
-    return 4
+    return 6

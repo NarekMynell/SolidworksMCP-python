@@ -33,6 +33,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   member to its new body name (SolidWorks renames what it trims) and names
   any member the boundary didn't reach. Stable, checked live: IPE160 joists
   coped to IPE240 beams with a 5 mm gap came out 3983.8 mm.
+- **`check_joints`: a weldment's joints measured.** Members drawn node to
+  node run into each other until trimmed, and no picture shows it: a 20 m
+  lattice figure of 312 members had 492 overlapping pairs. It lists every
+  pair of bodies sharing volume (how much, and where), the member ends that
+  touch nothing, ends that hang off what they meet, and bodies touching
+  nothing, with `clean` when there is none. Checked live: a trimmed 12-member
+  table frame came out clean with its 4 leg ends open.
+- **`create_end_caps`: hollow ends closed** (SolidWorks' End Cap), at the
+  ends given by points or every open end `check_joints` finds; flush,
+  outside or inside the tube, with an inset for the weld. Checked live on an
+  RHS100x100x4 post in all three placements.
+- **`segments_file` for `create_structural_members`:** hundreds of member
+  centre lines from a JSON file a script wrote, instead of typed into the
+  call.
 - **A weldment's drawing carries its cut list.** `generate_drawing_package`
   puts the cut-list table (item, quantity, description, length) above the
   isometric of a weldment part, its columns fitted to their text, and leaves

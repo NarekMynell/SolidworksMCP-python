@@ -1,8 +1,8 @@
 {
  "tools": {
-  "total": 163,
+  "total": 165,
   "by_level": {
-   "stable": 155,
+   "stable": 157,
    "beta": 0,
    "experimental": 0,
    "planned": 0,
@@ -255,6 +255,13 @@
     "summary": "Find where the components of the active assembly overlap (Tools > Interference Detection)."
    },
    {
+    "name": "check_joints",
+    "family": "weldments",
+    "level": "stable",
+    "reason": "",
+    "summary": "Check a weldment's joints: members that run into each other, member ends left open, bodies touching nothing."
+   },
+   {
     "name": "check_sketch_fully_defined",
     "family": "sketching",
     "level": "stable",
@@ -344,6 +351,13 @@
     "level": "stable",
     "reason": "",
     "summary": "Place one named view of a part or assembly on the active drawing sheet."
+   },
+   {
+    "name": "create_end_caps",
+    "family": "weldments",
+    "level": "stable",
+    "reason": "",
+    "summary": "Close the open ends of hollow structural members with end caps (End Cap)."
    },
    {
     "name": "create_exploded_view",
@@ -1155,11 +1169,11 @@
  "com": {
   "type_library": "83A33D31-27C5-11CE-BFD4-00400513BB57x0x34x0",
   "core": {
-   "covered": 294,
+   "covered": 298,
    "total": 2838
   },
   "api": {
-   "covered": 337,
+   "covered": 342,
    "total": 5985
   },
   "interfaces": [
@@ -1177,6 +1191,7 @@
      "GetFirstDocument",
      "GetMassProperties",
      "GetMathUtility",
+     "GetModeler",
      "GetOpenDocumentByName",
      "GetProcessID",
      "GetUserPreferenceIntegerValue",
@@ -1328,6 +1343,7 @@
      "GetExplodedViewNames",
      "GetMaterialPropertyName2",
      "GetPartBox",
+     "GetTessTriangles",
      "InsertMirrorFeature",
      "IsWeldment",
      "SetMaterialPropertyName2",
@@ -1404,6 +1420,7 @@
      "GetFlatPatternFolder",
      "HoleWizard5",
      "InsertCosmeticThread3",
+     "InsertEndCapFeature3",
      "InsertFeatureChamfer",
      "InsertMirrorFeature",
      "InsertMultiFaceDraft",
@@ -1476,6 +1493,7 @@
      "GetModelDoc2",
      "GetPathName",
      "GetSuppression2",
+     "GetTessTriangles",
      "GetType",
      "GetXform",
      "IsEnvelope",

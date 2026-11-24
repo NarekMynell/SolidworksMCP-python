@@ -194,6 +194,91 @@ async def test_a_platform_trimmed_where_its_members_meet(scratch: Any) -> None:
     )
 
 
+async def test_a_lattice_column_checked_trimmed_and_capped(
+    scratch: Any, tmp_path: Path
+) -> None:
+    """A 2 m lattice column as a lattice generator writes it, joints measured.
+
+    Four SHS 100x100x5 chords and SHS 60x60x4 diagonals on all four faces
+    come from segments files. Drawn node to node, the diagonals run into the
+    chords (``check_joints`` counts the pairs). Trimmed to the chords'
+    faces, nothing overlaps: the diagonals meet the chords at 36.87
+    degrees, which leaves a 33 mm gap between the two at each node, and the
+    eight chord ends are the open ends. ``create_end_caps`` closes them, and
+    the check comes out clean.
+    """
+    import json
+
+    tools = await _tools(scratch.adapter)
+    _ok(await tools["create_part"]({"name": "lattice"}))
+    chords = tmp_path / "column.chords.json"
+    chords.write_text(
+        json.dumps([[x, 0, z, x, 2000, z] for x in (-300, 300) for z in (-300, 300)]),
+        encoding="utf-8",
+    )
+    braces = tmp_path / "column.braces.json"
+    braces.write_text(
+        json.dumps(
+            {
+                "segments": [
+                    [-300, 200, -300, 300, 1000, -300],
+                    [300, 1000, -300, -300, 1800, -300],
+                    [300, 200, -300, 300, 1000, 300],
+                    [300, 1000, 300, 300, 1800, -300],
+                    [300, 200, 300, -300, 1000, 300],
+                    [-300, 1000, 300, 300, 1800, 300],
+                    [-300, 200, 300, -300, 1000, -300],
+                    [-300, 1000, -300, -300, 1800, 300],
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    for name, size, path in (
+        ("Chords", "RHS100x100x5", chords),
+        ("Braces", "RHS60x60x4", braces),
+    ):
+        _ok(
+            await tools["create_structural_members"](
+                {
+                    "standard": "BSI",
+                    "profile_type": "shs",
+                    "size": size,
+                    "segments_file": str(path),
+                    "grouping": "each",
+                    "corner_treatment": "none",
+                    "name": name,
+                }
+            )
+        )
+
+    raw = _ok(await tools["check_joints"]())["joints"]
+    _ok(
+        await tools["create_trim_extend"](
+            {"members": ["Braces"], "boundary": ["Chords"]}
+        )
+    )
+    trimmed = _ok(await tools["check_joints"]())["joints"]
+    capped = _ok(await tools["create_end_caps"]({"open_ends": True, "thickness_mm": 5}))
+    done = _ok(await tools["check_joints"]())["joints"]
+
+    assert raw["overlaps"]["count"] >= 8 and raw["clean"] is False
+    assert raw["members"] == 12 and raw["loose"] == []
+    assert trimmed["overlaps"]["count"] == 0, trimmed["overlaps"]["pairs"]
+    assert trimmed["partly_open_ends"]["count"] == 0, trimmed["partly_open_ends"]
+    assert trimmed["open_ends"]["count"] == 8, trimmed["open_ends"]["ends"]
+    assert {round(e["at_mm"][1]) for e in trimmed["open_ends"]["ends"]} == {0, 2000}
+    assert trimmed["clean"] is True and trimmed["groups"] == 1
+    assert capped["caps"]["caps"] == 8 and capped["caps"]["bodies_after"] == 20
+    assert done["open_ends"]["count"] == 0 and done["overlaps"]["count"] == 0
+    assert done["clean"] is True and done["bodies"] == 20
+    print(
+        f"[live] lattice column: {raw['overlaps']['count']} overlaps drawn, "
+        f"{trimmed['open_ends']['count']} open ends trimmed, "
+        f"{done['seconds']} s to check {done['bodies']} bodies"
+    )
+
+
 async def test_a_weldment_drawing_carries_its_cut_list(
     scratch: Any, tmp_path: Path
 ) -> None:

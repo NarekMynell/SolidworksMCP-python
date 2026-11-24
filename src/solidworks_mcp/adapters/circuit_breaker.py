@@ -1985,6 +1985,26 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             input_dict={"params": params},
         )
 
+    async def check_joints(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Measure a weldment's joints, through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "check_joints",
+            lambda: self.adapter.check_joints(params),
+            input_dict={"params": params},
+        )
+
+    async def create_end_caps(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Close member ends with end caps, through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "create_end_caps",
+            lambda: self.adapter.create_end_caps(params),
+            input_dict={"params": params},
+        )
+
     async def get_cut_list(
         self, update: bool = True, export_path: str | None = None
     ) -> AdapterResult[dict[str, Any]]:

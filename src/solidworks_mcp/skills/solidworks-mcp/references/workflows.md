@@ -127,7 +127,8 @@ profiles sketched and extruded one by one.
 3. `create_part`, then `create_structural_members` once per kind of
    member: columns, beams, joists, bracing, each with its own `name`. Give
    all the members of a kind as `segments` in one call; a continuous member
-   (a chord) is one segment.
+   (a chord) is one segment. Hundreds of segments (a lattice): have a script
+   write them to a JSON file and pass `segments_file`.
 4. `create_trim_extend` wherever one member frames into another, else they
    overlap and the cut list gives centre-line lengths: joists into beams
    with tops flush, `cut: coped`; beams into a column's flange, `simple`;
@@ -135,6 +136,10 @@ profiles sketched and extruded one by one.
    weld gap. Members are named by their feature (`Joists`); the reply's
    `now` gives the new body names, and `unchanged` lists any member the
    boundary didn't reach.
+4a. `check_joints`: 0 overlapping pairs means every member stops at the
+   face it meets (a picture can't show a brace buried in a chord); `loose`
+   lists bodies touching nothing. Then `create_end_caps` with `open_ends`
+   closes the hollow ends it lists, or say why one stays open.
 5. `set_material` with a structural steel: `list_available_materials`
    with `search` `S235` or `S355` gives names such as `1.0037 (S235JR)`;
    the library is found by itself.

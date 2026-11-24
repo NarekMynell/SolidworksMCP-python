@@ -1838,6 +1838,24 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             lambda adapter: adapter.create_trim_extend(params),
         )
 
+    async def check_joints(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Measure a weldment's joints, using pool."""
+        return await self._execute_with_pool(
+            "check_joints",
+            lambda adapter: adapter.check_joints(params),
+        )
+
+    async def create_end_caps(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Close member ends with end caps, using pool."""
+        return await self._execute_with_pool(
+            "create_end_caps",
+            lambda adapter: adapter.create_end_caps(params),
+        )
+
     async def get_cut_list(
         self, update: bool = True, export_path: str | None = None
     ) -> AdapterResult[dict[str, Any]]:

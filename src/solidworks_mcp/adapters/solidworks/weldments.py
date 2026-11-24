@@ -27,10 +27,20 @@ import os
 import re
 from typing import Any, cast
 
+from ...exceptions import InputRefused
 from .. import sw_type_info as _sw_type_info
 from ..base import AdapterResult, AdapterResultStatus
+from . import weldment_joints as _joints
 from .com_utils import as_list, dispatch_array
-from .io import _as_com, _byref_bool, _byref_bstr, _doc_type
+from .features import _null_callout
+from .io import (
+    _as_com,
+    _byref_bool,
+    _byref_bstr,
+    _byref_double,
+    _byref_variant,
+    _doc_type,
+)
 from .weldment_library import Point, Profile, ProfileLibrary, chains
 
 #: ``swUserPreferenceStringValue_e.swFileLocationsWeldmentProfiles``.
@@ -451,6 +461,181 @@ class SolidWorksWeldmentsMixin:
         return cast(
             AdapterResult[dict[str, Any]],
             adapter._handle_com_operation("create_trim_extend", run),
+        )
+
+    async def check_joints(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Measure a weldment's joints: overlapping bodies, open ends, loose bodies.
+
+        See :mod:`.weldment_joints` for how each is measured and what it
+        costs (about 0.2 s a body, and 0.1 s for each pair of bodies whose
+        boxes overlap).
+
+        Args:
+            params: ``members`` (names: only those bodies), ``overlap_mm3``,
+                ``contact_mm`` and ``max_listed``.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``bodies``, ``checked_bodies``,
+            ``members``, ``overlaps``, ``open_ends``, ``partly_open_ends``,
+            ``loose``, ``loose_count``, ``groups``, ``group_sizes``,
+            ``clean``, ``pairs_checked`` and ``seconds``.
+        """
+        adapter = self._adapter(self)
+        if wrong := _need_part(adapter, "check_joints"):
+            return wrong
+
+        def run() -> dict[str, Any]:
+            model = adapter.currentModel
+            part = _sw_type_info.flagged(model, "IPartDoc")
+            only = None
+            if params.get("members"):
+                only = set(_named_bodies(adapter, model, part, list(params["members"])))
+            modeler = adapter._attempt(lambda: adapter.swApp.GetModeler(), default=None)
+            if modeler is None:
+                raise Exception("SolidWorks gave no modeler to measure the bodies with")
+            return _joints.check(
+                adapter,
+                part,
+                _sw_type_info.flagged(modeler, "IModeler"),
+                _byref_variant,
+                float(params.get("overlap_mm3", 1.0)),
+                float(params.get("contact_mm", 0.5)),
+                int(params.get("max_listed", 25)),
+                only,
+                _byref_double,
+            )
+
+        return cast(
+            AdapterResult[dict[str, Any]],
+            adapter._handle_com_operation("check_joints", run),
+        )
+
+    async def create_end_caps(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Close member ends with SolidWorks' End Cap feature.
+
+        The ends are the member end faces nearest the given points, or every
+        end :func:`.weldment_joints.contacts` finds touching nothing
+        (``open_ends``). One End Cap feature caps them all.
+
+        Args:
+            params: ``ends`` (points, mm) or ``open_ends``; ``thickness_mm``,
+                ``placement`` (``inward``, ``outward``, ``internal``),
+                ``inset_mm``, ``depth_mm``, ``contact_mm`` and ``name``.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``feature``, ``caps``, ``ends``
+            (each ``body`` and ``at_mm``), ``placement``, ``thickness_mm``,
+            ``inset_mm`` and ``bodies_after``.
+        """
+        adapter = self._adapter(self)
+        if wrong := _need_part(adapter, "create_end_caps"):
+            return wrong
+        placement = str(params.get("placement") or "inward")
+        thickness = float(params.get("thickness_mm") or 5.0)
+        inset = float(params.get("inset_mm") or 0.0)
+        depth = float(params.get("depth_mm") or 0.0)
+
+        def run() -> dict[str, Any]:
+            model = adapter.currentModel
+            part = _sw_type_info.flagged(model, "IPartDoc")
+            bodies = _joints.read_bodies(adapter, part, _byref_double)
+            if params.get("open_ends"):
+                _, found = _joints.contacts(
+                    adapter, bodies, float(params.get("contact_mm", 0.5)) / 1000.0
+                )
+                ends = [
+                    (e["body"], e["face"]) for e in found if e["covered_percent"] == 0
+                ]
+            else:
+                faces, missed = _joints.end_faces_at(
+                    adapter, bodies, [list(p) for p in params.get("ends") or []], 20.0
+                )
+                if missed:
+                    raise InputRefused(
+                        f"No member end within 20 mm of {missed}: give a point on or "
+                        "near the end face of a structural member"
+                    )
+                owner = {id(f): b.name for b in bodies for f in b.ends}
+                ends = [(owner.get(id(f), ""), f) for f in faces]
+            if not ends:
+                raise InputRefused(
+                    "No open member end to cap: check_joints lists none"
+                    if params.get("open_ends")
+                    else "No member end found at the points given"
+                )
+            adapter._attempt(lambda: model.ClearSelection2(True))
+            selected = 0
+            for index, (_, face) in enumerate(ends):
+                entity = _sw_type_info.flagged(face.ref, "IEntity")
+                if adapter._attempt(
+                    lambda e=entity, i=index: e.Select4(i > 0, _null_callout()),
+                    default=False,
+                ):
+                    selected += 1
+            if selected != len(ends):
+                raise Exception(
+                    f"SolidWorks selected {selected} of the {len(ends)} end faces to cap"
+                )
+            manager = _sw_type_info.flagged(model.FeatureManager, "IFeatureManager")
+            feature = _feature(
+                adapter._attempt(
+                    lambda: manager.InsertEndCapFeature3(
+                        thickness / 1000.0,
+                        True,
+                        False,
+                        inset / 1000.0,
+                        0.5,
+                        0.0,
+                        False,
+                        depth / 1000.0,
+                        False,
+                        _joints.CAP_PLACEMENT[placement],
+                    )
+                )
+            )
+            if feature is None:
+                raise Exception(
+                    "SolidWorks refused the end caps: each end must be a planar end "
+                    "face of a hollow or open structural member, and an inset must "
+                    "leave the cap some size"
+                )
+            if params.get("name"):
+                feature.Name = str(params["name"])
+            after = len(_bodies(adapter, part))
+            data: dict[str, Any] = {
+                "feature": str(feature.Name),
+                "caps": after - len(bodies),
+                "ends": [
+                    {
+                        "body": name,
+                        "at_mm": _joints.mm(
+                            tuple(
+                                sum(p[k] for p in _joints.samples_of(adapter, face))
+                                / max(1, len(_joints.samples_of(adapter, face)))
+                                for k in range(3)
+                            )
+                        ),
+                    }
+                    for name, face in ends
+                ],
+                "placement": placement,
+                "thickness_mm": thickness,
+                "inset_mm": inset,
+                "bodies_after": after,
+            }
+            if data["caps"] != len(ends):
+                data["warning"] = (
+                    f"{len(ends)} end(s) selected but {data['caps']} cap body(ies) made"
+                )
+            return data
+
+        return cast(
+            AdapterResult[dict[str, Any]],
+            adapter._handle_com_operation("create_end_caps", run),
         )
 
     def _resolve_profile(self, params: dict[str, Any]) -> Profile:

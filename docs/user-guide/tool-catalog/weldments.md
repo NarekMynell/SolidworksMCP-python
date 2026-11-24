@@ -12,8 +12,9 @@ items; IPE160 joists coped to IPE240 beams with a 5 mm weld gap came out
 The order for a frame: `list_weldment_profiles` to find each size,
 `create_structural_members` once per profile (columns, beams, joists,
 bracing) on centre lines in model axes (y up), `create_trim_extend`
-wherever one member frames into another, `set_material`, then
-`get_cut_list`.
+wherever one member frames into another, `check_joints` until no member
+runs into another, `create_end_caps` on the open hollow ends,
+`set_material`, then `get_cut_list`.
 
 ### `list_weldment_profiles`
 
@@ -55,6 +56,7 @@ Put a weldment profile on many segments in one call: columns, beams, truss chord
 | `profile_type` | `str?` | — | `None` | Library profile type, e.g. `ipe`, `hea`, `shs` |
 | `profile_path` | `str?` | — | `None` | A `.sldlfp` profile of your own instead of `standard` and `profile_type` |
 | `segments` | `list[list[float]]?` | — | `None` | Member axes to draw as a new 3D sketch, each `[x1, y1, z1, x2, y2, z2]` in mm |
+| `segments_file` | `str?` | — | `None` | A `.json` file of segments instead (a list, or `{"segments": [...]}`), such as a lattice generator writes; up to 2000 |
 | `sketch` | `str?` | — | `None` | An existing sketch whose lines and arcs to use instead |
 | `segment_names` | `list[str]?` | — | `None` | Only these segments of `sketch`, e.g. `["Line1", "Line4"]` |
 | `corner_treatment` | `str` | — | `miter` | Where segments of one chain meet: `miter`, `butt1`, `butt2` or `none` |
@@ -97,6 +99,60 @@ Trim or extend structural members where they meet: beams to columns, joists cope
 
 ```json
 {"members": ["Joists IPE160"], "boundary": ["Main beams IPE240"], "cut": "coped", "weld_gap_mm": 5}
+```
+
+---
+
+### `check_joints`
+
+Check a weldment's joints: members that run into each other, member ends left open, bodies touching nothing.
+
+**Prerequisite:** An open weldment part
+
+**SolidWorks automation note:** Overlaps come from `IModeler.CheckInterferenceBetweenTwoBodies` (byref `VARIANT` out-parameters; the intersection's volume from `IBody2.GetMassProperties`), asked only for pairs whose bounding boxes share volume: it costs about 0.1 s a pair. Touching bodies don't interfere, coincidence or not, so contact is measured: points spread over each member's planar end faces (`IFace2.GetTessTriangles`) are moved 0.2 mm along the face's outward `Normal`, and `IFace2.GetClosestPointOn` on the nearby faces of nearby bodies says whether something is within `contact_mm`. A member is a body at least 2.5 times longer than it is wide, its axis the direction its planar faces' normals avoid, its ends the planar faces facing along it. An end with under a quarter of its points touching is open (none) or partly open; a tube on one as wide as itself touches with about a third (its side walls sit on the other's corner radii). An end buried in a body it overlaps counts as that overlap. About 0.2 s a body: on a 12-member frame, 4 open ends found in 9 s.
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `members` | `list[str]?` | — | `None` | Only these member features or bodies: their overlaps, ends and contacts |
+| `overlap_mm3` | `float` | — | `1.0` | Bodies sharing at most this volume touch rather than overlap |
+| `contact_mm` | `float` | — | `0.5` | How near an end must come to another body to be closed; raise it above a trim's weld gap |
+| `max_listed` | `int` | — | `25` | The most items each list gives; the counts are complete |
+
+**Sample call:**
+
+```json
+{"members": ["Leg braces"]}
+```
+
+---
+
+### `create_end_caps`
+
+Close the open ends of hollow structural members with end caps (End Cap).
+
+**Prerequisite:** An open weldment part
+
+**SolidWorks automation note:** The end faces are selected (`IEntity.Select4`, a `VT_DISPATCH` null for the select data) and capped by one `IFeatureManager.InsertEndCapFeature3(depth, given_offset, chamfer, offset, thickness_ratio, chamfer_size, corner_treatment, depth_offset, reverse, placement)`. Checked live on an RHS100x100x4 post: placement 0 puts a 5 mm cap outside the end (the post keeps its 1000 mm), 1 flush with it (the post becomes 995 mm), 2 inside the tube at the depth offset, sized to the inside (92 x 92 mm); an offset of 3 mm insets the cap to 94 x 94 mm. `open_ends` caps what `check_joints` would list as open.
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `ends` | `list[list[float]]?` | — | `None` | Points `[x, y, z]` mm at the ends to cap; each takes the member end face nearest it, within 20 mm |
+| `open_ends` | `bool` | — | `false` | Cap every member end that touches nothing |
+| `thickness_mm` | `float` | — | `5.0` | Cap thickness |
+| `placement` | `str` | — | `inward` | `inward` flush with the end (the member gets shorter); `outward` on the end; `internal` inside the tube |
+| `inset_mm` | `float` | — | `0.0` | Inset of the cap's edges from the profile's outside (room for a fillet weld) |
+| `depth_mm` | `float` | — | `0.0` | `internal` caps: depth inside the end |
+| `contact_mm` | `float` | — | `0.5` | With `open_ends`: how near an end must come to something to be closed |
+| `name` | `str?` | — | `None` | Name for the new feature |
+
+**Sample call:**
+
+```json
+{"open_ends": true, "thickness_mm": 5}
 ```
 
 ---

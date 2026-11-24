@@ -260,6 +260,8 @@ SUPPORT_LEVELS: dict[str, Support] = {
     "list_weldment_profiles": _STABLE,
     "create_structural_members": _STABLE,
     "create_trim_extend": _STABLE,
+    "check_joints": _STABLE,
+    "create_end_caps": _STABLE,
     "get_cut_list": _STABLE,
     # equations
     "list_equations": _STABLE,

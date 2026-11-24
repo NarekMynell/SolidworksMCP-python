@@ -1918,6 +1918,38 @@ class SolidWorksAdapter(ABC):
             error="create_trim_extend is not implemented by this adapter",
         )
 
+    async def check_joints(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Measure a weldment's joints: overlapping bodies, open ends, loose bodies.
+
+        Args:
+            params (dict[str, Any]): The bodies to check and the tolerances.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The findings, or error.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="check_joints is not implemented by this adapter",
+        )
+
+    async def create_end_caps(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Close structural member ends with end caps.
+
+        Args:
+            params (dict[str, Any]): The ends and the cap's size and placement.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The feature, or error.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="create_end_caps is not implemented by this adapter",
+        )
+
     async def get_cut_list(
         self, update: bool = True, export_path: str | None = None
     ) -> AdapterResult[dict[str, Any]]:

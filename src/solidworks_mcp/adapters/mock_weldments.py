@@ -6,6 +6,10 @@ live. Members are straight; each is one body as long as its segment, and
 the cut list groups bodies of the same size and length, with the mass from
 the size's kg per metre. A part with no material gets SolidWorks' default
 density warning, as it does live.
+
+The joint check works on the centre lines: members that meet overlap until
+the one that ends on the other is trimmed (or, at a corner of one chain,
+mitred); an end that meets nothing and isn't capped is open.
 """
 
 from __future__ import annotations
@@ -36,9 +40,40 @@ def _error(message: str) -> AdapterResult[dict[str, Any]]:
     return AdapterResult(status=AdapterResultStatus.ERROR, error=message)
 
 
+def _distance_to_line(point: list[float], line: list[float]) -> float:
+    """How far a point is from a segment ``[x1, y1, z1, x2, y2, z2]``, mm."""
+    a, b = line[:3], line[3:]
+    ab = [b[k] - a[k] for k in range(3)]
+    length2 = sum(v * v for v in ab)
+    t = 0.0
+    if length2 > 0:
+        t = max(
+            0.0, min(1.0, sum((point[k] - a[k]) * ab[k] for k in range(3)) / length2)
+        )
+    return math.dist(point, [a[k] + t * ab[k] for k in range(3)])
+
+
+#: Centre lines this close meet (mm).
+_MEETS_MM = 1.0
+
+
 def _find(table: dict[str, Any], name: str) -> str | None:
     """The key of ``table`` that ``name`` names, case and spacing aside."""
     return next((k for k in table if normalise(k) == normalise(name)), None)
+
+
+def _groups(names: list[str], links: set[tuple[str, str]]) -> list[list[str]]:
+    """Connected groups of names, largest first."""
+    found: list[set[str]] = []
+    for name in names:
+        found.append({name})
+    for a, b in links:
+        first = next(g for g in found if a in g)
+        second = next(g for g in found if b in g)
+        if first is not second:
+            first |= second
+            found.remove(second)
+    return sorted((sorted(g) for g in found), key=len, reverse=True)
 
 
 class MockWeldmentsMixin:
@@ -202,11 +237,19 @@ class MockWeldmentsMixin:
             params.get("name")
             or f"{profile['type']} {profile['size']}({state['features']})"
         )
+        chained = (
+            str(params.get("corner_treatment") or "miter") != "none"
+            and grouping != "each"
+        )
         for index, s in enumerate(segments, 1):
             length = math.dist(s[:3], s[3:])
+            body = f"{name}[{index}]"
             state["bodies"].append(
-                (profile["size"], round(length, 3), per_metre, name, f"{name}[{index}]")
+                (profile["size"], round(length, 3), per_metre, name, body)
             )
+            state.setdefault("lines", {})[body] = list(s)
+            if chained:
+                state.setdefault("mitred", set()).add(body)
         return AdapterResult(
             status=AdapterResultStatus.SUCCESS,
             data={
@@ -268,6 +311,10 @@ class MockWeldmentsMixin:
             size, length, per_metre, member, body = bodies[i]
             now = f"{feature_name}[{count}]"  # SolidWorks renames trimmed bodies
             bodies[i] = (size, round(length - cut_mm, 3), per_metre, member, now)
+            lines = state.setdefault("lines", {})
+            if body in lines:
+                lines[now] = lines.pop(body)
+            state.setdefault("trimmed", set()).add(now)
             area_mm2 = per_metre / 7850.0 * 1e6
             changes.append(
                 {
@@ -288,6 +335,164 @@ class MockWeldmentsMixin:
                 "boundary": [bodies[i][4] for i in boundary],
                 "unchanged": [],
                 "bodies_after": len(bodies),
+            },
+        )
+
+    def _joint_survey(self) -> dict[str, Any]:
+        """Overlapping pairs, open ends and links of the mock members' centre lines."""
+        state = self._weld_state()
+        lines: dict[str, list[float]] = state.get("lines", {})
+        trimmed: set[str] = state.get("trimmed", set())
+        mitred: set[str] = state.get("mitred", set())
+        caps: list[list[float]] = state.get("caps", [])
+        names = [b[4] for b in state["bodies"] if b[4] in lines]
+        overlaps, links, open_ends = [], set(), []
+        for name in names:
+            line = lines[name]
+            for end in (line[:3], line[3:]):
+                met = [
+                    other
+                    for other in names
+                    if other != name
+                    and _distance_to_line(end, lines[other]) <= _MEETS_MM
+                ]
+                for other in met:
+                    links.add(tuple(sorted((name, other))))
+                    other_line = lines[other]
+                    corner = (
+                        min(
+                            math.dist(end, other_line[:3]),
+                            math.dist(end, other_line[3:]),
+                        )
+                        <= _MEETS_MM
+                    )
+                    clean = name in trimmed or (
+                        corner and (other in trimmed or {name, other} <= mitred)
+                    )
+                    if not clean:
+                        overlaps.append(tuple(sorted((name, other))))
+                capped = any(math.dist(end, c) <= _MEETS_MM for c in caps)
+                if not met and not capped:
+                    open_ends.append(
+                        {"body": name, "at_mm": [round(c, 1) for c in end]}
+                    )
+        return {
+            "names": names,
+            "overlaps": sorted(set(overlaps)),
+            "links": links,
+            "open_ends": open_ends,
+        }
+
+    async def check_joints(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock joint check on the members' centre lines."""
+        if error := self._part_error("check_joints"):
+            return error
+        state = self._weld_state()
+        if not state["bodies"]:
+            return _error("The part has no bodies to check")
+        survey = self._joint_survey()
+        listed = int(params.get("max_listed", 25))
+        only = None
+        if params.get("members"):
+            chosen = self._trim_bodies(list(params["members"]))
+            if isinstance(chosen, str):
+                return _error(chosen)
+            only = {state["bodies"][i][4] for i in chosen}
+        pairs = [p for p in survey["overlaps"] if only is None or set(p) & only]
+        ends = [e for e in survey["open_ends"] if only is None or e["body"] in only]
+        linked = {n for link in survey["links"] for n in link}
+        loose = [
+            n
+            for n in survey["names"]
+            if n not in linked and (only is None or n in only)
+        ]
+        if len(survey["names"]) < 2:
+            loose = []
+        groups = _groups(survey["names"], survey["links"])
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "bodies": len(state["bodies"]),
+                "checked_bodies": len(state["bodies"]) if only is None else len(only),
+                "members": len(survey["names"]),
+                "overlaps": {
+                    "count": len(pairs),
+                    "volume_mm3": round(1000.0 * len(pairs), 1),
+                    "pairs": [
+                        {
+                            "bodies": list(p),
+                            "volume_mm3": 1000.0,
+                            "at_mm": [0.0, 0.0, 0.0],
+                        }
+                        for p in pairs[:listed]
+                    ],
+                },
+                "open_ends": {"count": len(ends), "ends": ends[:listed]},
+                "partly_open_ends": {"count": 0, "ends": []},
+                "loose": loose[:listed],
+                "loose_count": len(loose),
+                "groups": len(groups),
+                "group_sizes": [len(g) for g in groups[:listed]],
+                "clean": not pairs and not loose,
+                "pairs_checked": len(pairs),
+                "seconds": 0.0,
+            },
+        )
+
+    async def create_end_caps(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock end caps: a plate body at each open end, or at the ends nearest the points."""
+        if error := self._part_error("create_end_caps"):
+            return error
+        state = self._weld_state()
+        survey = self._joint_survey()
+        if params.get("open_ends"):
+            ends = survey["open_ends"]
+        else:
+            lines = state.get("lines", {})
+            all_ends = [
+                {"body": n, "at_mm": [round(c, 1) for c in end]}
+                for n in survey["names"]
+                for end in (lines[n][:3], lines[n][3:])
+            ]
+            ends, missed = [], []
+            for point in params.get("ends") or []:
+                near = [e for e in all_ends if math.dist(point, e["at_mm"]) <= 20.0]
+                if not near:
+                    missed.append(list(point))
+                    continue
+                best = min(near, key=lambda e: math.dist(point, e["at_mm"]))
+                if best not in ends:
+                    ends.append(best)
+            if missed:
+                return _error(
+                    f"No member end within 20 mm of {missed}: give a point on or near "
+                    "the end face of a structural member"
+                )
+        if not ends:
+            return _error("No open member end to cap: check_joints lists none")
+        state["end_caps"] = state.get("end_caps", 0) + 1
+        self._operation_count += 1
+        feature = params.get("name") or f"End cap{state['end_caps']}"
+        thickness = float(params.get("thickness_mm") or 5.0)
+        for index, end in enumerate(ends, 1):
+            state.setdefault("caps", []).append(end["at_mm"])
+            state["bodies"].append(
+                ("End cap", thickness, 0.0, feature, f"{feature}[{index}]")
+            )
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "feature": feature,
+                "caps": len(ends),
+                "ends": ends,
+                "placement": str(params.get("placement") or "inward"),
+                "thickness_mm": thickness,
+                "inset_mm": float(params.get("inset_mm") or 0.0),
+                "bodies_after": len(state["bodies"]),
             },
         )
 
