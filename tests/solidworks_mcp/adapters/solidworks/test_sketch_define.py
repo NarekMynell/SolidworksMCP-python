@@ -61,6 +61,7 @@ class _Model:
         self.selected: list[Any] = []
         self.relations: list[tuple[str, tuple[Any, ...]]] = []
         self.dimensions: dict[str, tuple[Any, ...]] = {}
+        self.displays: list[_Display] = []
         self.texts: list[tuple[float, ...]] = []
         self.refuse = refuse or (lambda selected, text: False)
         self.origin = _Point(0.0, 0.0, 0.0, self)
@@ -102,7 +103,8 @@ class _Model:
             return None
         name = f"D{len(self.dimensions) + 1}@Sketch"
         self.dimensions[name] = tuple(self.selected)
-        return _Display(name)
+        self.displays.append(_Display(name))
+        return self.displays[-1]
 
     AddDimension2 = _dimension
     AddHorizontalDimension2 = _dimension
@@ -272,6 +274,8 @@ def test_nodes_get_dimensions_and_relations_to_the_main_planes() -> None:
     assert planes == {"Right Plane", "Top Plane", "Front Plane"}
     # The y text sits halfway between the point and the Top plane.
     assert (4.0, 1.5, 0.0) in model.texts
+    # They define the skeleton, not a drawing: none is marked for drawings.
+    assert [d.MarkedForDrawing for d in model.displays] == [False, False]
 
 
 def test_a_refused_dimension_moves_its_text_and_then_takes() -> None:
@@ -335,6 +339,9 @@ def test_plate_points_are_dimensioned_from_the_origin() -> None:
     assert result["fixed"] == 0
     assert result["failed_count"] == 0
     assert ("sgVERTICALPOINTS2D", (on_axis, model.origin)) in model.relations
+    # Offsets from the part origin and the diameter stay off drawings.
+    assert len(model.displays) == 6
+    assert {d.MarkedForDrawing for d in model.displays} == {False}
 
 
 def test_plate_points_measure_from_where_the_origin_projects() -> None:

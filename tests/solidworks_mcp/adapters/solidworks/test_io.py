@@ -4090,9 +4090,33 @@ class TestAssemblyAndDrawingSuccessPaths:
             "position": {"x": 120.0, "y": 40.0},
             "positioned": True,
             "font_size_points": 12.0,
+            "text_height_mm": 4.23,
         }
         annotation.SetPosition.assert_called_once_with(0.12, 0.04, 0.0)
-        note.SetTextFormat.assert_called_once()
+        # The height goes on the annotation's ITextFormat (12 pt = 4.23 mm), the
+        # one way SolidWorks applies it; INote.SetTextFormat takes no height.
+        text_format = annotation.GetTextFormat.return_value
+        assert text_format.CharHeight == pytest.approx(12 * 25.4 / 72 / 1000)
+        annotation.SetTextFormat.assert_called_once_with(0, False, text_format)
+        note.SetTextFormat.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_add_note_without_a_size_keeps_the_drawings_own(
+        self, monkeypatch
+    ) -> None:
+        adapter = self._document(monkeypatch, 3)
+        note = MagicMock()
+        annotation = note.GetAnnotation.return_value
+        annotation.GetTextFormat.return_value.CharHeight = 0.0035
+        adapter.currentModel.InsertNote.return_value = note
+
+        result = await adapter.add_note(
+            {"text": "NOTES", "position": [20.0, 30.0], "font_size": None}
+        )
+
+        assert result.data["text_height_mm"] == 3.5
+        assert result.data["font_size_points"] is None
+        annotation.SetTextFormat.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_list_drawing_views_returns_the_view_names(self, monkeypatch) -> None:

@@ -66,6 +66,23 @@ def _flagged(obj: Any, interface: str) -> Any:
     return _sw_type_info.flagged(obj, interface)
 
 
+def _off_drawings(adapter: Any, display: Any) -> None:
+    """Keep a dimension these helpers add off drawings (``MarkedForDrawing`` off).
+
+    They pin generated geometry to the part's planes (a node's x, a plate
+    corner's offset from the origin) and size nothing a shop cuts: a
+    platform's assembly drawing imported 385 of them onto its views. Model
+    dimensions are imported marked-for-drawing only, so these stay out of
+    ``insert_model_dimensions`` and the drawing package.
+    """
+    attempt(
+        adapter,
+        lambda: setattr(
+            _flagged(display, "IDisplayDimension"), "MarkedForDrawing", False
+        ),
+    )
+
+
 def definition(sketch: Any) -> str:
     """How defined an ``ISketch`` is, in words.
 
@@ -270,6 +287,7 @@ def tie_nodes_to_planes(
                 display = _dimension(model, point, plane, xyz, axis)
                 if display is None:
                     break
+                _off_drawings(adapter, display)
                 made.append(display)
             else:
                 for axis, plane in planes.items():
@@ -453,6 +471,7 @@ def tie_points_to_origin(
                     display = model.AddVerticalDimension2(x, oy + value / 2.0, 0.0)
                 if display is None:
                     break
+                _off_drawings(adapter, display)
                 made.append(display)
             else:
                 for along, value in offsets:
@@ -489,6 +508,7 @@ def tie_points_to_origin(
             if diameter is None:
                 failed += 1
             else:
+                _off_drawings(adapter, diameter)
                 dimensions += 1
         model.ClearSelection2(True)
     return {

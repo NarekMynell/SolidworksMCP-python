@@ -119,7 +119,14 @@ class AddNoteInput(BaseModel):
     text: str = Field(description="Note text content")
     position_x: float = Field(description="X position for note")
     position_y: float = Field(description="Y position for note")
-    font_size: float = Field(default=12.0, description="Font size in points")
+    font_size: float | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Font size in points (10 pt is 3.5 mm text, 7 pt 2.5 mm); "
+            "left out, the drawing's own note size"
+        ),
+    )
     leader_attachment: str | None = Field(
         default=None, description="Entity to attach leader line to"
     )
@@ -519,12 +526,13 @@ async def register_drawing_tools(
         Use it for general notes such as material or finish. For a title block, use
         `generate_drawing_package`, which fills one. Needs: an open, active drawing.
         Changes: adds a note to the sheet. Returns: `data` with `text`, `position`,
-        `positioned` (whether the position was applied) and `font_size_points`.
+        `positioned` (whether the position was applied), `font_size_points` and
+        `text_height_mm` (the height the note now has).
 
         Args:
             input_data: The note. `text`, `position_x` and `position_y` (mm from
                 the sheet's lower-left corner) are required; `font_size` (points)
-                has a default.
+                sets the text size, left out the drawing's own.
 
         Returns:
             dict[str, Any]: The note placed.

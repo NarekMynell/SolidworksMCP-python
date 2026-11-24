@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from ..base import AdapterResult, AdapterResultStatus
 from . import dimension_layout as _layout
+from .com_utils import as_list
 from .com_utils import double_array as _double_array
 from .features import _null_callout
 from .io import _as_com, _resolve_drawing_view, _sw_type_info, _view_names
@@ -127,6 +128,12 @@ _TABLE_TEXT_HEIGHT = 0.0035
 WELDMENT_DIMENSIONS = (
     "skipped: a weldment's model dimensions are its profiles' sketch sizes, "
     "not the frame's; the cut list gives each member's length"
+)
+#: What a drawing of an assembly of weldments says instead of its dimensions.
+WELDMENT_ASSEMBLY_DIMENSIONS = (
+    "skipped: the pieces' model dimensions are their skeleton and plate "
+    "sketches (a platform's put 385 on its views); each piece's own drawing "
+    "and cut list size it"
 )
 #: GD&T characteristic -> SolidWorks GTOL symbol code (IGtol::SetFrameSymbols2).
 _GTOL_SYMBOLS = {
@@ -474,6 +481,8 @@ class _Sheet:
         include_bom: Whether to put a BOM above the isometric.
         weldment: A weldment part: its cut list goes above the isometric and
             its model dimensions (its profiles' sketch sizes) are left out.
+        weldment_parts: An assembly of weldment parts: its model dimensions
+            (every piece's skeleton and plate sketches) are left out too.
         material: The part's material, for the notes.
         extra_notes: The caller's note lines.
         views: View name -> ``IView``, orthographic first.
@@ -499,6 +508,7 @@ class _Sheet:
     include_isometric: bool = True
     include_bom: bool = False
     weldment: bool = False
+    weldment_parts: bool = False
     material: str | None = None
     extra_notes: list[str] = field(default_factory=list)
     views: dict[str, Any] = field(default_factory=dict)
@@ -1715,6 +1725,22 @@ class SolidWorksDrawingStandardMixin:
         info["table_box_mm"] = [round(v * 1000, 1) for v in box]
         return info
 
+    def _has_weldment_parts(self) -> bool:
+        """Whether any part in the active assembly is a weldment."""
+        assembly = _sw_type_info.flagged(self.currentModel, "IAssemblyDoc")
+        components = as_list(
+            self._attempt(lambda: assembly.GetComponents(False), default=None)
+        )
+        for raw in components:
+            component = _sw_type_info.flagged(raw, "IComponent2")
+            doc = self._attempt(lambda c=component: c.GetModelDoc2(), default=None)
+            if doc is None or self._attempt(lambda d=doc: d.GetType()) != 1:
+                continue
+            part = _sw_type_info.flagged(doc, "IPartDoc")
+            if self._attempt(lambda p=part: bool(p.IsWeldment()), default=False):
+                return True
+        return False
+
     def _dimension_views(self, s: _Sheet) -> dict[str, Any]:
         """Import the model dimensions and lay them out clear of everything.
 
@@ -1724,6 +1750,8 @@ class SolidWorksDrawingStandardMixin:
         """
         if s.weldment:
             return {"dimensions_added": 0, "note": WELDMENT_DIMENSIONS}
+        if s.weldment_parts:
+            return {"dimensions_added": 0, "note": WELDMENT_ASSEMBLY_DIMENSIONS}
         dims = self._import_dimensions(None, True, only_views=list(s.ortho))
         dims["layout"] = self._arrange_layout(None, self._obstacles(s), WORK_AREA)
         return dims
@@ -2098,12 +2126,14 @@ class SolidWorksDrawingStandardMixin:
                     "with the same name is open in SolidWorks, close it first."
                 )
         material = None
-        weldment = False
+        weldment = weldment_parts = False
         if ext == ".sldprt":
             mat = await self.get_material()
             material = (mat.data or {}).get("material") if mat.is_success else None
             part = _sw_type_info.flagged(self.currentModel, "IPartDoc")
             weldment = bool(self._attempt(lambda: part.IsWeldment(), default=False))
+        else:
+            weldment_parts = self._has_weldment_parts()
         model_props, drawing_props = title_block_properties(
             model_file=path,
             title=title or stem,
@@ -2163,6 +2193,7 @@ class SolidWorksDrawingStandardMixin:
             include_isometric=include_isometric,
             include_bom=include_bom,
             weldment=weldment,
+            weldment_parts=weldment_parts,
             material=material,
             extra_notes=list(notes or []),
             subtitle=(subtitle or "").strip() or None,

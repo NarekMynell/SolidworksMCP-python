@@ -3463,27 +3463,52 @@ class SolidWorksIOMixin:
                 )
 
             positioned = False
+            height_mm: float | None = None
             annotation = adapter._attempt(
-                lambda: _sw_type_info.flagged(note, "INote").GetAnnotation(),
+                lambda: _sw_type_info.flagged(
+                    _sw_type_info.flagged(note, "INote").GetAnnotation(),
+                    "IAnnotation",
+                ),
                 default=None,
             )
             if annotation is not None:
+                if font_mm:
+                    # The size lives on the annotation's text format:
+                    # INote.SetTextFormat takes an ITextFormat, not a height,
+                    # so a height passed there was silently ignored.
+                    text_format = adapter._attempt(
+                        lambda: _sw_type_info.flagged(
+                            annotation.GetTextFormat(0), "ITextFormat"
+                        ),
+                        default=None,
+                    )
+                    if text_format is not None:
+                        adapter._attempt(
+                            lambda: setattr(
+                                text_format, "CharHeight", font_mm / 1000.0
+                            ),
+                            default=None,
+                        )
+                        adapter._attempt(
+                            lambda: annotation.SetTextFormat(0, False, text_format),
+                            default=None,
+                        )
                 positioned = bool(
                     adapter._attempt(
-                        lambda: _sw_type_info.flagged(
-                            annotation, "IAnnotation"
-                        ).SetPosition(x / 1000.0, y / 1000.0, 0.0),
+                        lambda: annotation.SetPosition(x / 1000.0, y / 1000.0, 0.0),
                         default=False,
                     )
                 )
-
-            if font_mm:
-                adapter._attempt(
-                    lambda: _sw_type_info.flagged(note, "INote").SetTextFormat(
-                        0, False, font_mm / 1000.0
+                height = adapter._attempt(
+                    lambda: (
+                        _sw_type_info.flagged(
+                            annotation.GetTextFormat(0), "ITextFormat"
+                        ).CharHeight
                     ),
                     default=None,
                 )
+                if isinstance(height, (int, float)) and height > 0:
+                    height_mm = round(float(height) * 1000.0, 2)
 
             adapter._attempt(lambda: model.EditRebuild3(), default=None)
             return {
@@ -3491,6 +3516,7 @@ class SolidWorksIOMixin:
                 "position": {"x": x, "y": y},
                 "positioned": positioned,
                 "font_size_points": font_points or None,
+                "text_height_mm": height_mm,
             }
 
         return cast(

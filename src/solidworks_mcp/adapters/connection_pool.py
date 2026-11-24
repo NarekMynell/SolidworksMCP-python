@@ -1901,6 +1901,17 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             lambda adapter: adapter.check_feature_tree(params),
         )
 
+    async def pack_and_go_assembly(
+        self, source_path: str, target_dir: str
+    ) -> AdapterResult[dict[str, Any]]:
+        """Copy an assembly with every file it uses, using pool."""
+        return await self._execute_with_pool(
+            "pack_and_go_assembly",
+            lambda adapter: adapter.pack_and_go_assembly(
+                source_path=source_path, target_dir=target_dir
+            ),
+        )
+
     async def get_cut_list(
         self, update: bool = True, export_path: str | None = None
     ) -> AdapterResult[dict[str, Any]]:

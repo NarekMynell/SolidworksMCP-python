@@ -959,6 +959,61 @@ async def test_a_weldment_gets_its_cut_list_and_no_profile_dimensions(files) -> 
 
 
 @pytest.mark.asyncio
+async def test_an_assembly_of_weldments_gets_no_model_dimensions(files) -> None:
+    """Its pieces' model dimensions are their skeleton and plate sketches: a
+    platform's assembly drawing imported 385 of them and failed its overlap
+    check. Each piece's own drawing and cut list size it."""
+    adapter = _adapter(files)
+    opened = adapter.open_model
+    plain = SimpleNamespace(GetType=lambda: 1, IsWeldment=lambda: False)
+    frame = SimpleNamespace(GetType=lambda: 1, IsWeldment=lambda: True)
+    parts = [plain, None, frame]
+
+    async def open_assembly(path):
+        result = await opened(path)
+        adapter.currentModel.GetComponents = lambda _top: [
+            SimpleNamespace(GetModelDoc2=lambda d=doc: d) for doc in parts
+        ]
+        return result
+
+    adapter.open_model = open_assembly
+
+    result = await adapter.create_standard_drawing(
+        files.assembly, write_model_properties=False
+    )
+
+    assert result.is_success, result.error
+    assert result.data["dimensions"] == {
+        "dimensions_added": 0,
+        "note": std.WELDMENT_ASSEMBLY_DIMENSIONS,
+    }
+    assert not [c for c in adapter.calls if c[0] == "import_dimensions"]
+
+
+@pytest.mark.asyncio
+async def test_an_assembly_of_plain_parts_imports_its_dimensions(files) -> None:
+    adapter = _adapter(files)
+    opened = adapter.open_model
+
+    async def open_assembly(path):
+        result = await opened(path)
+        plain = SimpleNamespace(GetType=lambda: 1, IsWeldment=lambda: False)
+        adapter.currentModel.GetComponents = lambda _top: [
+            SimpleNamespace(GetModelDoc2=lambda: plain)
+        ]
+        return result
+
+    adapter.open_model = open_assembly
+
+    result = await adapter.create_standard_drawing(
+        files.assembly, write_model_properties=False
+    )
+
+    assert result.is_success, result.error
+    assert [c for c in adapter.calls if c[0] == "import_dimensions"]
+
+
+@pytest.mark.asyncio
 async def test_an_assemblys_own_material_is_left_as_set(files) -> None:
     # A link to an assembly's material shows "<not specified>", so its own
     # Material property (set by the caller) is not overwritten.

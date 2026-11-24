@@ -2055,6 +2055,18 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             input_dict={"params": params},
         )
 
+    async def pack_and_go_assembly(
+        self, source_path: str, target_dir: str
+    ) -> AdapterResult[dict[str, Any]]:
+        """Copy an assembly with every file it uses, through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "pack_and_go_assembly",
+            lambda: self.adapter.pack_and_go_assembly(
+                source_path=source_path, target_dir=target_dir
+            ),
+            input_dict={"source_path": source_path, "target_dir": target_dir},
+        )
+
     async def get_cut_list(
         self, update: bool = True, export_path: str | None = None
     ) -> AdapterResult[dict[str, Any]]:

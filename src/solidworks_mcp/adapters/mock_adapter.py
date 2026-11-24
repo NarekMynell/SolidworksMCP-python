@@ -3568,6 +3568,11 @@ class MockSolidWorksAdapter(
                 # check it never performed.
                 "positioned": None,
                 "font_size_points": font_points or None,
+                # The size asked for (points to mm); the real adapter reads
+                # the height back. Without one, the drawing's own: unknown here.
+                "text_height_mm": round(font_points * 25.4 / 72, 2)
+                if font_points
+                else None,
             },
             execution_time=self._delays["model_operation"],
         )

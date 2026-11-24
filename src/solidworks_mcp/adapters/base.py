@@ -1998,6 +1998,23 @@ class SolidWorksAdapter(ABC):
             error="export_plate_dxfs is not implemented by this adapter",
         )
 
+    async def pack_and_go_assembly(
+        self, source_path: str, target_dir: str
+    ) -> AdapterResult[dict[str, Any]]:
+        """Copy an assembly and every file it uses into one folder.
+
+        Args:
+            source_path (str): The ``.sldasm`` file.
+            target_dir (str): The folder to copy into.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The result, or error.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="pack_and_go_assembly is not implemented by this adapter",
+        )
+
     async def set_feature_folders(
         self, params: dict[str, Any]
     ) -> AdapterResult[dict[str, Any]]:
