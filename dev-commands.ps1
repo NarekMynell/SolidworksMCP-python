@@ -138,6 +138,7 @@ function dev-help {
     Write-Host "  dev-docs            Build and serve documentation (http://localhost:8000)"
     Write-Host "  dev-docs-discovery  Index SolidWorks COM/VBA documentation (Windows + SW running)"
     Write-Host "  dev-clean           Remove build/cache artifacts"
+    Write-Host "  dev-upstream        Fetch the original repository (remote upstream) and say how far main and this branch are behind it; changes nothing"
     Write-Host ""
 }
 
@@ -455,6 +456,24 @@ print('COM Objects:', s.get('total_com_objects'), ' Methods:', s.get('total_meth
     Invoke-Venv -Args @("-c", $pythonCode)
     if ($LASTEXITCODE -eq 0) { Write-Host "Discovery complete." -ForegroundColor Green }
     else { Write-Host "Discovery failed." -ForegroundColor Red }
+}
+
+function dev-upstream {
+    # The fork follows andrewbartels1/SolidworksMCP-python (remote upstream). Read-only:
+    # it fetches and reports; merging is a deliberate step (see the printed commands).
+    git fetch upstream --quiet
+    if ($LASTEXITCODE -ne 0) { Write-Host "No remote 'upstream': git remote add upstream https://github.com/andrewbartels1/SolidworksMCP-python.git" -ForegroundColor Red; return }
+    $branch = git rev-parse --abbrev-ref HEAD
+    foreach ($ref in @('main', $branch)) {
+        $counts = (git rev-list --left-right --count "upstream/main...$ref") -split '\s+'
+        Write-Host ("{0,-34} {1,4} behind upstream/main, {2,4} ahead" -f $ref, $counts[0], $counts[1])
+    }
+    $behind = [int]((git rev-list --count "$branch..upstream/main").Trim())
+    if ($behind -gt 0) {
+        Write-Host ""
+        Write-Host "To take them: git checkout main; git merge --ff-only upstream/main; git checkout $branch; git merge main" -ForegroundColor Yellow
+        Write-Host "then dev-test, the live weldment tests, and a new tag for the marketplace's server.env." -ForegroundColor Yellow
+    } else { Write-Host "Up to date with upstream/main." -ForegroundColor Green }
 }
 
 function dev-clean {
