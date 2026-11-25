@@ -61,6 +61,8 @@ Measure the active part or assembly's mass properties: volume, surface area, mas
 
 Find where the components of the active assembly overlap (Tools > Interference Detection).
 
+Overlaps under 1 mm³, or thinner than 0.01 mm and under 100 mm³, are faces set against each other (a panel on a post's face overlapped it 0.38 mm³; brace flats on gussets on a slope 17 mm³, 0.002 mm deep): they are counted in `touching_count`, not as interferences (with `coincident` they all stay). Each interference carries its `depth_mm`, twice its volume over its surface area (`IInterference.GetInterferenceBody`).
+
 **Prerequisite:** Active assembly
 
 **Parameters:**

@@ -167,6 +167,13 @@ def move_into_folder(
     if not wanted:
         return {"folder": folder, "moved": [], "missing": missing, "refused": []}
     target = _folder(model, folder)
+    note = None
+    if target is not None and (blocking := _jumps_over(model, folder, wanted)):
+        # Into the old folder would put them before a feature that changes
+        # bodies (a pattern before the trim it copies came out untrimmed,
+        # seen live): a new folder where they are keeps the order.
+        note = f"kept after {blocking}, which changes the bodies they follow"
+        folder, target = _free_folder_name(model, folder), None
     if target is None:
         model.ClearSelection2(True)
         for i, name in enumerate(wanted):
@@ -207,11 +214,81 @@ def move_into_folder(
                     default=False,
                 )
             if landed:
-                inside.append(name)
+                # Read back: a feature moved in lands at the folder's top, so
+                # the last one inside is not always the one just moved (a
+                # pattern placed after its own axis landed before its member).
+                inside = _contents(_folder(model, folder))
         inside = _contents(_folder(model, folder))
     moved = [name for name in wanted if name in inside]
     refused = [name for name in wanted if name not in inside]
-    return {"folder": folder, "moved": moved, "missing": missing, "refused": refused}
+    placed: dict[str, Any] = {
+        "folder": folder,
+        "moved": moved,
+        "missing": missing,
+        "refused": refused,
+    }
+    if note:
+        placed["note"] = note
+    return placed
+
+
+#: Feature types that change no body: moving one earlier changes no geometry.
+_KEEPS_BODIES = SYSTEM_TYPES | {
+    "RefPlane",
+    "RefAxis",
+    "RefPoint",
+    "CoordSys",
+    "ProfileFeature",
+    "3DProfileFeature",
+    "FtrFolder",
+    "WeldmentFeature",
+}
+
+
+def _jumps_over(model: Any, folder: str, wanted: list[str]) -> str | None:
+    """A feature that changes bodies between a folder's end and the features to move in.
+
+    Moving a feature into a folder moves it up the tree, before everything
+    after the folder; that is safe only past sketches, planes and axes.
+    """
+    order = top_features(model)
+    names = [str(f.Name) for f in order]
+    if folder not in names:
+        return None
+    start = names.index(folder)
+    end = next(
+        (i for i in range(start + 1, len(names)) if names[i].endswith("___EndTag___")),
+        None,
+    )
+    moving = set(wanted)
+    last = max((names.index(n) for n in wanted if n in names), default=-1)
+    if end is None or last <= end:
+        return None
+    for i in range(end + 1, last):
+        if names[i] not in moving and order[i].GetTypeName2() not in _KEEPS_BODIES:
+            return names[i]
+    return None
+
+
+def last_folder_of(model: Any, names: list[str]) -> str | None:
+    """The last folder in the tree holding any of the named features (or their bodies' features).
+
+    A body name ``Joists IPE160[3]`` counts as its feature ``Joists IPE160``.
+    """
+    wanted = {n.rsplit("[", 1)[0] if n.endswith("]") else n for n in names}
+    found = None
+    for folder, contents in folders_of(top_features(model)).items():
+        if wanted & set(contents):
+            found = folder
+    return found
+
+
+def _free_folder_name(model: Any, wanted: str) -> str:
+    """``wanted 2``, ``wanted 3``... the first no feature has."""
+    count = 2
+    while model.FeatureByName(f"{wanted} {count}") is not None:
+        count += 1
+    return f"{wanted} {count}"
 
 
 class SolidWorksFeatureTreeMixin:

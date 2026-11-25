@@ -55,12 +55,36 @@ END_COSINE = 0.34
 MEMBER_SLENDERNESS = 2.5
 #: Points sampled on each face, spread over it.
 SAMPLES = 12
+#: An overlap thinner than this (m) is touching, however large: plates laid
+#: face to face on a slope overlapped 3.6 mm^3 over 4200 mm^2, under a
+#: thousandth of a millimetre deep (seen live). Its depth is twice its volume
+#: over its surface area, a thin slab's thickness.
+TOUCH_DEPTH_M = 1e-5
+#: A side or face lapped on another touches within this (m), whatever
+#: ``contact_mm`` an end's weld gap needs: a leaf hung 3 mm off its post is
+#: not joined to it.
+SIDE_REACH_M = 0.001
+#: A coped (curved) end reaches the member's extreme point within this (m)
+#: and spans at least this share of its section; a bolt hole near the end
+#: does neither (a 2 mm fascia's holes were taken for ends, seen live).
+COPED_TIP_M = 0.001
+COPED_SPAN = 0.5
 #: An end with at least this share of its points touching something is
 #: closed. A tube landing on one as wide as itself sits on that tube's corner
 #: radii: two of its walls touch nothing (a 1-2 mm gap, welded with a flare
 #: bevel) and the other two only between the radii, about a third of its
 #: points (seen live on 40x40 tubes); an end in mid-air touches with none.
 CLOSED_SHARE = 0.25
+#: A hollow end's opening counts as covered by a body this near (m): the
+#: weld bridges a gap that small (a tube landing on one as wide sits on its
+#: corner radii, 1-2 mm off).
+OPENING_REACH_M = 0.003
+#: A hollow end whose ring touches at this share or more is closed (bore covered or joined).
+FULL_RING = 0.9
+#: A hollow end is closed when at least this share of its opening probes touch.
+OPENING_SHARE = 0.8
+#: How far toward the ring the opening probes sit (share of its extent).
+OPENING_SPREAD = 0.4
 #: ``InsertEndCapFeature3``'s placement argument.
 CAP_PLACEMENT = {"outward": 0, "inward": 1, "internal": 2}
 
@@ -229,6 +253,12 @@ class Face:
     normal: Vector = (0.0, 0.0, 0.0)
     area: float = 0.0
     samples: list[Vector] | None = None
+    #: A curved face's outward normal at each sample (a coped end, a tube's side).
+    sample_normals: list[Vector] | None = None
+    #: The tessellation, 9 numbers a triangle (read when first needed).
+    tess: list[float] | None = None
+    #: A curved face's vertex normals, 9 numbers a triangle like ``tess``.
+    norms: list[float] | None = None
 
 
 @dataclass
@@ -304,21 +334,124 @@ def read_faces(adapter: Any, body: Body) -> list[Face]:
             body.member = True
             body.ends = [
                 f for f in planars if abs(dot(f.normal, body.axis)) >= END_COSINE
-            ]
+            ] + _coped_ends(adapter, body, faces, spans, widest)
     return faces
 
 
-def samples_of(adapter: Any, face: Face) -> list[Vector]:
-    """Points spread over a planar face (read when first needed)."""
-    if face.samples is None:
-        tess = [
+def _coped_ends(
+    adapter: Any, body: Body, faces: list[Face], length: float, width: float
+) -> list[Face]:
+    """A member's curved end faces: an end coped round a tube touches it on a saddle.
+
+    A curved face is an end when it is short along the member (under half
+    its length), reaches one of the member's extreme points (within
+    ``COPED_TIP_M``) and spans at least ``COPED_SPAN`` of its section; its
+    normal is set along the axis, out of that end. A standoff coped onto a
+    round handle touched it only there (seen live).
+    """
+    axis = body.axis
+    assert axis is not None
+    across = _square_to(axis)
+    ends = []
+    for face in faces:
+        if face.planar:
+            continue
+        # The face's box as seen along the axis: on a diagonal member the
+        # box's two corners alone measured a tube's side as short (an end).
+        spread = sum(abs(axis[k]) * (face.box[k + 3] - face.box[k]) for k in range(3))
+        if spread > 0.5 * length:
+            continue  # a tube's side, a corner radius
+        points = _vertices(adapter, face)
+        if not points:
+            continue
+        span = max(
+            max(dot(p, d) for p in points) - min(dot(p, d) for p in points)
+            for d in across
+        )
+        if span < COPED_SPAN * width:
+            continue  # a hole, a rounded corner
+        for sign in (1.0, -1.0):
+            out: Vector = (sign * axis[0], sign * axis[1], sign * axis[2])
+            tip = _tip(adapter, body, out)
+            if max(dot(p, out) for p in points) >= tip - COPED_TIP_M:
+                face.normal = out
+                ends.append(face)
+                break
+    return ends
+
+
+def _tip(adapter: Any, body: Body, direction: Vector) -> float:
+    """How far a body reaches along ``direction``: its extreme point's projection."""
+    if body.make_double is not None:
+        outs = [body.make_double() for _ in range(3)]
+        ok = adapter._attempt(
+            lambda: body.ref.GetExtremePoint(*direction, *outs), default=False
+        )
+        if ok:
+            return dot([float(getattr(o, "value", o)) for o in outs], direction)
+    corners = [c for f in body.faces or [] for c in (f.box[:3], f.box[3:])]
+    return max(dot(c, direction) for c in corners)
+
+
+def _tessellation(adapter: Any, face: Face) -> list[float]:
+    """A face's tessellation triangles, 9 numbers each (cached)."""
+    if face.tess is None:
+        face.tess = [
             float(v)
             for v in as_list(
                 adapter._attempt(lambda: face.ref.GetTessTriangles(True), default=None)
             )
         ]
+    return face.tess
+
+
+def _vertices(adapter: Any, face: Face) -> list[Vector]:
+    """The corners of a face's tessellation triangles."""
+    tess = _tessellation(adapter, face)
+    return [(tess[i], tess[i + 1], tess[i + 2]) for i in range(0, len(tess) - 2, 3)]
+
+
+def samples_of(adapter: Any, face: Face) -> list[Vector]:
+    """Points spread over a face (read when first needed); a curved face's normals too."""
+    if face.samples is None:
+        tess = _tessellation(adapter, face)
         face.samples = triangle_samples(tess)
+        if not face.planar and face.samples:
+            face.norms = [
+                float(v)
+                for v in as_list(
+                    adapter._attempt(lambda: face.ref.GetTessNorms(), default=None)
+                )
+            ]
+            face.sample_normals = _normals_at(
+                tess, face.norms, face.samples, face.normal
+            )
     return face.samples
+
+
+def _normals_at(
+    tess: list[float], norms: list[float], points: list[Vector], fallback: Vector
+) -> list[Vector]:
+    """Each sample's outward normal: its triangle's averaged vertex normals."""
+    if len(norms) != len(tess):
+        return [fallback] * len(points)
+    found = []
+    for point in points:
+        best, normal = math.inf, fallback
+        for i in range(0, len(tess) - 8, 9):
+            centroid = tuple(
+                (tess[i + k] + tess[i + 3 + k] + tess[i + 6 + k]) / 3.0
+                for k in range(3)
+            )
+            distance = math.dist(centroid, point)
+            if distance < best:
+                summed = tuple(
+                    norms[i + k] + norms[i + 3 + k] + norms[i + 6 + k] for k in range(3)
+                )
+                if any(abs(c) > 1e-12 for c in summed):
+                    best, normal = distance, unit(summed)
+        found.append(normal)
+    return found
 
 
 def _span(adapter: Any, body: Body, direction: Vector) -> float:
@@ -413,6 +546,8 @@ def overlaps(
             )
             if not hit:
                 continue
+            # Each lump is judged by its own depth: a thin sliver beside a
+            # deep chunk must not average the chunk away.
             volume, centre = 0.0, None
             for raw in as_list(getattr(common, "value", common)):
                 values = as_list(
@@ -423,9 +558,16 @@ def overlaps(
                         default=None,
                     )
                 )
-                if len(values) >= 4:
-                    volume += float(values[3])
-                    centre = centre or tuple(float(v) for v in values[:3])
+                if len(values) < 4:
+                    continue
+                lump, area = (
+                    float(values[3]),
+                    (float(values[4]) if len(values) > 4 else 0.0),
+                )
+                if area and 2 * lump / area < TOUCH_DEPTH_M:
+                    continue
+                volume += lump
+                centre = centre or tuple(float(v) for v in values[:3])
             if volume > least_m3:
                 found.append(
                     {
@@ -471,48 +613,243 @@ def _touches(adapter: Any, point: Vector, other: Body, reach: float) -> bool:
     return False
 
 
+def is_hollow(adapter: Any, face: Face) -> bool:
+    """Whether a member's end face is a ring (a hollow section's end: two loops or more)."""
+    loops = adapter._attempt(lambda: face.ref.GetLoopCount(), default=1)
+    return int(loops or 1) > 1
+
+
+def opening_points(face: Face, samples: list[Vector]) -> list[Vector]:
+    """Five points across a hollow end's opening, just outside it: the centre and half way out.
+
+    The opening is centred on the end face's box (a hollow section's end
+    is symmetric about its centre, square or mitred); the points sit 0.4 of
+    the way to the ring's sampled extent, inside the bore of any wall
+    thinner than a fifth of the section.
+    """
+    n = face.normal
+    box = face.box
+    c0 = tuple((box[k] + box[k + 3]) / 2.0 for k in range(3))
+    s0 = samples[0]
+    lift = dot(sub(c0, s0), n)
+    c = tuple(c0[k] - lift * n[k] for k in range(3))
+    helper = (1.0, 0.0, 0.0) if abs(n[0]) < 0.9 else (0.0, 1.0, 0.0)
+    u = unit(
+        (
+            n[1] * helper[2] - n[2] * helper[1],
+            n[2] * helper[0] - n[0] * helper[2],
+            n[0] * helper[1] - n[1] * helper[0],
+        )
+    )
+    v = (
+        n[1] * u[2] - n[2] * u[1],
+        n[2] * u[0] - n[0] * u[2],
+        n[0] * u[1] - n[1] * u[0],
+    )
+    eu = max(abs(dot(sub(p, c), u)) for p in samples)
+    ev = max(abs(dot(sub(p, c), v)) for p in samples)
+    points = [c]
+    for axis, extent in ((u, eu), (v, ev)):
+        for sign in (1.0, -1.0):
+            points.append(
+                tuple(c[k] + sign * OPENING_SPREAD * extent * axis[k] for k in range(3))
+            )
+    return [
+        (p[0] + n[0] * PROBE_M, p[1] + n[1] * PROBE_M, p[2] + n[2] * PROBE_M)
+        for p in points
+    ]
+
+
+def _pair(a: str, b: str) -> tuple[str, str]:
+    first, second = sorted((a, b))
+    return first, second
+
+
+def _probe(
+    adapter: Any, face: Face, near: list[Body], reach: float
+) -> tuple[list[Vector], int, set[str]]:
+    """A face's sample points, how many touch a nearby body, and the bodies they touch."""
+    samples = samples_of(adapter, face)
+    normals = face.sample_normals or [face.normal] * len(samples)
+    touching = 0
+    hits: set[str] = set()
+    for sample, out in zip(samples, normals, strict=False):
+        point: Vector = (
+            sample[0] + out[0] * PROBE_M,
+            sample[1] + out[1] * PROBE_M,
+            sample[2] + out[2] * PROBE_M,
+        )
+        hit = next((o for o in near if _touches(adapter, point, o, reach)), None)
+        if hit is not None:
+            touching += 1
+            hits.add(hit.name)
+    return samples, touching, hits
+
+
+def _face_touches(adapter: Any, face: Face, other: Body, reach: float) -> bool:
+    """Whether a face touches a body where their boxes meet.
+
+    Nine points of the box the face shares with the body (its centre and
+    half way to its corners) are moved onto the face and a hair outward,
+    along the face's normal there (a curved face's: its nearest triangle's):
+    a long face touching a narrow body (a member lapped across another) has
+    none of its twelve spread samples there.
+    """
+    lo = [max(face.box[k], other.box[k]) - reach for k in range(3)]
+    hi = [min(face.box[k + 3], other.box[k + 3]) + reach for k in range(3)]
+    if any(h < low for low, h in zip(lo, hi, strict=True)):
+        return False
+    if not face.planar:
+        samples_of(adapter, face)  # its triangles and their normals
+    centre = [(low + h) / 2.0 for low, h in zip(lo, hi, strict=True)]
+    corners = [
+        [centre[k] + (hi[k] - lo[k]) / 4.0 * sign[k] for k in range(3)]
+        for sign in [(sx, sy, sz) for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)]
+    ]
+    for target in [centre, *corners]:
+        on = as_list(
+            adapter._attempt(
+                lambda t=target: face.ref.GetClosestPointOn(t[0], t[1], t[2]),
+                default=None,
+            )
+        )
+        if len(on) < 3:
+            continue
+        point: Vector = (float(on[0]), float(on[1]), float(on[2]))
+        out = (
+            face.normal
+            if face.planar
+            else _normals_at(face.tess or [], face.norms or [], [point], face.normal)[0]
+        )
+        if not any(abs(c) > 1e-12 for c in out):
+            continue
+        probe: Vector = (
+            point[0] + out[0] * PROBE_M,
+            point[1] + out[1] * PROBE_M,
+            point[2] + out[2] * PROBE_M,
+        )
+        if _touches(adapter, probe, other, reach):
+            return True
+    return False
+
+
+def _root(parent: dict[str, str], name: str) -> str:
+    """The name standing for ``name``'s group."""
+    while parent[name] != name:
+        parent[name] = parent[parent[name]]
+        name = parent[name]
+    return name
+
+
+def side_contacts(
+    adapter: Any,
+    bodies: list[Body],
+    groups: list[list[str]],
+    apart: set[str],
+    reach: float,
+) -> set[tuple[str, str]]:
+    """Links between groups through faces other than member ends.
+
+    A strap or face plate long enough to count as a member touches its post
+    only with its broad face, a member lapped onto another only with its
+    side, a round bar lapped on a plate only along a line: probed at their
+    ends alone they looked loose (two face plates on a door post, seen
+    live). Each body named in ``apart`` is tried against each nearby body
+    of another group: its faces other than member ends toward that body,
+    and that body's flat faces toward it (``_face_touches``), within at most
+    ``SIDE_REACH_M``. Groups joined on the way aren't tried again.
+    """
+    reach = min(reach, SIDE_REACH_M)
+    parent = {body.name: body.name for body in bodies}
+    for names in groups:
+        for name in names[1:]:
+            parent[_root(parent, name)] = _root(parent, names[0])
+    links: set[tuple[str, str]] = set()
+    for body in bodies:
+        if body.name not in apart:
+            continue
+        read_faces(adapter, body)
+        ends = {id(face) for face in body.ends} if body.member else set()
+        own = [face for face in body.faces or [] if id(face) not in ends]
+        for other in bodies:
+            if (
+                other is body
+                or _root(parent, body.name) == _root(parent, other.name)
+                or not boxes_near(body.box, other.box, reach)
+            ):
+                continue
+            flat = [face for face in read_faces(adapter, other) if face.planar]
+            if any(_face_touches(adapter, face, other, reach) for face in own) or any(
+                _face_touches(adapter, face, body, reach) for face in flat
+            ):
+                links.add(_pair(body.name, other.name))
+                parent[_root(parent, body.name)] = _root(parent, other.name)
+    return links
+
+
 def contacts(
     adapter: Any, bodies: list[Body], reach: float, only: set[str] | None = None
 ) -> tuple[set[tuple[str, str]], list[dict[str, Any]]]:
-    """Which bodies touch, and which member ends touch nothing.
+    """Which bodies touch, and which member ends aren't closed.
 
-    Every member's end faces are probed, and every planar face of a body
-    that isn't a member (a plate, a cap), each at its sample points moved
-    ``PROBE_M`` outward. A face touches a body when a probe point lies
-    within ``reach`` of it.
+    Every member's end faces are probed (flat or coped), and every face of
+    a body that isn't a member (a plate, a cap, a short stub), each at its
+    sample points moved ``PROBE_M`` outward (a curved face along its own
+    normal at each point). A face touches a body when a probe point lies
+    within ``reach`` of it. A hollow end whose ring lands only in part is
+    closed only when its opening is covered too: five points across the
+    opening must find a body within ``OPENING_REACH_M`` (the weld bridges
+    that), or it is partly open, like a column top a sloped beam covers a
+    sixth of (seen live). A ring landing whole is closed: its bore is
+    covered, or joined to another tube's (a mitre).
 
     Returns:
-        tuple: Touching pairs, and the ends less than ``CLOSED_SHARE``
-        covered (``body``, ``at_mm``, ``normal``, ``covered_percent``: 0
-        for an open end, more for an end that hangs off what it meets).
+        tuple: Touching pairs, and the ends not closed: ``body``,
+        ``at_mm``, ``normal``, ``hollow``, ``covered_percent`` (of the ring:
+        0 for an end touching nothing) and, for a hollow end whose ring
+        lands, ``opening_covered_percent``.
     """
     links: set[tuple[str, str]] = set()
     open_ends = []
+    opening_reach = max(reach, OPENING_REACH_M)
     for body in bodies:
         if only is not None and body.name not in only:
             continue
         read_faces(adapter, body)
-        probed = body.ends if body.member else [f for f in body.faces or [] if f.planar]
+        # A member is probed at its ends (flat or coped); anything else (a
+        # plate, a cap, a short stub) on every face, curved ones too.
+        probed = body.ends if body.member else list(body.faces or [])
         near = [
-            o for o in bodies if o is not body and boxes_near(body.box, o.box, reach)
+            o
+            for o in bodies
+            if o is not body and boxes_near(body.box, o.box, opening_reach)
         ]
         for face in probed:
-            touching = 0
-            samples = samples_of(adapter, face)
-            for sample in samples:
-                point: Vector = (
-                    sample[0] + face.normal[0] * PROBE_M,
-                    sample[1] + face.normal[1] * PROBE_M,
-                    sample[2] + face.normal[2] * PROBE_M,
+            samples, touching, hits = _probe(adapter, face, near, reach)
+            links.update(_pair(body.name, name) for name in hits)
+            if not (body.member and samples):
+                continue
+            hollow = is_hollow(adapter, face)
+            ring = touching / len(samples)
+            entry: dict[str, Any] | None = None
+            if ring < CLOSED_SHARE:
+                entry = {"covered_percent": round(100.0 * ring)}
+            elif hollow and ring < FULL_RING:
+                # A ring landing whole is closed: on a face or plate it covers
+                # the bore, on another tube's ring (a mitre, a butt splice) the
+                # bores join. Only a ring partly landed has its bore probed.
+                probes = opening_points(face, samples)
+                covered = sum(
+                    1
+                    for p in probes
+                    if any(_touches(adapter, p, o, opening_reach) for o in near)
                 )
-                hit = next(
-                    (o for o in near if _touches(adapter, point, o, reach)), None
-                )
-                if hit is not None:
-                    touching += 1
-                    first, second = sorted((body.name, hit.name))
-                    links.add((first, second))
-            if body.member and samples and touching < CLOSED_SHARE * len(samples):
+                if covered < OPENING_SHARE * len(probes):
+                    entry = {
+                        "covered_percent": round(100.0 * ring),
+                        "opening_covered_percent": round(100.0 * covered / len(probes)),
+                    }
+            if entry is not None:
                 centre = tuple(
                     sum(s[k] for s in samples) / len(samples) for k in range(3)
                 )
@@ -521,7 +858,8 @@ def contacts(
                         "body": body.name,
                         "at_mm": mm(centre),
                         "normal": [round(c, 3) for c in face.normal],
-                        "covered_percent": round(100.0 * touching / len(samples)),
+                        "hollow": hollow,
+                        **entry,
                         "face": face,
                     }
                 )
@@ -568,18 +906,36 @@ def check(
             for other in overlapping.get(end["body"], [])
         )
     ]
-    names = [b.name for b in bodies]
-    if only is not None:
-        # Outside the subset only the bodies something in it touches count.
+
+    def grouped() -> list[list[str]]:
+        names = [b.name for b in bodies]
+        if only is not None:
+            # Outside the subset only the bodies something in it touches count.
+            touched = {n for link in links for n in link}
+            names = [n for n in names if n in only or n in touched]
+        return groups_of(names, links)
+
+    groups = grouped()
+    # Bodies outside the largest group (when checking some: those touching
+    # nothing) may touch only with a member's side or a small patch of a
+    # face: probe those faces closely.
+    if only is None:
+        largest = max(groups, key=len) if groups else []
+        apart = {n for g in groups if g is not largest for n in g}
+    else:
         touched = {n for link in links for n in link}
-        names = [n for n in names if n in only or n in touched]
-    groups = groups_of(names, links)
+        apart = {n for n in only if n not in touched}
+    if apart and len(bodies) > 1:
+        links |= side_contacts(adapter, bodies, groups, apart, contact_mm / 1000.0)
+        groups = grouped()
     loose = [g[0] for g in groups if len(g) == 1 and (only is None or g[0] in only)]
     if len(bodies) < 2:
         loose = []
     for end in open_ends:
         end.pop("face", None)
-    fully_open = [e for e in open_ends if e["covered_percent"] == 0]
+    untouched = [e for e in open_ends if e["covered_percent"] == 0]
+    fully_open = [e for e in untouched if e["hollow"]]
+    free = [e for e in untouched if not e["hollow"]]
     partly = [e for e in open_ends if e["covered_percent"] > 0]
     return {
         "bodies": len(bodies),
@@ -592,6 +948,7 @@ def check(
         },
         "open_ends": {"count": len(fully_open), "ends": fully_open[:listed]},
         "partly_open_ends": {"count": len(partly), "ends": partly[:listed]},
+        "free_ends": {"count": len(free), "ends": free[:listed]},
         "loose": loose[:listed],
         "loose_count": len(loose),
         "groups": len(groups),
@@ -605,32 +962,37 @@ def check(
 def end_faces_at(
     adapter: Any, bodies: list[Body], points_mm: list[list[float]], reach_mm: float
 ) -> tuple[list[Face], list[list[float]]]:
-    """The member end face nearest each point, and the points no end face is near."""
+    """The member end face nearest each point, and the points no end face is near.
+
+    A point is near an end when it lies in the end's outline box and within
+    ``reach_mm`` of its plane: the middle of a tube's end, in its opening,
+    is 46 mm from the ring of an SHS 100x4 but on its plane (such an exact
+    point was refused when the ring itself was measured, seen live).
+    """
+    reach = reach_mm / 1000.0
     chosen: list[Face] = []
     missed = []
     for point_mm in points_mm:
         point = tuple(c / 1000.0 for c in point_mm)
-        best: tuple[float, Face] | None = None
+        best: tuple[tuple[float, float], Face] | None = None
         for body in bodies:
-            if not in_box(point, body.box, reach_mm / 1000.0):
+            if not in_box(point, body.box, reach):
                 continue
             read_faces(adapter, body)
             for face in body.ends if body.member else []:
-                closest = as_list(
-                    adapter._attempt(
-                        lambda f=face, p=point: f.ref.GetClosestPointOn(
-                            p[0], p[1], p[2]
-                        ),
-                        default=None,
-                    )
-                )
-                if len(closest) < 3:
+                # a coped (curved) end takes no cap
+                if not face.planar or not in_box(point, face.box, reach):
                     continue
-                distance = math.dist(point, [float(c) for c in closest[:3]])
-                if distance <= reach_mm / 1000.0 and (
-                    best is None or distance < best[0]
-                ):
-                    best = (distance, face)
+                samples = samples_of(adapter, face)
+                if not samples:
+                    continue
+                distance = abs(dot(sub(point, samples[0]), face.normal))
+                # Flush ends side by side are all on the point's plane: the
+                # one whose middle is nearest across it is the one meant.
+                middle = [(face.box[k] + face.box[k + 3]) / 2.0 for k in range(3)]
+                key = (round(distance, 6), math.dist(point, middle))
+                if distance <= reach and (best is None or key < best[0]):
+                    best = (key, face)
         if best is None:
             missed.append(point_mm)
         elif best[1] not in chosen:

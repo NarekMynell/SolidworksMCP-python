@@ -222,7 +222,9 @@ class GenerateDrawingPackageInput(CompatInput):
     company: str = Field(default="", description="Company name")
     notes: list[str] = Field(
         default_factory=list,
-        description="Extra note lines (material, process, connections); 3-7 lines in total",
+        max_length=7,
+        description="Note lines (material, process, welds, finish), at most 7; "
+        "standard lines fill the rest of the 7",
     )
     include_isometric: bool = Field(default=True, description="Add an isometric view")
     write_model_properties: bool = Field(

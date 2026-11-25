@@ -112,6 +112,12 @@ def classifier() -> ErrorClassifier:
             "list_model_dimensions needs an active part or assembly document",
             "wrong_document_type",
         ),
+        (
+            "SolidWorks stopped create_trim_extend with a dialog: 'SOLIDWORKS': "
+            "'WARNING! Your system is running critically low on memory.' "
+            "(answered 'No').",
+            "solidworks_low_memory",
+        ),
         ("No dimensions found on feature 'Fillet9'", "not_found"),
         ("No entity found for 'Edge<9>'; check the name", "not_found"),
         ("No .sldmat libraries found in: C:/x", "not_found"),

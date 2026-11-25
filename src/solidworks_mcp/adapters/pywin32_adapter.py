@@ -40,12 +40,13 @@ from .solidworks import (
     SolidWorksSketchMixin,
     SolidWorksTemplatesMixin,
     SolidWorksWeldmentCutsMixin,
+    SolidWorksWeldmentPatternsMixin,
     SolidWorksWeldmentPlatesMixin,
     SolidWorksWeldmentsMixin,
     SolidWorksWeldmentVentsMixin,
     bitmap,
 )
-from .solidworks.dialog_watch import DialogWatch, waited_message
+from .solidworks.dialog_watch import DialogWatch, refused_message, waited_message
 from .solidworks.feature_walk import walk_feature_tree
 from .solidworks.features import _null_callout, _select_feature_by_name
 from .solidworks.io import _byref_int
@@ -200,6 +201,11 @@ def _settle_seconds(variable: str, default: float) -> float:
         return max(0.0, float(os.getenv(variable, default)))
     except ValueError:
         return default
+
+
+#: Seconds a dialog SolidWorks opens during a call waits before the watch
+#: answers it, when it is one with a known safe answer (``KNOWN_ANSWERS``).
+OPERATION_DIALOG_SECONDS = 2.0
 
 
 def _settle_after(operation_name: str) -> None:
@@ -1733,6 +1739,7 @@ class PyWin32Adapter(
     SolidWorksAssemblyMixin,
     SolidWorksSheetMetalMixin,
     SolidWorksWeldmentCutsMixin,
+    SolidWorksWeldmentPatternsMixin,
     SolidWorksWeldmentPlatesMixin,
     SolidWorksWeldmentVentsMixin,
     SolidWorksWeldmentsMixin,
@@ -1824,6 +1831,10 @@ class PyWin32Adapter(
         self._com_initialized = False
         # Thread that initialised the COM apartment (see _handle_com_operation).
         self._com_thread_id: int | None = None
+        # The SolidWorks process a dialog watch looks at during each call
+        # (set on connect), and whether an outer call is already watched.
+        self._watch_pid: int | None = None
+        self._watching = False
 
         # COM constants (equivalent to SolidWorks API constants)
         self.constants = {
@@ -1904,6 +1915,8 @@ class PyWin32Adapter(
             SolidWorksMCPError: If connection or readiness checks fail.
         """
         await self._session_coordinator.connect()
+        pid = self._attempt(lambda: int(self.swApp.GetProcessID()))  # type: ignore[union-attr]
+        self._watch_pid = pid if isinstance(pid, int) and pid > 0 else None
 
     async def disconnect(self) -> None:
         """Disconnect from SolidWorks application.
@@ -1927,6 +1940,7 @@ class PyWin32Adapter(
                             ```
         """
         await self._session_coordinator.disconnect()
+        self._watch_pid = None
 
     def is_connected(self) -> bool:
         """Check if connected to SolidWorks.
@@ -2036,6 +2050,55 @@ class PyWin32Adapter(
                 ),
                 execution_time=0.0,
             )
+        if self._watch_pid is None or self._watching:
+            return self._run_operation(
+                operation_name, operation_func, *operation_args, **operation_kwargs
+            )
+        # A dialog SolidWorks opens mid-call blocks the call until someone
+        # answers it; the watch answers the ones with a known safe answer.
+        # A watch that can't be made never stops the call.
+        watch = self._attempt(
+            lambda: DialogWatch(
+                self._watch_pid,  # type: ignore[arg-type]
+                OPERATION_DIALOG_SECONDS,
+                only_known=True,
+                name="operation",
+            )
+        )
+        if watch is None:
+            return self._run_operation(
+                operation_name, operation_func, *operation_args, **operation_kwargs
+            )
+        self._watching = True
+        try:
+            with watch:
+                outcome = self._run_operation(
+                    operation_name, operation_func, *operation_args, **operation_kwargs
+                )
+        finally:
+            self._watching = False
+        # A dialog already up when the call began isn't the call's doing.
+        answered = [s for s in watch.seen if s.answer and not s.opened_before]
+        if not answered:
+            return outcome
+        # The answer stopped one command; the operation may have done part of
+        # its work before it, so what it returned is kept, and its own error.
+        refused = refused_message(operation_name, answered)
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            data=outcome.data,
+            error=f"{outcome.error} {refused}" if outcome.error else refused,
+            execution_time=outcome.execution_time,
+        )
+
+    def _run_operation(
+        self,
+        operation_name: str,
+        operation_func: Callable[..., T],
+        *operation_args: Any,
+        **operation_kwargs: Any,
+    ) -> AdapterResult[T]:
+        """Run one COM operation, timed, its failures turned into an error result."""
         start_time = time.time()
 
         try:

@@ -54,7 +54,7 @@ Put a weldment profile on many segments in one call: columns, beams, truss chord
 
 **Prerequisite:** An open part
 
-**SolidWorks automation note:** The segments are drawn as a 3D sketch (`ISketchManager.CreateLine`) or taken from an existing sketch. `IFeatureManager.InsertWeldmentFeature` comes first in a part that isn't a weldment yet, then `InsertStructuralWeldment5` with the profile file, the size as its configuration and one `IStructuralMemberGroup` per chain of segments joined end to end. SolidWorks refuses a group that branches (a truss's chords and web together); if it refuses the chains, each segment becomes its own group. The profile's `.sldlfp`, which SolidWorks leaves open, is closed again. With `define`, the line ends meeting at a node are merged (`sgMERGEPOINTS`) and every node gets its distance to the Right, Top and Front planes (`AddDimension2`, text halfway between point and plane) or a coincident relation with a plane it lies on, with auto-solve off and `CommandInProgress` on while they go in (a 6 x 6 grid: 20 s instead of 43 s). Checked live on 2025 SP4: once a 2D sketch in the part has been dimensioned, later 3D sketch points refuse their distance to the Top plane, so such a point loses its other dimensions again and gets a Fix relation; members drawn before the plates keep their dimensions.
+**SolidWorks automation note:** The segments are drawn as a 3D sketch (`ISketchManager.CreateLine`) or taken from an existing sketch. `IFeatureManager.InsertWeldmentFeature` comes first in a part that isn't a weldment yet, then `InsertStructuralWeldment5` with the profile file, the size as its configuration and one `IStructuralMemberGroup` per chain of segments joined end to end. SolidWorks refuses a group that branches (a truss's chords and web together); if it refuses the chains, each segment becomes its own group. The profile's `.sldlfp`, which SolidWorks leaves open, is closed again. Checked live on 2025 SP4 (RHS 150x100 and UPN 200 in eight directions and four chains): a member alone in its group gets its profile turned by the smallest rotation taking +z to its direction, so a rafter sloping in the xy plane comes out rolled by its slope; in a chain each next member carries the previous frame round the bend; `IStructuralMemberGroup.Angle` turns it further by the right hand. `AlignmentVector` changed nothing, so the turn that points each profile's height at `up` is computed and given as `Angle`, and one body per member direction is measured afterwards (`orientation.max_roll_deg`, its flat sides against `up`). With `define`, the line ends meeting at a node are merged (`sgMERGEPOINTS`) and every node gets its distance to the Right, Top and Front planes (`AddDimension2`, text halfway between point and plane) or a coincident relation with a plane it lies on, with auto-solve off and `CommandInProgress` on while they go in (a 6 x 6 grid: 20 s instead of 43 s). Checked live on 2025 SP4: once a 2D sketch in the part has been dimensioned, later 3D sketch points refuse their distance to the Top plane, so such a point loses its other dimensions again and gets a Fix relation; members drawn before the plates keep their dimensions.
 
 **Parameters:**
 
@@ -69,10 +69,11 @@ Put a weldment profile on many segments in one call: columns, beams, truss chord
 | `sketch` | `str?` | — | `None` | An existing sketch whose lines and arcs to use instead |
 | `segment_names` | `list[str]?` | — | `None` | Only these segments of `sketch`, e.g. `["Line1", "Line4"]` |
 | `corner_treatment` | `str` | — | `miter` | Where segments of one chain meet: `miter`, `butt1`, `butt2` or `none` |
-| `rotation` | `float` | — | `0.0` | Turn the profile about the member's axis, degrees |
+| `up` | `list[float]?` | — | `None` | Which way each profile's height points, `[x, y, z]`, taken square to each member; default model y (beams, rafters and braces upright, sloped ones not rolled); a roof's normal for purlins square to it; across a column, e.g. `[1, 0, 0]` |
+| `rotation` | `float` | — | `0.0` | A further turn of the profile about the member's axis, degrees, after `up` |
 | `mirror_profile` | `str` | — | `none` | Mirror the profile about its `horizontal` or `vertical` axis |
 | `merge_arcs` | `bool` | — | `false` | Make tangent arc segments one body |
-| `grouping` | `str` | — | `auto` | `auto` groups segments joined end to end; `single` one group; `each` one per segment |
+| `grouping` | `str` | — | `auto` | `auto` groups segments joined end to end (no chain runs through a node inside a member already there, such as a column); `single` one group; `each` one per segment |
 | `name` | `str?` | — | `None` | Name for the new feature |
 | `sketch_name` | `str?` | — | `None` | Name for the new 3D sketch drawn from `segments`; default `<name> skeleton` |
 | `define` | `str` | — | `dimensions` | `dimensions` ties every node of the new sketch to the Right, Top and Front planes (a Fix relation where SolidWorks refuses a dimension); `none` leaves it under defined |
@@ -92,7 +93,7 @@ Trim or extend structural members where they meet: beams to columns, joists cope
 
 **Prerequisite:** An open weldment part
 
-**SolidWorks automation note:** `IFeatureManager.InsertWeldmentTrimFeature2(corner, options, gap, bodies, boundary)`, the bodies as `VT_DISPATCH` arrays; corner `swEndConditionTrim` (4) for an end trim or `Miter`/`Butt1`/`Butt2` (1-3) for a corner of two members, and the options `swWeldmentTrimExtendOptionType_e` flags (allow extension 1 and 2, coped cut 4, weld gap 8). A name is a member feature (every body whose faces it made) or a body. SolidWorks renames the bodies it trims after the feature (`Joists[1]` becomes `Trim/Extend1[1]`), so each member is followed by its centre of mass and its new name returned; a member whose volume and centre of mass didn't move is reported as `unchanged` (a mitre keeps the volume but moves the centre).
+**SolidWorks automation note:** `IFeatureManager.InsertWeldmentTrimFeature2(corner, options, gap, bodies, boundary)`, the bodies as `VT_DISPATCH` arrays; corner `swEndConditionTrim` (4) for an end trim or `Miter`/`Butt1`/`Butt2` (1-3) for a corner of two members, and the options `swWeldmentTrimExtendOptionType_e` flags (allow extension 1 and 2, coped cut 4, weld gap 8). A name is a member feature (every body whose faces it made) or a body. SolidWorks renames the bodies it trims after the feature (`Joists[1]` becomes `Trim/Extend1[1]`), so each member is followed by its centre of mass (and a volume at least half its own) and its new name returned; a member whose volume and centre of mass didn't move is reported as `unchanged` (a mitre keeps the volume but moves the centre). New bodies the trim leaves that copy another body or lie inside a boundary member are deleted (`InsertDeleteBody2`, a `<name> leftovers` feature: beams chained round six columns came back four of them twice, seen live); any other new body is a member cut in two, reported in `split_pieces`.
 
 **Parameters:**
 
@@ -105,6 +106,7 @@ Trim or extend structural members where they meet: beams to columns, joists cope
 | `weld_gap_mm` | `float` | — | `0.0` | Gap left for the weld at each cut, mm |
 | `allow_extension` | `bool` | — | `true` | Extend members that stop short of the boundary |
 | `name` | `str?` | — | `None` | Name for the new feature |
+| `folder` | `str?` | — | `None` | Feature-tree folder; default the last folder holding the members or boundary, or a new numbered one where moving it there would put it before a later feature |
 
 **Sample call:**
 
@@ -120,7 +122,7 @@ Check a weldment's joints: members that run into each other, member ends left op
 
 **Prerequisite:** An open weldment part
 
-**SolidWorks automation note:** Overlaps come from `IModeler.CheckInterferenceBetweenTwoBodies` (byref `VARIANT` out-parameters; the intersection's volume from `IBody2.GetMassProperties`), asked only for pairs whose bounding boxes share volume: it costs about 0.1 s a pair. Touching bodies don't interfere, coincidence or not, so contact is measured: points spread over each member's planar end faces (`IFace2.GetTessTriangles`) are moved 0.2 mm along the face's outward `Normal`, and `IFace2.GetClosestPointOn` on the nearby faces of nearby bodies says whether something is within `contact_mm`. A member is a body at least 2.5 times longer than it is wide, its axis the direction its planar faces' normals avoid, its ends the planar faces facing along it. An end with under a quarter of its points touching is open (none) or partly open; a tube on one as wide as itself touches with about a third (its side walls sit on the other's corner radii). An end buried in a body it overlaps counts as that overlap. About 0.2 s a body: on a 12-member frame, 4 open ends found in 9 s.
+**SolidWorks automation note:** Overlaps come from `IModeler.CheckInterferenceBetweenTwoBodies` (byref `VARIANT` out-parameters; the intersection's volume from `IBody2.GetMassProperties`), asked only for pairs whose bounding boxes share volume: it costs about 0.1 s a pair. Touching bodies don't interfere, coincidence or not, so contact is measured: points spread over each member's planar end faces (`IFace2.GetTessTriangles`) are moved 0.2 mm along the face's outward `Normal`, and `IFace2.GetClosestPointOn` on the nearby faces of nearby bodies says whether something is within `contact_mm`. A member is a body at least 2.5 times longer than it is wide, its axis the direction its planar faces' normals avoid, its ends the planar faces facing along it. An end with under a quarter of its points touching is open (none) or partly open; a tube on one as wide as itself touches with about a third (its side walls sit on the other's corner radii). A hollow end (a ring: `IFace2.GetLoopCount` above 1) whose ring lands is closed only when four of five points across its opening find a body within 3 mm, else it is partly open (`opening_covered_percent`): a column top a sloped beam covers a sixth of. An open section's end touching nothing is a `free_end`, needing no cap. An overlap is judged lump by lump: one thinner than 0.01 mm (twice its volume over its surface area) is touching, however large (brace flats on gussets on a slope overlapped 3.6 mm³ a thousandth of a millimetre deep). An end buried in a body it overlaps counts as that overlap. Bodies left outside the largest group, or alone, are probed on their other faces too, at nine points of the box each face shares with a nearby body: a face plate long enough to count as a member touched its post only with its broad face, and a member lapped across another only with its side. About 0.2 s a body: on a 12-member frame, 4 open ends found in 9 s.
 
 **Parameters:**
 
@@ -145,7 +147,7 @@ Close the open ends of hollow structural members with end caps (End Cap).
 
 **Prerequisite:** An open weldment part
 
-**SolidWorks automation note:** The end faces are selected (`IEntity.Select4`, a `VT_DISPATCH` null for the select data) and capped by one `IFeatureManager.InsertEndCapFeature3(depth, given_offset, chamfer, offset, thickness_ratio, chamfer_size, corner_treatment, depth_offset, reverse, placement)`. Checked live on an RHS100x100x4 post: placement 0 puts a 5 mm cap outside the end (the post keeps its 1000 mm), 1 flush with it (the post becomes 995 mm), 2 inside the tube at the depth offset, sized to the inside (92 x 92 mm); an offset of 3 mm insets the cap to 94 x 94 mm. `open_ends` caps what `check_joints` would list as open.
+**SolidWorks automation note:** The end faces are selected (`IEntity.Select4`, a `VT_DISPATCH` null for the select data) and capped by one `IFeatureManager.InsertEndCapFeature3(depth, given_offset, chamfer, offset, thickness_ratio, chamfer_size, corner_treatment, depth_offset, reverse, placement)`. Checked live on an RHS100x100x4 post: placement 0 puts a 5 mm cap outside the end (the post keeps its 1000 mm), 1 flush with it (the post becomes 995 mm), 2 inside the tube at the depth offset, sized to the inside (92 x 92 mm); an offset of 3 mm insets the cap to 94 x 94 mm. `open_ends` caps what `check_joints` lists as open (free hollow ends); a partly open end is left for a bearing or cap plate and named in the `warning`. A point in the end's bore finds it: an end is near a point lying in its outline box and within 20 mm of its plane. Each cap's cut-list item gets its `Description` (`End cap PL5 90x90`) and `THICKNESS`, which SolidWorks leaves blank.
 
 **Parameters:**
 
@@ -214,6 +216,35 @@ Cut bolt holes, copes and notches in weldment members in one call.
 
 ```json
 {"cuts": [{"name": "FJ-1 end cope", "origin": [3987, 2920, 0], "normal": [0, 0, 1], "outline": [[-80, 0], [10, 0], [10, 90], [-80, 90]], "holes": [{"diameter": 18, "positions": [[-40, -40], [-40, -95]]}], "depth": 120}]}
+```
+
+---
+
+### `pattern_members`
+
+Copy finished members, plates or caps in a row, a grid, around an axis, or mirrored, instead of drawing each.
+
+**Prerequisite:** An open weldment part with the original built, no sketch open
+
+**SolidWorks automation note:** `IFeatureManager.FeatureLinearPattern5` and `FeatureCircularPattern5` with the bodies selected under mark 256 and the direction (or axis) under mark 1, a second direction under mark 2; the same patterns built through `CreateDefinition` data came back `None`. A direction along x, y or z runs on a reference axis where two main planes meet (`InsertAxis2`, named `X axis`, made once); any other runs on a fully defined line in a 3D sketch named after the pattern. SolidWorks runs a pattern from the axis's first point to its second (`IRefAxis.GetRefAxisParams`); the first copy is measured against the original anyway and the pattern made again the other way when it went backwards. Skipped instances are pairs of 0-based indexes in `ILinearPatternFeatureData.SkippedItemArray` (`VT_I4`), set through `AccessSelections` and `ModifyDefinition` with a `VT_DISPATCH` null for the component. A mirror is `InsertMirrorFeature` with the bodies (mark 256) and a main plane or one offset from it (mark 2). Checked live on 2025 SP4: 25 balusters less two at a gate, a frame with its base plate 5 times along z, a mirrored brace and six spokes; every copy kept its cut-list length and end angles and joined its original's item. A pattern placed in a folder before a feature that changes its bodies (the trim of the original) would copy them untrimmed, so it goes in a new numbered folder instead.
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `members` | `list[str]` | ✅ | | What to copy: member features (every body), body names, plates (`BP-1 Base plate`), end-cap features |
+| `along` | `object?` | — | `None` | Copies in a row: `direction` `[x, y, z]`, `spacing` (mm), `count` (the original included) |
+| `along2` | `object?` | — | `None` | With `along`: a second direction, for a grid |
+| `around` | `object?` | — | `None` | Copies around an axis: `axis` `[x, y, z]`, `point` on it, `count`, `angle` (total, 360 = evenly all round) |
+| `mirror` | `object?` | — | `None` | A mirrored copy: `plane` (`Front`, `Top`, `Right`) or `point` and `normal` along x, y or z |
+| `skip` | `list?` | — | `None` | Instances of a row to leave out, 1-based (the original is 1): `[4, 5]`, on a grid `[[2, 3]]` |
+| `name` | `str?` | — | `None` | The pattern's name; default `<first member> pattern` |
+| `folder` | `str?` | — | `None` | Feature-tree folder; default the last folder holding the members |
+
+**Sample call:**
+
+```json
+{"members": ["Baluster"], "along": {"direction": [1, 0, 0], "spacing": 120, "count": 25}, "skip": [10, 11], "name": "Balusters"}
 ```
 
 ---

@@ -1612,6 +1612,88 @@ class TestCheckInterferenceMoreErrors:
         assert result.data["interference_found"] is True
         assert result.data["scope"] == ["part-1"]
 
+    @pytest.mark.asyncio
+    async def test_faces_set_against_each_other_are_touching_not_clashes(
+        self, monkeypatch
+    ) -> None:
+        """A panel on a post's face overlapped it by 0.38 mm³ from rounding (seen live)."""
+        adapter = _build_adapter(monkeypatch)
+        adapter.currentModel = MagicMock()
+        adapter.currentModel.GetType.return_value = 2
+        monkeypatch.setattr(
+            "solidworks_mcp.adapters.solidworks.io._dynamic",
+            SimpleNamespace(Dispatch=lambda obj: obj),
+        )
+
+        def item(volume_m3: float, names: tuple[str, str]) -> SimpleNamespace:
+            return SimpleNamespace(
+                Volume=volume_m3,
+                GetComponentCount=lambda: 2,
+                Components=[SimpleNamespace(Name2=n) for n in names],
+            )
+
+        manager = MagicMock()
+        manager.GetInterferenceCount.return_value = 2
+        manager.GetInterferences.return_value = [
+            item(0.38e-9, ("panel-1", "post-1")),
+            item(1e-6, ("brace-1", "post-1")),
+        ]
+        adapter.currentModel.InterferenceDetectionManager = manager
+
+        result = await adapter.check_interference()
+
+        assert result.data["interference_count"] == 1
+        assert [i["components"] for i in result.data["interferences"]] == [
+            ["brace-1", "post-1"]
+        ]
+        assert result.data["touching_count"] == 1
+        assert result.data["touching"][0]["volume_mm3"] == pytest.approx(0.38)
+
+        manager.GetInterferenceCount.return_value = 1
+        manager.GetInterferences.return_value = [item(0.38e-9, ("panel-1", "post-1"))]
+        clear = await adapter.check_interference()
+        assert clear.data["interference_found"] is False
+        assert clear.data["interference_count"] == 0
+
+        # 17 mm³ over 17000 mm², two thousandths deep: touching too (seen live)
+        flat = item(17.46e-9, ("flat-1", "frame-1"))
+        flat.GetInterferenceBody = lambda: SimpleNamespace(
+            GetMassProperties=lambda _d: (0, 0, 0, 17.46e-9, 0.0175, 0)
+        )
+        sunk = item(1e-6, ("brace-1", "post-1"))
+        sunk.GetInterferenceBody = lambda: SimpleNamespace(
+            GetMassProperties=lambda _d: (0, 0, 0, 1e-6, 6e-4, 0)
+        )
+        unmeasured = item(1e-6, ("rod-1", "post-1"))
+        unmeasured.GetInterferenceBody = lambda: SimpleNamespace(
+            GetMassProperties=lambda _d: (0, 0, 0, 1e-6, 0.0, 0)  # no area
+        )
+        manager.GetInterferenceCount.return_value = 3
+        manager.GetInterferences.return_value = [flat, sunk, unmeasured]
+        deep = await adapter.check_interference()
+        assert deep.data["interference_count"] == 2
+        assert "depth_mm" not in deep.data["interferences"][1]
+        assert deep.data["interferences"][0]["depth_mm"] == pytest.approx(
+            3.333, abs=1e-3
+        )
+        assert deep.data["touching"][0]["depth_mm"] == pytest.approx(0.002, abs=1e-4)
+
+        # a thin overlap of 100 mm³ or more stays listed: its depth is an
+        # average over its lumps and could hide a deep one
+        wide = item(150e-9, ("plate-1", "beam-1"))
+        wide.GetInterferenceBody = lambda: SimpleNamespace(
+            GetMassProperties=lambda _d: (0, 0, 0, 150e-9, 0.15, 0)
+        )
+        manager.GetInterferenceCount.return_value = 1
+        manager.GetInterferences.return_value = [wide]
+        assert (await adapter.check_interference()).data["interference_count"] == 1
+
+        # asked to count coincident faces, every one is kept
+        manager.GetInterferences.return_value = [item(0.38e-9, ("panel-1", "post-1"))]
+        coincident = await adapter.check_interference({"coincident": True})
+        assert coincident.data["interference_count"] == 1
+        assert coincident.data["touching_count"] == 0
+
 
 @pytest.mark.asyncio
 async def test_pywin32_adapter_many_guard_paths(monkeypatch):
@@ -2018,6 +2100,16 @@ class TestPyWin32AdapterBranches:
         failed_save_as = await adapter.save_file(str(target))
         assert failed_save_as.is_error
         assert "Failed to save as" in (failed_save_as.error or "")
+        assert "has that file open" not in (failed_save_as.error or "")
+
+        # An open assembly keeps the target open: the error says so.
+        adapter.swApp = SimpleNamespace(
+            CloseDoc=Mock(return_value=False),
+            GetOpenDocumentByName=Mock(return_value=object()),
+        )
+        held = await adapter.save_file(str(target))
+        assert "SolidWorks has that file open" in (held.error or "")
+        assert "close_model" in (held.error or "")
 
         # SaveAs3 reports numeric success but file is still missing -> file-not-written error.
         adapter.currentModel = SimpleNamespace(SaveAs3=Mock(return_value=0))

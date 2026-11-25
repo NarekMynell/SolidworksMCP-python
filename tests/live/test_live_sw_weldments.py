@@ -53,7 +53,8 @@ async def test_a_warren_truss_and_its_cut_list(scratch: Any, tmp_path: Path) -> 
     )
     assert "RHS100x100x5" in [m["size"] for m in shs["profiles"]["matches"]]
 
-    # 2. The truss: continuous chords, then the web in one chain.
+    # 2. The truss: continuous chords, then the web, each diagonal its own piece
+    # (a chain stops at a node on a member already there), trimmed to the chords.
     _ok(await tools["create_part"]({"name": "truss"}))
     half = SPAN / PANELS / 2
     chords = _ok(
@@ -88,8 +89,16 @@ async def test_a_warren_truss_and_its_cut_list(scratch: Any, tmp_path: Path) -> 
             }
         )
     )
-    assert (members["members"]["groups"], members["members"]["grouping"]) == (1, "auto")
+    assert (members["members"]["groups"], members["members"]["grouping"]) == (
+        2 * PANELS,
+        "auto",
+    )
     assert members["members"]["bodies_after"] == 2 + 2 * PANELS
+    _ok(
+        await tools["create_trim_extend"](
+            {"members": ["Web"], "boundary": ["Chords"], "corner_type": "end_trim"}
+        )
+    )
 
     # 3. Steel, then the cut list, which adds up to the part's own mass.
     _ok(await tools["set_material"]({"material_name": "Plain Carbon Steel"}))
@@ -325,6 +334,8 @@ async def test_a_weldment_drawing_carries_its_cut_list(
     assert data["cut_list"]["row_count"] == 3  # the header and two items
     box = data["cut_list"]["table_box_mm"]
     assert box[2] - box[0] < 150  # fitted: the template's table is 199 mm
-    assert data["dimensions"]["dimensions_added"] == 0
+    # no profile sketch sizes, only the frame's overall width and height
+    assert data["dimensions"]["dimensions_added"] >= 2
+    assert {"width", "height"} <= set(data["dimensions"]["overall"]["sizes"])
     assert balloons["balloons"]["items"] == ["1", "2"]
     print(f"[live] weldment drawing: table {box} mm, scale {data['scale']}")

@@ -15,6 +15,7 @@ from .sheet_metal import SolidWorksSheetMetalMixin
 from .sketch import SolidWorksSketchMixin
 from .templates import SolidWorksTemplatesMixin
 from .weldment_cuts import SolidWorksWeldmentCutsMixin
+from .weldment_patterns import SolidWorksWeldmentPatternsMixin
 from .weldment_plates import SolidWorksWeldmentPlatesMixin
 from .weldment_vents import SolidWorksWeldmentVentsMixin
 from .weldments import SolidWorksWeldmentsMixin
@@ -33,6 +34,7 @@ __all__ = [
     "SolidWorksSelectionMixin",
     "SolidWorksSheetMetalMixin",
     "SolidWorksWeldmentCutsMixin",
+    "SolidWorksWeldmentPatternsMixin",
     "SolidWorksWeldmentPlatesMixin",
     "SolidWorksWeldmentVentsMixin",
     "SolidWorksWeldmentsMixin",

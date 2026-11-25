@@ -538,3 +538,19 @@ async def test_an_unsaved_part_cannot_export_its_plates(
     )
     assert result.status == AdapterResultStatus.ERROR
     assert "never been saved" in str(result.error)
+
+
+def test_a_sloped_strip_is_described_by_the_sheet_it_is_cut_from() -> None:
+    """A fascia strip 3 m along a 17.7° slope is 3032 x 190, not its 2830 x 1105 box."""
+    k, run = 0.319788, 2830.0
+    strip = [(0.0, 0.0), (-run, -k * run), (-run, -k * run - 200.0), (0.0, -200.0)]
+    assert plates.description({"thickness": 2}, strip) == "PL2 3032x190"
+    square = [(-125.0, -125.0), (125.0, -125.0), (125.0, 125.0), (-125.0, 125.0)]
+    assert plates.smallest_rectangle(square) == pytest.approx((250.0, 250.0))
+    # a repeated point is no edge to turn onto
+    assert plates.smallest_rectangle(
+        [(0.0, 0.0), (0.0, 0.0), (10.0, 0.0), (10.0, 5.0)]
+    ) == (
+        pytest.approx(10.0),
+        pytest.approx(5.0),
+    )

@@ -296,7 +296,8 @@ async def test_refused_chains_fall_back_to_one_group_per_segment(root: str) -> N
 
     assert result.is_success, result.error
     assert (result.data["grouping"], result.data["groups"]) == ("each", 3)
-    assert [i[2] for i in adapter.currentModel.inserted] == [[3], [1, 1, 1]]
+    # the chain asked twice (a refusal is asked again once), then one group each
+    assert [i[2] for i in adapter.currentModel.inserted] == [[3], [3], [1, 1, 1]]
 
 
 @pytest.mark.asyncio

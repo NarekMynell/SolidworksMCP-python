@@ -90,6 +90,11 @@ CAPTION_STRIP = 0.009
 BOM_GAP = 0.005
 CAPTION_HEIGHT = 0.0032
 NOTE_HEIGHT = 0.003
+#: Characters of 3 mm note text that fit the notes cell's 190 mm.
+NOTE_CHARS = 80
+#: An overall size measured between vertices may differ this much (m) from
+#: the bodies' box along that axis; more means the outside isn't a vertex.
+OVERALL_TOLERANCE = 0.0005
 
 # swUserPreferenceToggle_e / IntegerValue_e / StringValue_e (swconst.tlb, SW 2025)
 _SW_SHOW_SHEET_FORMAT_DIALOG = 353
@@ -205,7 +210,9 @@ ISO_MARGIN = 0.006
 
 
 def plan_cells(
-    sizes: dict[str, tuple[float, float]], scale: tuple[float, float]
+    sizes: dict[str, tuple[float, float]],
+    scale: tuple[float, float],
+    zone: Box | None = None,
 ) -> dict[str, Box] | None:
     """Size the four view cells for one part at one scale, or None if it won't fit.
 
@@ -218,6 +225,7 @@ def plan_cells(
         sizes: ``front`` (width, height), ``plan`` (width, depth) and/or
             ``side`` (depth, height), in model metres.
         scale: Sheet scale (num, den).
+        zone: The sheet area for the views; ``VIEW_ZONE`` by default.
     """
     f = scale[0] / scale[1]
     front = sizes.get("front")
@@ -229,7 +237,7 @@ def plan_cells(
     right = depth * f + 2 * FIT_H_MARGIN
     low = height * f + 2 * FIT_V_MARGIN + CAPTION_STRIP
     high = depth * f + 2 * FIT_V_MARGIN + CAPTION_STRIP
-    zx0, zy0, zx1, zy1 = VIEW_ZONE
+    zx0, zy0, zx1, zy1 = zone or VIEW_ZONE
     if left + right > zx1 - zx0 or low + high > zy1 - zy0:
         return None
     xm = zx0 + left + (zx1 - zx0 - left - right) / 2
@@ -244,23 +252,66 @@ def plan_cells(
 
 
 def choose_layout(
-    sizes: dict[str, tuple[float, float]],
+    sizes: dict[str, tuple[float, float]], zone: Box | None = None
 ) -> tuple[tuple[float, float], dict[str, Box]]:
     """Largest standard scale whose cells fit, with those cells.
 
     Args:
         sizes: Model-space view sizes, as for :func:`plan_cells`.
+        zone: The sheet area for the views; ``VIEW_ZONE`` by default.
 
     Returns:
         tuple: The scale (num, den) and the cells; the smallest standard scale
         (with default cells if even that does not fit) as a last resort.
     """
     for scale in STANDARD_SCALES:
-        cells = plan_cells(sizes, scale)
+        cells = plan_cells(sizes, scale, zone)
         if cells is not None:
             return scale, cells
     last = STANDARD_SCALES[-1]
-    return last, plan_cells(sizes, last) or dict(CELLS)
+    return last, plan_cells(sizes, last, zone) or dict(CELLS)
+
+
+#: A table that leaves the isometric less than this share of its cell's
+#: height moves to a column of its own at the sheet's right: a 12-row cut
+#: list above the isometric left it 1:1000 and still overlapping (seen live).
+ISO_LEFT_SHARE = 0.45
+
+
+def table_column_zone(table: Box) -> Box:
+    """The view zone left of a table standing in the top-right corner of ``VIEW_ZONE``."""
+    width = table[2] - table[0]
+    return (
+        VIEW_ZONE[0],
+        VIEW_ZONE[1],
+        VIEW_ZONE[2] - width - 2 * BOM_GAP,
+        VIEW_ZONE[3],
+    )
+
+
+def wrap_note(line: str, width: int) -> list[str]:
+    """A note line broken at spaces into lines of at most ``width`` characters.
+
+    The lines after the first are indented under the first's text, past its
+    number (``"4. "``), as a numbered list reads.
+    """
+    if len(line) <= width:
+        return [line]
+    head, _, rest = line.partition(" ")
+    numbered = head.rstrip(".").isdigit()
+    indent = " " * (len(head) + 1) if numbered else ""
+    words = rest.split() if numbered else line.split()
+    lines: list[str] = []
+    current = head if numbered else ""
+    for word in words:
+        trial = f"{current} {word}" if current.strip() else current + word
+        if len(trial) > width and current.strip():
+            lines.append(current)
+            current = indent + word
+        else:
+            current = trial
+    lines.append(current)
+    return lines
 
 
 def iso_fit_scale(size: tuple[float, float], cell: Box) -> tuple[float, float]:
@@ -401,17 +452,28 @@ _ISO_DROP_POINT = (0.31, 0.23)
 def note_lines(material: str | None, extra: list[str] | None) -> list[str]:
     """The NOTES block: a heading, then at most seven numbered lines.
 
+    The caller's lines are never dropped: the material comes first (unless a
+    line of the caller's already names it), then the caller's lines, then
+    the standard lines while there is room. Standard lines filled the block
+    first and a pavilion's "concept, not for construction" line fell off.
+
     Args:
         material: The part's material, first when known.
-        extra: The caller's lines, after the standard ones.
+        extra: The caller's lines (``notes`` allows at most seven).
 
     Returns:
         list[str]: ``["NOTES", "1. ...", ...]`` in capitals.
     """
-    body = [f"MATERIAL: {material.upper()}"] if material else []
-    body += list(STANDARD_NOTES)
-    body += [line.upper() for line in (extra or []) if line.strip()]
-    numbered = [f"{i}. {line}" for i, line in enumerate(body[:MAX_NOTE_LINES], start=1)]
+    own = [line.upper() for line in (extra or []) if line.strip()]
+    body = (
+        [f"MATERIAL: {material.upper()}"]
+        if material and not any(line.startswith("MATERIAL") for line in own)
+        else []
+    )
+    body += own
+    body = body[-MAX_NOTE_LINES:]
+    body += list(STANDARD_NOTES)[: MAX_NOTE_LINES - len(body)]
+    numbered = [f"{i}. {line}" for i, line in enumerate(body, start=1)]
     return ["NOTES", *numbered]
 
 
@@ -794,8 +856,13 @@ class SolidWorksDrawingStandardMixin:
         bom_type: str,
         x_mm: float | None,
         y_mm: float | None,
+        check_sheet: bool = True,
     ) -> tuple[Any, dict[str, Any]]:
         """Insert a BOM table on a view; insert_bom_table's body.
+
+        ``check_sheet`` refuses a table that runs off the sheet; off when the
+        caller moves it next (the generator: a 21-row BOM inserted in the
+        isometric's cell ran off the top before it was moved, seen live).
 
         Returns:
             tuple: The ``ITableAnnotation`` and what insert_bom_table reports.
@@ -852,7 +919,11 @@ class SolidWorksDrawingStandardMixin:
             lambda: _sw_type_info.flagged(table, "ITableAnnotation").RowCount,
             default=None,
         )
-        box_mm, moved = self._keep_on_sheet(table, drawing, use_anchor, "BOM table")
+        if check_sheet:
+            box_mm, moved = self._keep_on_sheet(table, drawing, use_anchor, "BOM table")
+        else:
+            box = self._table_box(table)
+            box_mm, moved = ([round(c * 1000, 1) for c in box] if box else None), False
         return table, {
             "view": view_name,
             "bom_type": bom_type,
@@ -1634,16 +1705,17 @@ class SolidWorksDrawingStandardMixin:
                 result[s.role[n]] = ((o[2] - o[0]) / scale, (o[3] - o[1]) / scale)
         return result
 
-    def _fit_views(self, s: _Sheet) -> dict[str, Any]:
+    def _fit_views(self, s: _Sheet, zone: Box | None = None) -> dict[str, Any]:
         """Pick the scale, then centre each view in its cell.
 
         The plan follows the front's x and the side its y, so the views stay
-        aligned for third-angle projection.
+        aligned for third-angle projection. ``zone`` narrows the sheet area
+        for the views (a cut list standing beside them).
         """
         model = self.currentModel
         sizes = self._view_sizes(s)
         iso_size = sizes.pop("iso", None)
-        s.scale, s.cells = choose_layout(sizes)
+        s.scale, s.cells = choose_layout(sizes, zone)
         sheet = _as_com(self, self._drawing().GetCurrentSheet(), "ISheet")
         sheet.SetScale(float(s.scale[0]), float(s.scale[1]), True, False)
         self._attempt(lambda: model.EditRebuild3(), default=None)
@@ -1695,7 +1767,9 @@ class SolidWorksDrawingStandardMixin:
         x, y = cell[0] * 1000 + 10, cell[1] * 1000 + 20
         if s.include_bom:
             label = "BOM"
-            table, info = self._insert_bom(front, None, "top_level_only", x, y)
+            table, info = self._insert_bom(
+                front, None, "top_level_only", x, y, check_sheet=False
+            )
         else:  # moved into the cell below, so not checked where it lands first
             label = "cut list"
             table, info = self._insert_cut_list(front, x, y, check_sheet=False)
@@ -1707,20 +1781,32 @@ class SolidWorksDrawingStandardMixin:
             "IAnnotation",
         )
         x, y = (float(v) for v in an.GetPosition()[:2])
+        cell_height = cell[3] - cell[1]
+        column = (box[3] - box[1]) + BOM_GAP > (1.0 - ISO_LEFT_SHARE) * cell_height or (
+            box[2] - box[0]
+        ) > cell[2] - cell[0] - BOM_GAP
+        # In the iso cell's top-right corner, or, when it would crowd the
+        # isometric out, in the view zone's: the views then fit left of it.
+        corner = (VIEW_ZONE[2], VIEW_ZONE[3]) if column else (cell[2], cell[3])
         an.SetPosition(
-            x + cell[2] - BOM_GAP - box[2], y + cell[3] - BOM_GAP - box[3], 0.0
+            x + corner[0] - BOM_GAP - box[2], y + corner[1] - BOM_GAP - box[3], 0.0
         )
         box = self._table_box(table)
         if box is None:
             raise RuntimeError(f"The {label} was moved but cannot be measured")
         s.bom_box = box
-        s.cells["iso"] = (cell[0], cell[1], cell[2], box[1] - BOM_GAP)
-        if s.iso_name and s.iso_size:
-            self._fit_iso(s)
-            c = content_box(s.cells["iso"])
-            self._set_view_position(
-                s.views[s.iso_name], (c[0] + c[2]) / 2, (c[1] + c[3]) / 2
-            )
+        if column:
+            self._fit_views(s, table_column_zone(box))
+            info["layout"] = "table beside the views"
+        else:
+            s.cells["iso"] = (cell[0], cell[1], cell[2], box[1] - BOM_GAP)
+            if s.iso_name and s.iso_size:
+                self._fit_iso(s)
+                c = content_box(s.cells["iso"])
+                self._set_view_position(
+                    s.views[s.iso_name], (c[0] + c[2]) / 2, (c[1] + c[3]) / 2
+                )
+            info["layout"] = "table above the isometric"
         self._attempt(lambda: self.currentModel.EditRebuild3(), default=None)
         info["table_box_mm"] = [round(v * 1000, 1) for v in box]
         return info
@@ -1754,12 +1840,164 @@ class SolidWorksDrawingStandardMixin:
         shop cuts; its cut list gives the member lengths.
         """
         if s.weldment:
-            return {"dimensions_added": 0, "note": WELDMENT_DIMENSIONS}
+            overall = self._overall_dimensions(s)
+            result: dict[str, Any] = {
+                "dimensions_added": overall["added"],
+                "note": WELDMENT_DIMENSIONS,
+                "overall": overall,
+            }
+            if overall["added"]:
+                obstacles = self._obstacles(s)
+                if s.bom_box is not None:
+                    obstacles["bom"] = s.bom_box
+                result["layout"] = self._arrange_layout(None, obstacles, WORK_AREA)
+            return result
         if s.weldment_parts:
             return {"dimensions_added": 0, "note": WELDMENT_ASSEMBLY_DIMENSIONS}
         dims = self._import_dimensions(None, True, only_views=list(s.ortho))
         dims["layout"] = self._arrange_layout(None, self._obstacles(s), WORK_AREA)
         return dims
+
+    def _sheet_axes_in_model(
+        self, view: Any
+    ) -> tuple[tuple[float, ...], tuple[float, ...]]:
+        """The model directions a view draws along the sheet's x and y.
+
+        Each model axis is put through ``IView.ModelToViewTransform`` as a
+        vector; the sheet x of a model point is then the dot of the point
+        with the axes' sheet x components (the view's turn is orthonormal).
+        """
+        transform = view.ModelToViewTransform
+        utility = _sw_type_info.flagged(
+            _sw_type_info.flagged(self.swApp, "ISldWorks").GetMathUtility(),
+            "IMathUtility",
+        )
+        images = []
+        for axis in ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)):
+            vector = _sw_type_info.flagged(
+                utility.CreateVector(_double_array(list(axis))), "IMathVector"
+            )
+            moved = _sw_type_info.flagged(
+                vector.MultiplyTransform(transform), "IMathVector"
+            )
+            images.append([float(c) for c in as_list(moved.ArrayData)[:3]])
+        x = tuple(images[k][0] for k in range(3))
+        y = tuple(images[k][1] for k in range(3))
+        nx = sum(c * c for c in x) ** 0.5 or 1.0
+        ny = sum(c * c for c in y) ** 0.5 or 1.0
+        return tuple(c / nx for c in x), tuple(c / ny for c in y)
+
+    def _overall_dimensions(self, s: _Sheet) -> dict[str, Any]:
+        """Overall width and height on the front view, the depth on the side (or plan).
+
+        A weldment's model dimensions are its profiles' sketch sizes, so its
+        own size is measured: the two vertices farthest apart along a view's
+        sheet x (or y) are selected in the view (``IView.SelectEntity``) and
+        dimensioned. A size the vertices miss (a round tube's outside has no
+        vertex) is left out and named, never guessed.
+        """
+        roles = {r: n for n, r in s.role.items()}
+        front = roles.get("front")
+        if front is None:
+            return {"added": 0, "sizes": {}}
+        first = _as_com(self, s.views[front], "IView")
+        doc = self._attempt(lambda: first.ReferencedDocument, default=None)
+        if doc is None:
+            return {"added": 0, "sizes": {}, "note": "the view's model can't be read"}
+        part = _sw_type_info.flagged(doc, "IPartDoc")
+        vertices: list[tuple[Any, tuple[float, float, float]]] = []
+        lo = [float("inf")] * 3
+        hi = [float("-inf")] * 3
+        for raw in as_list(
+            self._attempt(lambda: part.GetBodies2(0, True), default=None)
+        ):
+            body = _sw_type_info.flagged(raw, "IBody2")
+            box = as_list(self._attempt(lambda b=body: b.GetBodyBox(), default=None))
+            if len(box) == 6:
+                lo = [min(lo[k], float(box[k])) for k in range(3)]
+                hi = [max(hi[k], float(box[k + 3])) for k in range(3)]
+            for v in as_list(
+                self._attempt(lambda b=body: b.GetVertices(), default=None)
+            ):
+                vertex = _sw_type_info.flagged(v, "IVertex")
+                point = as_list(
+                    self._attempt(lambda x=vertex: x.GetPoint(), default=None)
+                )
+                if len(point) >= 3:
+                    vertices.append(
+                        (vertex, (float(point[0]), float(point[1]), float(point[2])))
+                    )
+        if not vertices:
+            return {"added": 0, "sizes": {}, "note": "the bodies have no vertices"}
+        drawing = _sw_type_info.flagged(self.currentModel, "IDrawingDoc")
+        depth = roles.get("side") or roles.get("plan")
+        wanted = [(front, 0, "width"), (front, 1, "height")]
+        if depth:
+            wanted.append((depth, 0 if depth == roles.get("side") else 1, "depth"))
+        sizes: dict[str, float] = {}
+        missed: list[str] = []
+        for name, sheet_axis, label in wanted:
+            view = _as_com(self, s.views[name], "IView")
+            along = self._sheet_axes_in_model(view)[sheet_axis]
+            ranked = sorted(
+                vertices,
+                key=lambda item: sum(
+                    a * b for a, b in zip(item[1], along, strict=True)
+                ),
+            )
+            low, high = ranked[0], ranked[-1]
+            size = sum(
+                a * (top - bottom)
+                for a, top, bottom in zip(along, high[1], low[1], strict=True)
+            )
+            main = max(range(3), key=lambda k: abs(along[k]))
+            box_size = hi[main] - lo[main]
+            if (
+                abs(abs(along[main]) - 1.0) > 1e-6
+                or abs(abs(size) - box_size) > OVERALL_TOLERANCE
+            ):
+                missed.append(label)
+                continue
+            self._attempt(lambda: self.currentModel.ClearSelection2(True))
+            picked = self._attempt(
+                lambda v=view, a=low[0], b=high[0]: (
+                    bool(v.SelectEntity(a, False)) and bool(v.SelectEntity(b, True))
+                ),
+                default=False,
+            )
+            outline = self._view_outline(view)
+            if not picked or outline is None:
+                missed.append(label)
+                continue
+            if sheet_axis == 0:
+                made = self._attempt(
+                    lambda o=outline: drawing.AddHorizontalDimension2(
+                        (o[0] + o[2]) / 2, o[3] + _layout.FIRST_OFFSET, 0.0
+                    ),
+                    default=None,
+                )
+            else:
+                made = self._attempt(
+                    lambda o=outline: drawing.AddVerticalDimension2(
+                        o[0] - _layout.FIRST_OFFSET, (o[1] + o[3]) / 2, 0.0
+                    ),
+                    default=None,
+                )
+            self._attempt(lambda: self.currentModel.ClearSelection2(True))
+            if made is None:
+                missed.append(label)
+                continue
+            # Whole millimetres, as the shop measures: 4112, not 4112.44.
+            self._attempt(
+                lambda m=made: _sw_type_info.flagged(
+                    m, "IDisplayDimension"
+                ).SetPrecision3(0, 0, 0, 0)
+            )
+            sizes[label] = round(abs(size) * 1000.0, 1)
+        result: dict[str, Any] = {"added": len(sizes), "sizes": sizes}
+        if missed:
+            result["missed"] = missed
+        return result
 
     def _annotate(self, s: _Sheet) -> dict[str, Any]:
         """Add a bold caption under each view and the NOTES block.
@@ -1783,7 +2021,11 @@ class SolidWorksDrawingStandardMixin:
         s.note_lines = note_lines(s.material, s.extra_notes)
         nc = CELLS["notes"]
         top = nc[3] - 0.003
-        for i, line in enumerate(s.note_lines):
+        # Wrapped to the notes cell: a long weld note ran into the title block.
+        printed = s.note_lines[:1] + [
+            part for line in s.note_lines[1:] for part in wrap_note(line, NOTE_CHARS)
+        ]
+        for i, line in enumerate(printed):
             height = CAPTION_HEIGHT if i == 0 else NOTE_HEIGHT
             an = self._insert_sheet_note(line, nc[0] + 0.010, top, height, i == 0)
             if an is None:

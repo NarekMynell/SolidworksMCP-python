@@ -80,6 +80,17 @@ DEFAULT_RULES: tuple[ErrorRule, ...] = (
         ),
     ),
     ErrorRule(
+        error_type="solidworks_low_memory",
+        hint=(
+            "SolidWorks ran critically low on memory and stopped a command, so "
+            "this step may be partly done. Save and close the documents you no "
+            "longer need (list_open_documents, close_model), or save everything "
+            "and restart SolidWorks; check what the step made (list_features) "
+            "and do the rest. If it happens again, stop and tell the user."
+        ),
+        patterns=(r"critically low on memory",),
+    ),
+    ErrorRule(
         error_type="com_wrong_thread",
         hint=(
             "A SolidWorks call ran off the thread that connected - a server "

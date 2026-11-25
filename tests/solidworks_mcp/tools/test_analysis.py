@@ -120,9 +120,22 @@ class TestAnalysisTools:
         result = await tool_func(input_data=input_data)
 
         assert result["status"] == "success"
+        assert result["message"] == "1 interference(s)"
         assert result["data"]["interference_count"] == 1
         assert "Component1" in result["data"]["interfering_bodies"]
         mock_adapter.check_interference.assert_called_once()
+
+        mock_adapter.check_interference = AsyncMock(
+            return_value=Mock(
+                is_success=True,
+                data={"interference_count": 0, "touching_count": 16},
+                execution_time=0.5,
+            )
+        )
+        touching = await tool_func(input_data=input_data)
+        assert touching["message"] == (
+            "0 interference(s); 16 face contact(s) not counted (under 1 mm³ or 0.01 mm deep)"
+        )
         # Hidden components are left out unless include_hidden is on.
         assert (
             mock_adapter.check_interference.call_args.args[0]["ignore_hidden"] is True
