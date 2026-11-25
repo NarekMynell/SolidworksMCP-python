@@ -389,7 +389,9 @@ async def register_analysis_tools(
         measurement. To fail a build on interference, use `verify_model` with
         `no_interference`. Needs: an open, active assembly. Read-only. Returns: `data`
         with `interference_found`, `interference_count`, `interferences` (component
-        pairs and overlap volume in mm³) and `scope`.
+        pairs, overlap volume in mm³ and depth in mm) and `scope`; overlaps under 1 mm³, or
+        thinner than 0.01 mm and under 100 mm³, are faces set against each other, counted
+        in `touching_count`, not as interferences.
 
         Args:
             input_data: Nothing is required. `components` limits the report to
@@ -412,9 +414,16 @@ async def register_analysis_tools(
         options["ignore_hidden"] = not input_data.include_hidden
         result = await adapter.check_interference(options)
         require_success(result, "Interference check failed")
+        data = result.data or {}
+        touching = int(data.get("touching_count") or 0)
+        message = f"{data.get('interference_count', 0)} interference(s)" + (
+            f"; {touching} face contact(s) not counted (under 1 mm³ or 0.01 mm deep)"
+            if touching
+            else ""
+        )
         return {
             "status": "success",
-            "message": "Interference check completed",
+            "message": message,
             "data": result.data,
             "execution_time": result.execution_time,
         }

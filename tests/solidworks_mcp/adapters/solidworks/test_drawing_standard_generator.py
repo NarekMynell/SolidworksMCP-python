@@ -43,15 +43,26 @@ class TestNotes:
         assert [p["kind"] for p in problems] == ["note_on_note"]
 
     def test_notes_start_with_the_material_and_stop_at_seven_lines(self) -> None:
-        lines = std.note_lines("aisi 1020", ["laser cut", " ", *"abcde"])
+        lines = std.note_lines("aisi 1020", ["laser cut", " ", "a"])
 
-        assert lines[:3] == [
+        assert lines == [
             "NOTES",
             "1. MATERIAL: AISI 1020",
-            "2. ALL DIMENSIONS IN MILLIMETRES",
+            "2. LASER CUT",
+            "3. A",
+            "4. ALL DIMENSIONS IN MILLIMETRES",
+            "5. THIRD ANGLE PROJECTION",
+            "6. REMOVE ALL BURRS AND SHARP EDGES",
         ]
-        assert lines[5] == "5. LASER CUT"
-        assert len(lines) == 1 + std.MAX_NOTE_LINES
+
+    def test_the_callers_notes_are_never_dropped(self) -> None:
+        """Standard lines filled the block and "concept, not for construction" fell off."""
+        own = ["Material S235JR", "EXC2", "a4", "ISO 13920-B", "black", "concept"]
+        lines = std.note_lines("aisi 1020", own)
+        assert lines[1:7] == [f"{i}. {line.upper()}" for i, line in enumerate(own, 1)]
+        assert lines[7] == "7. ALL DIMENSIONS IN MILLIMETRES"
+        seven = std.note_lines("aisi 1020", [*own, "lifting"])
+        assert len(seven) == 1 + std.MAX_NOTE_LINES and seven[-1] == "7. LIFTING"
 
     def test_notes_without_a_material(self) -> None:
         assert std.note_lines(None, None)[1] == "1. ALL DIMENSIONS IN MILLIMETRES"
@@ -466,7 +477,9 @@ async def test_a_part_becomes_a_complete_a3_drawing(files) -> None:
         "Drawing View4": {"role": "iso", "caption": "ISOMETRIC VIEW"},
     }
     assert data["notes"][1] == "1. MATERIAL: AISI 1020"
-    assert data["notes"][-1] == "5. LASER CUT"
+    assert (
+        data["notes"][2] == "2. LASER CUT"
+    )  # the caller's lines before the standard ones
     assert data["dimensions"] == {
         "dimensions_added": 3,
         "layout": {"overlaps_after": 0, "moved": 3},
@@ -845,9 +858,9 @@ def _with_bom(adapter: _Harness, boxes: list[Any] | None = None) -> list[Any]:
     table = SimpleNamespace(GetAnnotation=lambda: table_an)
     inserted: list[Any] = []
 
-    def insert(view, template, kind, x_mm, y_mm):
+    def insert(view, template, kind, x_mm, y_mm, check_sheet=True):
         table_an.position = (x_mm / 1000, y_mm / 1000, 0.0)
-        inserted.append((view, template, kind))
+        inserted.append((view, template, kind, check_sheet))
         return table, {"view": view, "bom_type": kind, "row_count": 3}
 
     def measure(_table):
@@ -874,7 +887,8 @@ async def test_an_assembly_gets_its_bom_above_the_isometric(files) -> None:
     )
 
     assert result.is_success, result.error
-    assert inserted == [("Drawing View1", None, "top_level_only")]
+    # moved next, so not checked where it first lands
+    assert inserted == [("Drawing View1", None, "top_level_only", False)]
     box = [v / 1000 for v in result.data["bom"]["table_box_mm"]]
     # Its top-right corner sits BOM_GAP inside the top-right of the iso cell,
     # and the isometric is centred below it.
@@ -951,10 +965,9 @@ async def test_a_weldment_gets_its_cut_list_and_no_profile_dimensions(files) -> 
     assert result.is_success, result.error
     assert inserted == [("Drawing View1", False)]
     assert result.data["cut_list"]["row_count"] == 7 and "bom" not in result.data
-    assert result.data["dimensions"] == {
-        "dimensions_added": 0,
-        "note": std.WELDMENT_DIMENSIONS,
-    }
+    dims = result.data["dimensions"]
+    assert (dims["dimensions_added"], dims["note"]) == (0, std.WELDMENT_DIMENSIONS)
+    assert dims["overall"]["added"] == 0  # the fake view has no model to measure
     assert not [c for c in adapter.calls if c[0] == "import_dimensions"]
 
 

@@ -30,10 +30,12 @@ from .weldment_plates import (
     _inside,
     _plate_plane,
     _plate_sketch,
+    drop_stray_planes,
     main_axis,
+    plane_names,
     plate_frame,
 )
-from .weldments import _need_part
+from .weldments import _feature_bodies, _need_part
 
 #: ``swEndConditions_e``.
 _END_BLIND, _END_MID_PLANE = 0, 6
@@ -132,6 +134,7 @@ class SolidWorksWeldmentCutsMixin:
                     "A sketch is open; close it with exit_sketch before cutting"
                 )
             features = _flagged(model.FeatureManager, "IFeatureManager")
+            planes_before = adapter._attempt(lambda: plane_names(model), default=set())
             planes = main_planes(model)
             made_names: list[str] = []
             tilted = [i for i, f in enumerate(frames) if main_axis(f.n) is None]
@@ -188,11 +191,34 @@ class SolidWorksWeldmentCutsMixin:
                         "definition": state,
                     }
                 )
+            # Each cut renames the bodies it touches, so the names read as it
+            # was made are stale by the end (one tube cut 18 times read as 18
+            # bodies): each cut's bodies are read again from its faces.
+            for entry in results:
+                feature = adapter._attempt(
+                    lambda e=entry: model.FeatureByName(e["feature"])
+                )
+                if feature is not None:
+                    entry["bodies"] = sorted(
+                        _feature_bodies(
+                            adapter, _sw_type_info.flagged(feature, "IFeature")
+                        )
+                    )
+            stray = adapter._attempt(
+                lambda: drop_stray_planes(adapter, model, planes_before), default=[]
+            )
             placed = None
             if folder:
                 placed = move_into_folder(adapter, model, str(folder), made_names)
             adapter._attempt(lambda: model.GraphicsRedraw2())
-            return {"cuts": results, "planes_made": planes_made, "folder": placed}
+            data: dict[str, Any] = {
+                "cuts": results,
+                "planes_made": planes_made,
+                "folder": placed,
+            }
+            if stray:
+                data["stray_planes_removed"] = stray
+            return data
 
         return cast(
             AdapterResult[dict[str, Any]],

@@ -1909,6 +1909,14 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             "create_cuts", lambda adapter: adapter.create_cuts(params)
         )
 
+    async def pattern_members(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Copy weldment bodies, using pool."""
+        return await self._execute_with_pool(
+            "pattern_members", lambda adapter: adapter.pattern_members(params)
+        )
+
     async def pack_and_go_assembly(
         self, source_path: str, target_dir: str
     ) -> AdapterResult[dict[str, Any]]:

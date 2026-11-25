@@ -25,6 +25,7 @@ import csv
 import math
 import os
 import re
+import time
 from typing import Any, cast
 
 from ...exceptions import InputRefused
@@ -33,6 +34,7 @@ from ..base import AdapterResult, AdapterResultStatus
 from . import feature_tree as _tree
 from . import sketch_define as _define
 from . import weldment_joints as _joints
+from . import weldment_orientation as _orient
 from .com_utils import as_list, dispatch_array
 from .features import _null_callout
 from .io import (
@@ -80,6 +82,11 @@ _UNCHANGED_MM3 = 1.0
 _UNMOVED_MM = 0.001
 #: The most body names an error lists.
 _LISTED = 20
+#: Settle pauses (``SOLIDWORKS_MCP_COM_SETTLE_SECONDS``, 0.25 s) waited before
+#: asking SolidWorks again for refused members: 1 s by default, none in tests.
+_REFUSED_RETRY_SETTLES = 4.0
+#: A new body at least this share of a trimmed member's volume can be that member.
+_SAME_MEMBER_SHARE = 0.5
 #: ``swMirrorProfileOrAlignmentAxis_e``.
 MIRROR_AXES = {"horizontal": 1, "vertical": 2}
 #: ``swConnectedSegmentsOption_e.swConnectedSegments_SimpleCut``.
@@ -300,7 +307,20 @@ class SolidWorksWeldmentsMixin:
                     "A sketch is open; close it with exit_sketch before adding members"
                 )
             skeleton: dict[str, Any] | None = None
+            part = _sw_type_info.flagged(model, "IPartDoc")
+            grouping = str(params.get("grouping") or "auto")
+            chain_plan: list[list[int]] | None = None
+            in_model_space = True
             if params.get("segments"):
+                segments = [[float(v) for v in s] for s in params["segments"]]
+                if grouping == "auto":
+                    # Drawn chain by chain, head to tail: the way SolidWorks
+                    # carries the profile round a chain's bends.
+                    ends_now = _ends_of(segments)
+                    segments, chain_plan = _orient.chained(
+                        segments,
+                        chains(ends_now, stops=_member_nodes(adapter, part, ends_now)),
+                    )
                 sketch_name = params.get("sketch_name") or (
                     f"{params['name']} skeleton" if params.get("name") else None
                 )
@@ -308,31 +328,43 @@ class SolidWorksWeldmentsMixin:
                     adapter,
                     model,
                     manager,
-                    params["segments"],
+                    segments,
                     sketch_name,
                     define=str(params.get("define") or "dimensions") == "dimensions",
                 )
             else:
-                sketch, raw, ends = _sketch_segments(
+                sketch, raw, ends, in_model_space = _sketch_segments(
                     adapter, model, str(params["sketch"]), params.get("segment_names")
                 )
             features = _sw_type_info.flagged(model.FeatureManager, "IFeatureManager")
-            part = _sw_type_info.flagged(model, "IPartDoc")
             if not adapter._attempt(lambda: bool(part.IsWeldment()), default=False):
                 features.InsertWeldmentFeature()
-            grouping = str(params.get("grouping") or "auto")
             plans = {
                 "single": [list(range(len(raw)))],
                 "each": [[i] for i in range(len(raw))],
-                "auto": chains(ends),
+                "auto": chain_plan
+                or chains(ends, stops=_member_nodes(adapter, part, ends)),
             }
+            facing = _Facing(params, ends, raw, in_model_space)
             feature = _insert_members(
-                adapter, features, profile, raw, plans[grouping], params
+                adapter,
+                features,
+                profile,
+                raw,
+                plans[grouping],
+                params,
+                facing.angles(plans[grouping]),
             )
             if feature is None and grouping == "auto" and len(plans["auto"]) < len(raw):
                 grouping = "each"
                 feature = _insert_members(
-                    adapter, features, profile, raw, plans["each"], params
+                    adapter,
+                    features,
+                    profile,
+                    raw,
+                    plans["each"],
+                    params,
+                    facing.angles(plans["each"]),
                 )
             _close_new_profiles(adapter, profiles_open)
             if feature is None:
@@ -361,6 +393,7 @@ class SolidWorksWeldmentsMixin:
                 "groups": len(plans[grouping]),
                 "grouping": grouping,
                 "bodies_after": len(bodies),
+                "orientation": facing.report(adapter, part, feature, plans[grouping]),
             }
             if skeleton is not None:
                 result["skeleton"] = skeleton
@@ -451,12 +484,28 @@ class SolidWorksWeldmentsMixin:
                 )
             if params.get("name"):
                 feature.Name = str(params["name"])
-            after = _bodies(adapter, part)
-            changes = _trimmed(
-                before,
-                {name: _mass(adapter, body) for name, body in after.items()},
-                existing,
+            folder = params.get("folder") or _tree.last_folder_of(
+                model, [*params.get("members", []), *params.get("boundary", [])]
             )
+            placed = (
+                _tree.move_into_folder(adapter, model, str(folder), [str(feature.Name)])
+                if folder
+                else None
+            )
+            after = _bodies(adapter, part)
+            masses = {name: _mass(adapter, body) for name, body in after.items()}
+            changes = _trimmed(before, masses, existing)
+            taken = {c["now"] for c in changes if c["now"]}
+            extra = [n for n in after if n not in existing and n not in taken]
+            offcuts, split = _offcuts(
+                adapter, after, extra, [after[n] for n in boundary if n in after]
+            )
+            dropped = None
+            if offcuts:
+                dropped = _delete_bodies(
+                    adapter, model, after, offcuts, f"{feature.Name} leftovers"
+                )
+                after = _bodies(adapter, part)
             unchanged = [c["name"] for c in changes if c["changed"] is False]
             data: dict[str, Any] = {
                 "feature": str(feature.Name),
@@ -467,12 +516,27 @@ class SolidWorksWeldmentsMixin:
                 "boundary": list(boundary),
                 "unchanged": unchanged,
                 "bodies_after": len(after),
+                "folder": placed,
             }
+            if offcuts:
+                data["leftovers_removed"] = {"count": len(offcuts), "feature": dropped}
+            notes = []
             if unchanged:
-                data["warning"] = (
+                notes.append(
                     f"{len(unchanged)} member(s) didn't change: {', '.join(unchanged)}; "
-                    "the boundary may not reach them."
+                    "they already end at it (trimmed to a member of their own "
+                    "call where they meet), or it doesn't reach them: check_joints "
+                    "tells which"
                 )
+            if split:
+                data["split_pieces"] = split[:_LISTED]
+                notes.append(
+                    f"{len(split)} new body(ies) {', '.join(split[:5])}: a member ran "
+                    "through the boundary and was cut in two. Members that end at a "
+                    "column or beam are drawn to it (grouping 'each'), not through it"
+                )
+            if notes:
+                data["warning"] = "; ".join(notes) + "."
             return data
 
         return cast(
@@ -560,12 +624,33 @@ class SolidWorksWeldmentsMixin:
             model = adapter.currentModel
             part = _sw_type_info.flagged(model, "IPartDoc")
             bodies = _joints.read_bodies(adapter, part, _byref_double)
+            skipped: list[dict[str, Any]] = []
+            coped: list[dict[str, Any]] = []
             if params.get("open_ends"):
                 _, found = _joints.contacts(
                     adapter, bodies, float(params.get("contact_mm", 0.5)) / 1000.0
                 )
+                # A cap closes a free hollow end. An end half on what it meets
+                # (a column top under a sloped beam) needs a bearing or cap
+                # plate drawn to the joint, and an open section no cap at all.
+                # A coped (curved) end takes no cap: SolidWorks refused one
+                # and made none of the call's caps.
                 ends = [
-                    (e["body"], e["face"]) for e in found if e["covered_percent"] == 0
+                    (e["body"], e["face"])
+                    for e in found
+                    if e["covered_percent"] == 0 and e["hollow"] and e["face"].planar
+                ]
+                skipped = [
+                    {k: v for k, v in e.items() if k != "face"}
+                    for e in found
+                    if e["covered_percent"] > 0
+                ]
+                coped = [
+                    {k: v for k, v in e.items() if k != "face"}
+                    for e in found
+                    if e["covered_percent"] == 0
+                    and e["hollow"]
+                    and not e["face"].planar
                 ]
             else:
                 faces, missed = _joints.end_faces_at(
@@ -622,10 +707,14 @@ class SolidWorksWeldmentsMixin:
                 )
             if params.get("name"):
                 feature.Name = str(params["name"])
+            described = _describe_caps(
+                adapter, model, part, {b.name for b in bodies}, ends, thickness
+            )
             after = len(_bodies(adapter, part))
             data: dict[str, Any] = {
                 "feature": str(feature.Name),
                 "caps": after - len(bodies),
+                "descriptions": described,
                 "ends": [
                     {
                         "body": name,
@@ -644,10 +733,28 @@ class SolidWorksWeldmentsMixin:
                 "inset_mm": inset,
                 "bodies_after": after,
             }
+            notes = []
             if data["caps"] != len(ends):
-                data["warning"] = (
+                notes.append(
                     f"{len(ends)} end(s) selected but {data['caps']} cap body(ies) made"
                 )
+            if skipped:
+                data["not_capped"] = skipped[:_LISTED]
+                notes.append(
+                    f"{len(skipped)} end(s) partly on what they meet, not capped "
+                    f"({', '.join(e['body'] for e in skipped[:5])}): give each a "
+                    "bearing or cap plate under the member it meets (create_plates) "
+                    "and trim it to the plate"
+                )
+            if coped:
+                data["not_capped"] = (data.get("not_capped", []) + coped)[:_LISTED]
+                notes.append(
+                    f"{len(coped)} coped end(s) touching nothing, not capped "
+                    f"({', '.join(e['body'] for e in coped[:5])}): a cap closes only "
+                    "a flat end; trim each to what it should meet"
+                )
+            if notes:
+                data["warning"] = "; ".join(notes)
             return data
 
         return cast(
@@ -815,12 +922,13 @@ def _draw_lines(
 
 def _sketch_segments(
     adapter: Any, model: Any, sketch: str, names: list[str] | None
-) -> tuple[str, list[Any], list[tuple[Point, Point]]]:
+) -> tuple[str, list[Any], list[tuple[Point, Point]], bool]:
     """An existing sketch's lines and arcs (construction lines left out).
 
     Returns:
-        tuple: The sketch's name, the chosen segments (raw dispatches) and
-        their ends in the sketch's own coordinates.
+        tuple: The sketch's name, the chosen segments (raw dispatches),
+        their ends in the sketch's own coordinates, and whether those are
+        model coordinates (a 3D sketch).
 
     Raises:
         LookupError: No such sketch, or a named segment isn't in it.
@@ -829,6 +937,7 @@ def _sketch_segments(
     if feature is None:
         raise LookupError(f"No sketch named {sketch!r} in the part")
     found = _sw_type_info.flagged(feature.GetSpecificFeature2(), "ISketch")
+    in_model_space = bool(adapter._attempt(lambda: found.Is3D(), default=False))
     wanted = set(names or [])
     raw: list[Any] = []
     ends: list[tuple[Point, Point]] = []
@@ -862,7 +971,282 @@ def _sketch_segments(
         )
     if not raw:
         raise LookupError(f"{sketch} has no lines or arcs to put members on")
-    return sketch, raw, ends
+    return sketch, raw, ends, in_model_space
+
+
+#: ``swCustomInfoType_e.swCustomInfoText``; ``swCustomPropertyReplaceValue``.
+_TEXT_PROPERTY, _REPLACE_VALUE = 30, 2
+
+
+def _describe_caps(
+    adapter: Any,
+    model: Any,
+    part: Any,
+    before: set[str],
+    ends: list[tuple[str, Any]],
+    thickness: float,
+) -> list[str]:
+    """Give the end caps' cut-list items a description: ``End cap PL5 90x90``.
+
+    SolidWorks leaves an End Cap's cut-list item without one (seen live), so
+    the shop's list showed a blank line per cap size. Each cap is measured
+    across the end it closes (``IBody2::GetExtremePoint``); a cap whose
+    volume is well under its square's is round.
+    """
+    caps = [
+        b
+        for b in _joints.read_bodies(adapter, part, _byref_double)
+        if b.name not in before
+    ]
+    faces = [face for _, face in ends]
+    labels: dict[str, str] = {}
+    for cap in caps:
+        mass = _mass(adapter, cap.ref)
+        if mass is None or not faces:
+            continue
+        centre = mass[0]
+        face = min(
+            faces,
+            key=lambda f: math.dist(
+                centre, [(f.box[k] + f.box[k + 3]) / 2.0 for k in range(3)]
+            ),
+        )
+        u, v = _joints._square_to(face.normal)
+        a = _joints._span(adapter, cap, u) * 1000.0
+        b = _joints._span(adapter, cap, v) * 1000.0
+        big, small = max(a, b), min(a, b)
+        round_cap = mass[1] * 1e9 < 0.85 * big * small * thickness
+        size = f"D{big:.0f}" if round_cap else f"{big:.0f}x{small:.0f}"
+        labels[cap.name] = f"End cap PL{thickness:g} {size}"
+    for folder in _cut_list_folders(adapter, model, update=True):
+        body_folder = _sw_type_info.flagged(folder.GetSpecificFeature2(), "IBodyFolder")
+        names = [
+            str(_sw_type_info.flagged(b, "IBody2").Name)
+            for b in as_list(adapter._attempt(lambda f=body_folder: f.GetBodies()))
+        ]
+        label = next((labels[n] for n in names if n in labels), None)
+        if label is None:
+            continue
+        properties = _sw_type_info.flagged(
+            folder.CustomPropertyManager, "ICustomPropertyManager"
+        )
+        for key, value in (("Description", label), ("THICKNESS", f"{thickness:g}")):
+            adapter._attempt(
+                lambda k=key, v=value, m=properties: m.Add3(
+                    k, _TEXT_PROPERTY, v, _REPLACE_VALUE
+                )
+            )
+    return sorted(set(labels.values()))
+
+
+#: A body whose box is this many times longer than its next side is a member.
+_SLENDER = 2.5
+#: How far inside a member's box (m) a node counts as standing in it.
+_IN_MEMBER_M = 0.0005
+
+
+def _member_nodes(
+    adapter: Any, part: Any, ends: list[tuple[Point, Point]]
+) -> set[Point]:
+    """The segment ends (mm) that lie inside a member already in the part.
+
+    A chain stops there: beams meeting at a column are trimmed to it, not
+    mitred round it. Members are told by their boxes (a column's or a
+    beam's is long and thin; a diagonal brace's isn't, and is left out).
+    """
+    boxes = []
+    for raw in as_list(
+        adapter._attempt(lambda: part.GetBodies2(0, True), default=None)
+    ):
+        box = as_list(
+            adapter._attempt(
+                lambda r=raw: _sw_type_info.flagged(r, "IBody2").GetBodyBox(),
+                default=None,
+            )
+        )
+        if len(box) != 6:
+            continue
+        sides = sorted(box[k + 3] - box[k] for k in range(3))
+        if sides[2] >= _SLENDER * max(sides[1], 1e-9):
+            boxes.append(box)
+    found: set[Point] = set()
+    for start, end in ends:
+        for point in (start, end):
+            p = [c / 1000.0 for c in point]
+            if any(
+                all(
+                    b[k] - _IN_MEMBER_M <= p[k] <= b[k + 3] + _IN_MEMBER_M
+                    for k in range(3)
+                )
+                for b in boxes
+            ):
+                found.add(point)
+    return found
+
+
+def _ends_of(segments: list[list[float]]) -> list[tuple[Point, Point]]:
+    """Each six-number segment's two end points."""
+    return [((s[0], s[1], s[2]), (s[3], s[4], s[5])) for s in segments]
+
+
+#: The most member directions ``_Facing.report`` measures on the bodies.
+_FACING_CHECKS = 12
+#: A measured roll above this (degrees) means the facing rule didn't hold.
+_ROLL_TOLERANCE_DEG = 0.5
+
+
+class _Facing:
+    """The ``Angle`` each group gets so its profile's height points ``up``, and its proof.
+
+    ``up`` defaults to the model's y: beams, rafters and braces stand
+    upright (a sloped rafter is no longer rolled by its slope), while a
+    vertical member, which has no up of its own, keeps SolidWorks' facing
+    unless it shares a chain with members that have one. ``rotation`` turns
+    every group further. Only segments in model space (new or existing 3D
+    sketches) and straight lines are turned; arcs and 2D sketches keep
+    SolidWorks' facing plus ``rotation``.
+    """
+
+    def __init__(
+        self,
+        params: dict[str, Any],
+        ends: list[tuple[Point, Point]],
+        raw: list[Any],
+        in_model_space: bool,
+    ) -> None:
+        self.rotation = math.radians(float(params.get("rotation") or 0.0))
+        given = params.get("up")
+        self.explicit = given is not None
+        self.up = _orient.unit([float(v) for v in given]) if given else _orient.MODEL_UP
+        self.ends = ends
+        self.straight = [_is_line(segment) for segment in raw]
+        self.active = in_model_space
+        self.half_turn_same = _orient.symmetric(
+            str(params.get("profile_type") or ""), str(params.get("size") or "")
+        )
+        self.turns: dict[tuple[int, ...], tuple[float | None, float]] = {}
+
+    def _directions(self, group: list[int]) -> list[_orient.Vector]:
+        return [
+            _orient.direction(*end) for end in _orient.head_to_tail(self.ends, group)
+        ]
+
+    def angles(self, plan: list[list[int]]) -> list[float]:
+        """Each group's ``Angle``, radians: the turn to ``up`` plus ``rotation``."""
+        result = []
+        for group in plan:
+            turn: float | None = None
+            spread = 0.0
+            if self.active and all(self.straight[i] for i in group):
+                turn, spread = _orient.group_turn(
+                    self._directions(group), self.up, self.half_turn_same
+                )
+            self.turns[tuple(group)] = (turn, spread)
+            result.append((turn or 0.0) + self.rotation)
+        return result
+
+    def report(
+        self, adapter: Any, part: Any, feature: Any, plan: list[list[int]]
+    ) -> dict[str, Any]:
+        """How the groups were turned, measured on a body per member direction."""
+        turned = [g for g in plan if self.turns.get(tuple(g), (None, 0))[0] is not None]
+        kept = len(plan) - len(turned)
+        spread = max((self.turns[tuple(g)][1] for g in turned), default=0.0)
+        data: dict[str, Any] = {
+            "up": [round(c, 4) for c in self.up],
+            "up_given": self.explicit,
+            "groups_turned": len(turned),
+            "groups_kept": kept,
+            "max_spread_deg": round(spread, 2),
+        }
+        rolls = self._measure(adapter, part, feature, turned)
+        if rolls:
+            data["checked_members"] = len(rolls)
+            data["max_roll_deg"] = round(max(rolls), 2)
+        notes = []
+        if kept and self.active and self.explicit:
+            notes.append(
+                f"{kept} group(s) run along up and keep SolidWorks' facing: give "
+                "those members their own call with an up square to them"
+            )
+        if spread > _orient.SAME_TURN_DEG:
+            notes.append(
+                f"a chain can't point every member's height at up (off by up to "
+                f"{spread:.1f} degrees): split it, or give up in the chain's plane"
+            )
+        if rolls and max(rolls) > _ROLL_TOLERANCE_DEG:
+            notes.append(
+                f"{sum(r > _ROLL_TOLERANCE_DEG for r in rolls)} checked member(s) "
+                f"came out turned up to {max(rolls):.1f} degrees off up; look with "
+                "export_image and set rotation"
+            )
+        if notes:
+            data["warning"] = "; ".join(notes)
+        return data
+
+    def _measure(
+        self, adapter: Any, part: Any, feature: Any, groups: list[list[int]]
+    ) -> list[float]:
+        """Roll errors (degrees) of one body per distinct member direction."""
+        names = set(_feature_bodies(adapter, feature))
+        bodies = [
+            b
+            for b in _joints.read_bodies(adapter, part, _byref_double)
+            if b.name in names
+        ]
+        seen: set[tuple[float, ...]] = set()
+        rolls: list[float] = []
+        for group in groups:
+            if len(rolls) >= _FACING_CHECKS:
+                break
+            directions = self._directions(group)
+            frames = _orient.chain_frames(directions)
+            turn = self.turns[tuple(group)][0] or 0.0
+            for (index, a), (_x, y) in zip(
+                zip(group, directions, strict=True), frames, strict=True
+            ):
+                key = tuple(round(c, 3) for c in a) + (round(turn, 3),)
+                if key in seen:
+                    continue
+                seen.add(key)
+                start, end = self.ends[index]
+                middle = tuple(
+                    (s + e) / 2000.0 for s, e in zip(start, end, strict=True)
+                )
+                body = _member_at(adapter, bodies, middle, a)
+                if body is None:
+                    continue
+                wanted = _orient.rotate(y, a, turn + self.rotation)
+                roll = _orient.roll_error(
+                    wanted, a, [f.normal for f in body.faces or [] if f.planar]
+                )
+                if roll is not None:
+                    rolls.append(roll)
+                break
+        return rolls
+
+
+def _is_line(segment: Any) -> bool:
+    """Whether a sketch segment is a line (``swSketchSegments_e`` 0)."""
+    wrapped = _sw_type_info.flagged(segment, "ISketchSegment")
+    try:
+        return int(wrapped.GetType()) == _SKETCH_LINE
+    except Exception:  # an unreadable segment is treated as an arc: left as it is
+        return False
+
+
+def _member_at(
+    adapter: Any, bodies: list[Any], point: tuple[float, ...], axis: Any
+) -> Any:
+    """The one member body whose box holds ``point`` (m) and which runs along ``axis``."""
+    found = []
+    for body in bodies:
+        if not _joints.in_box(point, body.box, 0.001):
+            continue
+        _joints.read_faces(adapter, body)
+        if body.axis is not None and abs(_orient.dot(body.axis, axis)) > 0.999:
+            found.append(body)
+    return found[0] if len(found) == 1 else None
 
 
 def _insert_members(
@@ -872,12 +1256,17 @@ def _insert_members(
     raw: list[Any],
     plan: list[list[int]],
     params: dict[str, Any],
+    angles: list[float],
 ) -> Any:
-    """``InsertStructuralWeldment5`` with one group per chain; the feature or None."""
+    """``InsertStructuralWeldment5`` with one group per chain; the feature or None.
+
+    Args:
+        angles: Each group's ``Angle``, radians (:class:`_Facing`).
+    """
     treatment = CORNER_TREATMENTS[str(params.get("corner_treatment") or "miter")]
     mirror = str(params.get("mirror_profile") or "none")
     groups = []
-    for chain in plan:
+    for chain, angle in zip(plan, angles, strict=True):
         group = _sw_type_info.flagged(
             features.CreateStructuralMemberGroup(), "IStructuralMemberGroup"
         )
@@ -885,22 +1274,29 @@ def _insert_members(
         group.ApplyCornerTreatment = treatment != 0
         if treatment:
             group.CornerTreatmentType = treatment
-        group.Angle = math.radians(float(params.get("rotation") or 0.0))
+        group.Angle = angle
         if mirror in MIRROR_AXES:
             group.MirrorProfile = True
             group.MirrorProfileAxis = MIRROR_AXES[mirror]
         group.MergeArcSegmentBodies = bool(params.get("merge_arcs"))
         groups.append(group)
-    inserted = adapter._attempt(
-        lambda: features.InsertStructuralWeldment5(
-            profile.path,
-            _SIMPLE_CUT,
-            True,
-            dispatch_array(groups),
-            profile.configuration,
+    settle = float(os.getenv("SOLIDWORKS_MCP_COM_SETTLE_SECONDS", "0.25") or 0.0)
+    for wait in (_REFUSED_RETRY_SETTLES * settle, None):
+        inserted = adapter._attempt(
+            lambda: features.InsertStructuralWeldment5(
+                profile.path,
+                _SIMPLE_CUT,
+                True,
+                dispatch_array(groups),
+                profile.configuration,
+            )
         )
-    )
-    return _feature(inserted)
+        if inserted is not None or wait is None:
+            return _feature(inserted)
+        # Refused right after the same profile file was closed by the call
+        # before (seen live with no pause between calls): asked again once.
+        time.sleep(wait)
+    return None
 
 
 def _bodies(adapter: Any, part: Any) -> dict[str, Any]:
@@ -957,9 +1353,15 @@ def _trimmed(
     for name, mass in before.items():
         now: str | None = name if name in after else None
         if now is None and mass is not None and fresh:
-            centre = mass[0]
-            now = min(fresh, key=lambda n: math.dist(centre, fresh[n][0]))
-            fresh.pop(now)
+            centre, volume = mass
+            # A trim changes a member's volume by its ends; a much smaller new
+            # body is a piece cut off (a mitre tip), not the member.
+            alike = {
+                n: m for n, m in fresh.items() if m[1] >= _SAME_MEMBER_SHARE * volume
+            }
+            if alike:
+                now = min(alike, key=lambda n: math.dist(centre, alike[n][0]))
+                fresh.pop(now)
         moved = after.get(now) if now else None
         if mass is None or moved is None:
             change, changed = None, None
@@ -976,6 +1378,71 @@ def _trimmed(
             }
         )
     return changes
+
+
+#: A trimmed-off piece lying this close (m) inside a boundary body's box is an offcut.
+_OFFCUT_M = 0.001
+
+
+def _offcuts(
+    adapter: Any, after: dict[str, Any], extra: list[str], boundary: list[Any]
+) -> tuple[list[str], list[str]]:
+    """The new bodies a trim left: leftovers to delete, and split pieces to report.
+
+    Leftovers are copies of another body (same centre and volume: chained
+    collinear beams trimmed to columns came back twice, seen live) and pieces
+    lying inside a boundary member (a mitre tip inside a column). Any other
+    new body is half of a member cut in two.
+    """
+    boxes = [
+        as_list(adapter._attempt(lambda b=b: b.GetBodyBox(), default=None))
+        for b in boundary
+    ]
+    boxes = [b for b in boxes if len(b) == 6]
+    masses = {name: _mass(adapter, body) for name, body in after.items()}
+    leftovers: list[str] = []
+    split: list[str] = []
+    for name in extra:
+        mass = masses.get(name)
+        twin = mass is not None and any(
+            other != name
+            and other not in leftovers
+            and m is not None
+            and math.dist(m[0], mass[0]) * 1000.0 <= _OFFCUT_M * 1000.0
+            and abs(m[1] - mass[1]) <= 0.005 * max(m[1], 1e-12)
+            for other, m in masses.items()
+        )
+        box = as_list(
+            adapter._attempt(lambda n=name: after[n].GetBodyBox(), default=None)
+        )
+        inside = len(box) == 6 and any(
+            all(
+                box[k] >= o[k] - _OFFCUT_M and box[k + 3] <= o[k + 3] + _OFFCUT_M
+                for k in range(3)
+            )
+            for o in boxes
+        )
+        (leftovers if twin or inside else split).append(name)
+    return leftovers, split
+
+
+def _delete_bodies(
+    adapter: Any, model: Any, bodies: dict[str, Any], names: list[str], label: str
+) -> str | None:
+    """Delete bodies with a Delete/Keep Body feature named ``label``; its name, or None."""
+    model.ClearSelection2(True)
+    for index, name in enumerate(names):
+        body = _sw_type_info.flagged(bodies[name], "IBody2")
+        adapter._attempt(lambda b=body, i=index: b.Select2(i > 0, _null_callout()))
+    manager = _sw_type_info.flagged(model.FeatureManager, "IFeatureManager")
+    feature = _feature(
+        adapter._attempt(lambda: manager.InsertDeleteBody2(False), default=None)
+    )
+    model.ClearSelection2(True)
+    if feature is None:
+        return None
+    feature.Name = label
+    return str(feature.Name)
 
 
 def _feature_bodies(adapter: Any, feature: Any) -> list[str]:

@@ -7,7 +7,7 @@ STL, PDF, DWG, and image formats.
 from typing import Any, TypeVar
 
 from fastmcp import FastMCP
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from ..adapters.base import SolidWorksAdapter
 from .input_compat import CompatInput
@@ -42,6 +42,22 @@ class ExportFileInput(CompatInput):
     )
 
 
+#: The standard views ``export_image`` turns the model to, and ``current``.
+IMAGE_VIEWS = (
+    "front",
+    "back",
+    "left",
+    "right",
+    "top",
+    "bottom",
+    "isometric",
+    "dimetric",
+    "trimetric",
+    "current",
+)
+_VIEW_ALIASES = {"iso": "isometric"}
+
+
 class ExportImageInput(CompatInput):
     """Input schema for exporting images.
 
@@ -74,11 +90,27 @@ class ExportImageInput(CompatInput):
     resolution: str | None = Field(default=None, description="Resolution alias")
     view_orientation: str = Field(
         default="isometric",
-        description="View orientation (front, top, right, isometric, current)",
+        description=(
+            "front, back, left, right, top, bottom, isometric (iso), dimetric, "
+            "trimetric, or current"
+        ),
     )
     orientation: str | None = Field(
         default=None, description="Alternative orientation field"
     )
+
+    @field_validator("view_orientation", "orientation")
+    @classmethod
+    def _known_view(cls, value: str | None) -> str | None:
+        """A view SolidWorks knows; an unknown name would save the current view unturned."""
+        if value is None:
+            return None
+        name = _VIEW_ALIASES.get(str(value).strip().lower(), str(value).strip().lower())
+        if name not in IMAGE_VIEWS:
+            raise ValueError(
+                f"unknown view {value!r}; use one of: {', '.join(IMAGE_VIEWS)}"
+            )
+        return name
 
     def model_post_init(self, __context: Any) -> None:
         """Provide model post init support for the export image input.
@@ -91,6 +123,8 @@ class ExportImageInput(CompatInput):
         """
         if self.file_path is None:
             self.file_path = self.output_path
+        if self.orientation is not None:
+            self.view_orientation = self.orientation
         if self.image_format is not None:
             self.format_type = self.image_format.lower()
         if self.resolution and "x" in self.resolution.lower():

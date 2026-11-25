@@ -427,6 +427,19 @@ class TestOwnSide:
         } in problems
         beside = _vdim("h", "View1", 0.10, 0.17, 0.03, 0.05)
         assert not lay.crosses_own_view(beside, OUTLINE)
+        # an L-shaped frame's height: its top on the left, its foot on the right
+        frame = lay.DimensionGeometry(
+            key="height",
+            view="View1",
+            text_box=(0.186, 0.13, 0.194, 0.14),
+            position=(0.19, 0.135),
+            lines=[
+                (0.055, 0.17, 0.19, 0.17),
+                (0.165, 0.10, 0.19, 0.10),
+                (0.19, 0.10, 0.19, 0.17),
+            ],
+        )
+        assert not lay.crosses_own_view(frame, OUTLINE)
         assert not lay.crosses_own_view(_radial("d", "View1", 0.1, 0.1), OUTLINE)
 
     def test_a_height_on_the_far_side_comes_back(self) -> None:

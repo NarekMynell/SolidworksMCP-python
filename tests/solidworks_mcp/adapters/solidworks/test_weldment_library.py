@@ -200,3 +200,17 @@ def test_a_truss_never_gets_a_branching_group() -> None:
 
     assert sorted(i for g in groups for i in g) == list(range(len(ends)))
     assert all(_no_branch(ends, g) for g in groups)
+
+
+def test_a_chain_stops_where_a_column_stands() -> None:
+    """A floor ring round columns: no chain runs through a column's node."""
+    x, z = (0, 2480, 4960), (0, 3000)
+    ends = [((x[i], 0, k), (x[i + 1], 0, k)) for i in range(2) for k in z] + [
+        ((c, 0, 0), (c, 0, 3000)) for c in x
+    ]
+    columns = {(c, 0, k) for c in x for k in z}
+
+    groups = chains(ends, stops=columns)
+
+    assert sorted(len(g) for g in groups) == [1] * len(ends)
+    assert len(chains(ends)) < len(ends)  # without stops, a mitred ring

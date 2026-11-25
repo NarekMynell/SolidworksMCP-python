@@ -308,10 +308,12 @@ def extension_origins(dim: DimensionGeometry) -> list[float]:
 
 
 def crosses_own_view(dim: DimensionGeometry, outline: Box) -> bool:
-    """True when an extension line runs across its own view to the far side.
+    """True when every extension line runs across its own view: it sits on the wrong side.
 
     Measured live on SW 2026: a height dimension moved from the left of the
-    top view to its right drew both extension lines straight across the view.
+    top view to its right drew both extension lines straight across the
+    view. One line crossing is the shape's own: an L-shaped frame's overall
+    height runs from its top at one side to its foot at the other.
 
     Args:
         dim: The dimension.
@@ -323,11 +325,13 @@ def crosses_own_view(dim: DimensionGeometry, outline: Box) -> bool:
     axis = 1 if classify(dim.lines)[0] == "h" else 0
     low, high = outline[axis], outline[axis + 2]
     middle = (low + high) / 2.0
+    crossing = []
     for start, line in zip(extension_origins(dim), dim.lines, strict=False):
         end = line[axis + 2] if line[axis] == start else line[axis]
-        if (start < middle and end > high) or (start > middle and end < low):
-            return True
-    return False
+        crossing.append(
+            (start < middle and end > high) or (start > middle and end < low)
+        )
+    return bool(crossing) and all(crossing)
 
 
 def leader_anchor(dim: DimensionGeometry) -> tuple[float, float] | None:

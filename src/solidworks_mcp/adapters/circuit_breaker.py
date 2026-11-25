@@ -2065,6 +2065,16 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             input_dict={"params": params},
         )
 
+    async def pattern_members(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Copy weldment bodies, through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "pattern_members",
+            lambda: self.adapter.pattern_members(params),
+            input_dict={"params": params},
+        )
+
     async def pack_and_go_assembly(
         self, source_path: str, target_dir: str
     ) -> AdapterResult[dict[str, Any]]:

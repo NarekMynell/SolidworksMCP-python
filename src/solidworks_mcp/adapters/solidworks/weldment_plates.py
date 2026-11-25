@@ -226,10 +226,32 @@ def check_plate(spec: dict[str, Any]) -> list[tuple[float, float]]:
 
 
 def description(spec: dict[str, Any], points: list[tuple[float, float]]) -> str:
-    """The cut-list description: ``PL15 250x250`` (thickness, then the outline's size)."""
+    """The cut-list description: ``PL15 250x250`` (thickness, then the outline's size).
+
+    The size is the smallest rectangle the outline fits in, turned as it
+    must be: a sloped fascia strip 3 m long and 190 mm wide is "3032x191",
+    not the 2830x1105 box around it, so the sheet it is cut from is right.
+    Sizes are given to the whole millimetre (the DXF keeps the exact shape).
+    """
+    size = sorted(smallest_rectangle(points), reverse=True)
+    return f"PL{float(spec['thickness']):g} {size[0]:.0f}x{size[1]:.0f}"
+
+
+def smallest_rectangle(points: list[tuple[float, float]]) -> tuple[float, float]:
+    """The sides of the least-area rectangle around ``points``, turned to fit (one side on an edge)."""
     xs, ys = [p[0] for p in points], [p[1] for p in points]
-    size = sorted((max(xs) - min(xs), max(ys) - min(ys)), reverse=True)
-    return f"PL{float(spec['thickness']):g} {size[0]:g}x{size[1]:g}"
+    best = (max(xs) - min(xs), max(ys) - min(ys))
+    for a, b in zip(points, points[1:] + points[:1], strict=True):
+        length = math.dist(a, b)
+        if length < 1e-9:
+            continue
+        ux, uy = (b[0] - a[0]) / length, (b[1] - a[1]) / length
+        along = [p[0] * ux + p[1] * uy for p in points]
+        across = [-p[0] * uy + p[1] * ux for p in points]
+        sides = (max(along) - min(along), max(across) - min(across))
+        if sides[0] * sides[1] < best[0] * best[1] - 1e-6:
+            best = sides
+    return best
 
 
 def _label(spec: dict[str, Any]) -> str:
@@ -293,6 +315,12 @@ class SolidWorksWeldmentPlatesMixin:
                 )
             features = _flagged(model.FeatureManager, "IFeatureManager")
             part = _flagged(model, "IPartDoc")
+            if not adapter._attempt(lambda: bool(part.IsWeldment()), default=False):
+                # A part of plates alone is a weldment too: each plate then
+                # gets its cut-list item, description and DXF (a laser-cut
+                # panel part had no cut list, seen live).
+                adapter._attempt(lambda: features.InsertWeldmentFeature())
+            planes_before = adapter._attempt(lambda: plane_names(model), default=set())
             planes = main_planes(model)
             made_names: list[str] = []
             tilted = [i for i, f in enumerate(frames) if main_axis(f.n) is None]
@@ -349,6 +377,9 @@ class SolidWorksWeldmentPlatesMixin:
                     }
                 )
             _describe(adapter, model, specs, results)
+            stray = adapter._attempt(
+                lambda: drop_stray_planes(adapter, model, planes_before), default=[]
+            )
             placed = None
             if folder:
                 placed = move_into_folder(adapter, model, str(folder), made_names)
@@ -356,12 +387,15 @@ class SolidWorksWeldmentPlatesMixin:
                 adapter._attempt(lambda: part.GetBodies2(0, True), default=None)
             )
             adapter._attempt(lambda: model.GraphicsRedraw2())
-            return {
+            data: dict[str, Any] = {
                 "plates": results,
                 "planes_made": planes_made,
                 "folder": placed,
                 "bodies_after": len(bodies),
             }
+            if stray:
+                data["stray_planes_removed"] = stray
+            return data
 
         return cast(
             AdapterResult[dict[str, Any]],
@@ -519,6 +553,45 @@ def _draw_axes(
             )
         )
     return str(feature.Name), lines
+
+
+_GENERIC_PLANE = re.compile(r"^Plane\d+$")
+
+
+def plane_names(model: Any) -> set[str]:
+    """The names of the part's reference planes now."""
+    names = set()
+    feature = model.FirstFeature()
+    while feature is not None:
+        feature = _flagged(feature, "IFeature")
+        if feature.GetTypeName2() == "RefPlane":
+            names.add(str(feature.Name))
+        feature = feature.GetNextFeature()
+    return names
+
+
+def drop_stray_planes(adapter: Any, model: Any, before: set[str]) -> list[str]:
+    """Delete planes a call left unnamed and unused (``Plane1``...); their names.
+
+    Two frame parts of one build came out with planes named ``Plane1``,
+    ``Plane2`` just before their plates, which nothing referenced (seen
+    live, not reproduced alone); a specialist's tree must not keep them.
+    """
+    dropped = []
+    for name in sorted(plane_names(model) - before):
+        if not _GENERIC_PLANE.match(name):
+            continue
+        feature = _flagged(model.FeatureByName(name), "IFeature")
+        children = as_list(
+            adapter._attempt(lambda f=feature: f.GetChildren(), default=None)
+        )
+        if children:
+            continue
+        model.ClearSelection2(True)
+        if feature.Select2(False, 0) and model.EditDelete():
+            dropped.append(name)
+        model.ClearSelection2(True)
+    return dropped
 
 
 def _free_name(model: Any, wanted: str) -> str:

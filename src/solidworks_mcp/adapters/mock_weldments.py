@@ -489,6 +489,67 @@ class MockWeldmentsMixin:
             },
         )
 
+    async def pattern_members(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock patterns: each seed body copied, named as SolidWorks names copies."""
+        if error := self._part_error("pattern_members"):
+            return error
+        state = self._weld_state()
+        bodies = state["bodies"]
+        seeds = []
+        for name in params["members"]:
+            found = [b for b in bodies if name in (b[3], b[4])] + [
+                ("plate", None, 0.0, p["name"], p["name"])
+                for p in state.get("plates", [])
+                if p.get("name") == name
+            ]
+            if not found:
+                return _error(f"No structural member or body named {name!r}")
+            seeds.extend(found)
+        label = str(params.get("name") or f"{params['members'][0]} pattern")
+        if params.get("along"):
+            kind = "linear"
+            instances = int(params["along"]["count"]) * (
+                int(params["along2"]["count"]) if params.get("along2") else 1
+            )
+            instances -= len(params.get("skip") or [])
+            references = ["X axis"]
+        elif params.get("around"):
+            kind, instances, references = (
+                "circular",
+                int(params["around"]["count"]),
+                [f"{label} axis"],
+            )
+        else:
+            kind, instances, references = "mirror", 2, []
+        for copy in range(1, instances):
+            for size, length, kg, _feature, _body in seeds:
+                bodies.append((size, length, kg, label, f"{label}[{copy}]"))
+        tree = state.setdefault("tree", [])
+        tree.extend(_tree_item(r, "RefAxis") for r in references)
+        type_name = {"linear": "LPattern", "circular": "CirPattern"}.get(
+            kind, "MirrorSolid"
+        )
+        tree.append(_tree_item(label, type_name))
+        self._operation_count += 1
+        folder = params.get("folder")
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "feature": label,
+                "kind": kind,
+                "instances": instances,
+                "seed_bodies": len(seeds),
+                "bodies_added": len(seeds) * (instances - 1),
+                "bodies_after": len(bodies),
+                "references": references,
+                "folder": _into_folder(tree, str(folder), [*references, label])
+                if folder
+                else None,
+            },
+        )
+
     async def create_vent_holes(
         self, params: dict[str, Any]
     ) -> AdapterResult[dict[str, Any]]:

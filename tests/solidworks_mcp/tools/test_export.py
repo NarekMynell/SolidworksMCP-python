@@ -495,3 +495,25 @@ async def test_export_stl_without_a_fallback_has_no_warning(mcp_server, mock_con
     )
 
     assert "warning" not in reply
+
+
+def test_export_image_reads_iso_as_isometric_and_refuses_unknown_views() -> None:
+    """An unknown view name would save the current view while the reply named it."""
+    import pytest
+    from pydantic import ValidationError
+
+    from solidworks_mcp.tools.export import ExportImageInput
+
+    assert (
+        ExportImageInput(file_path="a.png", view_orientation="iso").view_orientation
+        == "isometric"
+    )
+    assert (
+        ExportImageInput(file_path="a.png", view_orientation="Front").view_orientation
+        == "front"
+    )
+    assert (
+        ExportImageInput(file_path="a.png", orientation="top").view_orientation == "top"
+    )
+    with pytest.raises(ValidationError, match="unknown view 'sideways'"):
+        ExportImageInput(file_path="a.png", view_orientation="sideways")

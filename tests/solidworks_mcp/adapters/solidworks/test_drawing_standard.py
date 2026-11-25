@@ -602,6 +602,23 @@ class TestBomTableLandsOnTheSheet:
         assert hanging.corner == (0.0, 0.0)  # a given position is never moved
 
     @pytest.mark.asyncio
+    async def test_a_table_its_caller_moves_next_is_not_checked_where_it_lands(
+        self,
+    ) -> None:
+        adapter = _drawing_harness()
+        hanging = _Table((0.0, 0.0), anchor=1)
+        adapter.drawing.views["Drawing View1"].bom_result = hanging
+        adapter.currentModel = adapter.drawing
+
+        table, info = adapter._insert_bom(
+            "Drawing View1", "C:/t.sldbomtbt", "top_level_only", 0.0, 0.0, False
+        )
+
+        assert table is hanging
+        assert info["table_box_mm"] == [0.0, -15.0, 60.0, 0.0]
+        assert info["moved_onto_sheet"] is False
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "table",
         [
@@ -890,3 +907,26 @@ def test_the_model_mass_goes_to_kilograms_or_says_it_could_not() -> None:
     refused = _Adapter(False)._mass_in_kg()
     assert refused.status == AdapterResultStatus.ERROR
     assert "kg" in str(refused.error)
+
+
+def test_long_notes_wrap_under_their_number() -> None:
+    line = (
+        "4. ALL WELDS FILLET A4 ALL ROUND UNLESS NOTED, EN ISO 5817 QUALITY LEVEL C, "
+        "PROCESS 135 (MAG), WELDERS TO EN ISO 9606-1"
+    )
+    wrapped = std.wrap_note(line, std.NOTE_CHARS)
+    assert len(wrapped) == 2 and all(len(w) <= std.NOTE_CHARS for w in wrapped)
+    assert wrapped[0].startswith("4. ALL") and wrapped[1].startswith("   PROCESS")
+    assert std.wrap_note("NOTES", 80) == ["NOTES"]
+    assert std.wrap_note("PLAIN " * 20, 30)[1].startswith("PLAIN")
+
+
+def test_a_tall_table_takes_a_column_and_the_views_fit_left_of_it() -> None:
+    table = (0.250, 0.180, 0.400, 0.277)  # 150 mm wide in the top-right corner
+    zone = std.table_column_zone(table)
+    assert zone[2] == pytest.approx(std.VIEW_ZONE[2] - 0.150 - 2 * std.BOM_GAP)
+    sizes = {"front": (5.9, 4.3), "side": (12.0, 4.3), "plan": (5.9, 12.0)}
+    wide_scale, _ = std.choose_layout(sizes)
+    narrow_scale, cells = std.choose_layout(sizes, zone)
+    assert narrow_scale[1] / narrow_scale[0] >= wide_scale[1] / wide_scale[0]
+    assert all(c[2] <= zone[2] + 1e-9 for name, c in cells.items() if name != "notes")

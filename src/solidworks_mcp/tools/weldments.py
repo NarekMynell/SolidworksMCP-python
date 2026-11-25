@@ -136,6 +136,7 @@ class CreateStructuralMembersInput(CompatInput):
         sketch (str | None): An existing sketch to use instead.
         segment_names (list[str] | None): Only these segments of it.
         corner_treatment (str): Where segments of one chain meet.
+        up (list[float] | None): Where each profile's height points.
         rotation (float): Profile turn about the member axis, degrees.
         mirror_profile (str): Mirror the profile about an axis.
         merge_arcs (bool): One body for tangent arc segments.
@@ -184,8 +185,20 @@ class CreateStructuralMembersInput(CompatInput):
         default="miter",
         description="Where segments of one chain meet: 'miter', 'butt1', 'butt2' or 'none'",
     )
+    up: list[float] | None = Field(
+        default=None,
+        min_length=3,
+        max_length=3,
+        description="Which way each profile's height (its web, the 150 of an "
+        "RHS 150x100) points, [x, y, z], taken square to each member. Default "
+        "model y: beams, rafters and braces upright, sloped ones not rolled. "
+        "Purlins square to a roof: the roof's normal; columns: the way their "
+        "height faces in plan, e.g. [1, 0, 0] (up can't run along a member)",
+    )
     rotation: float = Field(
-        default=0.0, description="Turn the profile about the member's axis, degrees"
+        default=0.0,
+        description="A further turn of the profile about the member's axis, "
+        "degrees, after up (45 sets an angle's legs diagonal)",
     )
     mirror_profile: Literal["none", "horizontal", "vertical"] = Field(
         default="none",
@@ -232,6 +245,8 @@ class CreateStructuralMembersInput(CompatInput):
         check_segments(self.segments or [])
         if self.segment_names and not self.sketch:
             raise ValueError("segment_names needs sketch")
+        if self.up is not None and math.hypot(*self.up) < 1e-9:
+            raise ValueError("up is a direction: give a vector of some length")
         return self
 
 
@@ -275,7 +290,15 @@ class CreateTrimExtendInput(CompatInput):
     allow_extension: bool = Field(
         default=True, description="Extend members that stop short of the boundary"
     )
-    name: str | None = Field(default=None, description="Name for the new feature")
+    name: str | None = Field(
+        default=None, description="Name for the new feature, e.g. 'Joists to beams'"
+    )
+    folder: str | None = Field(
+        default=None,
+        description="Feature-tree folder; default the last folder holding the "
+        "members or boundary (a new numbered one when moving it there would put "
+        "it before a later feature)",
+    )
 
     @model_validator(mode="after")
     def _a_corner_joins_two(self) -> CreateTrimExtendInput:
@@ -733,6 +756,178 @@ def load_cuts(path: str) -> list[dict[str, Any]]:
     return _load(path, "cuts", CutSpec, MAX_CUTS)
 
 
+class PatternStep(BaseModel):
+    """Copies in a row: which way, how far apart, how many.
+
+    Attributes:
+        direction (list[float]): The way the copies go.
+        spacing (float): Distance between instances, mm.
+        count (int): Instances, the original included.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    direction: list[float] = Field(
+        min_length=3,
+        max_length=3,
+        description="[x, y, z], any length: the way the copies go from the original",
+    )
+    spacing: float = Field(gt=0, le=1e6, description="Distance between instances, mm")
+    count: int = Field(ge=2, le=1000, description="Instances, the original included")
+
+    @model_validator(mode="after")
+    def _has_length(self) -> PatternStep:
+        """A direction of some length."""
+        if math.hypot(*self.direction) < 1e-9:
+            raise ValueError("direction has no length")
+        return self
+
+
+class PatternAround(BaseModel):
+    """Copies around an axis.
+
+    Attributes:
+        axis (list[float]): The axis direction.
+        point (list[float]): A point on the axis, mm.
+        count (int): Instances, the original included.
+        angle (float): The total angle, degrees.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    axis: list[float] = Field(
+        min_length=3,
+        max_length=3,
+        description="The axis [x, y, z]; copies turn about it by the right hand",
+    )
+    point: list[float] = Field(
+        default_factory=lambda: [0.0, 0.0, 0.0],
+        min_length=3,
+        max_length=3,
+        description="A point on the axis, mm",
+    )
+    count: int = Field(ge=2, le=360, description="Instances, the original included")
+    angle: float = Field(
+        default=360.0,
+        gt=0,
+        le=360,
+        description="Total angle, degrees: 360 spaces them evenly all round; less "
+        "spreads them from the original to the last",
+    )
+
+    @model_validator(mode="after")
+    def _has_length(self) -> PatternAround:
+        """An axis of some length."""
+        if math.hypot(*self.axis) < 1e-9:
+            raise ValueError("axis has no length")
+        return self
+
+
+class PatternMirror(BaseModel):
+    """A mirror plane: a main plane, or one through a point.
+
+    Attributes:
+        plane (str | None): ``Front``, ``Top`` or ``Right``.
+        point (list[float] | None): A point on the plane, mm.
+        normal (list[float] | None): The plane's normal, along x, y or z.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    plane: str | None = Field(
+        default=None, description="'Front', 'Top' or 'Right' (or 'xy', 'xz', 'yz')"
+    )
+    point: list[float] | None = Field(
+        default=None,
+        min_length=3,
+        max_length=3,
+        description="Instead of plane: a point on the mirror plane, mm",
+    )
+    normal: list[float] | None = Field(
+        default=None,
+        min_length=3,
+        max_length=3,
+        description="With point: the plane's normal, along x, y or z",
+    )
+
+    @model_validator(mode="after")
+    def _one_plane(self) -> PatternMirror:
+        """A named plane, or a point and a normal."""
+        if (self.plane is None) == (self.point is None or self.normal is None):
+            raise ValueError("give plane, or point and normal")
+        return self
+
+
+class PatternMembersInput(CompatInput):
+    """Input schema for copying weldment bodies instead of drawing them again.
+
+    Attributes:
+        members (list[str]): What to copy.
+        along (PatternStep | None): Copies in a row.
+        along2 (PatternStep | None): A second row direction: a grid.
+        around (PatternAround | None): Copies around an axis.
+        mirror (PatternMirror | None): A mirrored copy.
+        skip (list | None): Linear instances to leave out.
+        name (str | None): The pattern feature's name.
+        folder (str | None): The feature-tree folder.
+    """
+
+    members: list[str] = Field(
+        min_length=1,
+        description="What to copy: member features (every body), body names, plates "
+        "('BP-1 Base plate'), end-cap features; finish the original first (trims, "
+        "plates, cuts, caps): they are copied as they are",
+    )
+    along: PatternStep | None = Field(
+        default=None, description="Copies in a row: direction, spacing, count"
+    )
+    along2: PatternStep | None = Field(
+        default=None, description="With along: a second direction, for a grid"
+    )
+    around: PatternAround | None = Field(
+        default=None, description="Copies around an axis: axis, point, count, angle"
+    )
+    mirror: PatternMirror | None = Field(
+        default=None, description="A mirrored copy: plane, or point and normal"
+    )
+    skip: list[int | list[int]] | None = Field(
+        default=None,
+        description="Instances of a row to leave out, 1-based (the original is 1): "
+        "[4, 5]; on a grid [[2, 3]] (along, along2)",
+    )
+    name: str | None = Field(
+        default=None, description="The pattern's name, e.g. 'Frames pattern'"
+    )
+    folder: str | None = Field(
+        default=None,
+        description="Feature-tree folder; default the folder holding the first member",
+    )
+
+    @model_validator(mode="after")
+    def _one_pattern(self) -> PatternMembersInput:
+        """One of along, around or mirror; along2 and skip with along only."""
+        if sum(x is not None for x in (self.along, self.around, self.mirror)) != 1:
+            raise ValueError("give along, around or mirror, one of them")
+        if self.along2 is not None and self.along is None:
+            raise ValueError("along2 needs along")
+        if self.skip:
+            if self.along is None:
+                raise ValueError("skip works with along only")
+            counts = [self.along.count] + ([self.along2.count] if self.along2 else [])
+            for item in self.skip:
+                position = item if isinstance(item, list) else [item]
+                if len(position) != len(counts):
+                    raise ValueError(
+                        f"skip entry {item} needs {len(counts)} number(s), one per "
+                        "direction"
+                    )
+                if all(p == 1 for p in position):
+                    raise ValueError("the original (instance 1) can't be skipped")
+                if any(p < 1 or p > c for p, c in zip(position, counts, strict=True)):
+                    raise ValueError(f"skip entry {item} is outside the pattern")
+        return self
+
+
 class CreateVentHolesInput(CompatInput):
     """Input schema for galvanizing vent and drain holes.
 
@@ -883,20 +1078,22 @@ async def register_weldment_tools(
     ) -> dict[str, Any]:
         """Put a weldment profile (IPE, HEB, SHS, RHS, UPN, angle...) on many segments in one call: columns, beams, truss chords and web members.
 
-        Use it for frames and trusses: each segment ([x1, y1, z1, x2, y2, z2] mm,
-        member centre lines, y up) becomes a member body with its cut-list length
-        and end angles; or give an existing `sketch`. Segments joined end to end
-        are mitred; one call is one profile, so a truss is one call for the chords
-        and one for the web. Finish with `create_trim_extend` where members meet;
-        sizes from `list_weldment_profiles`; hundreds of segments go in a
-        `segments_file`. The new sketch is fully defined (`define`): every node
-        dimensioned to the main planes, so nothing drifts and a specialist can
-        edit a coordinate. Give `name` (the sketch becomes '<name> skeleton') and
-        `folder`. Draw members before plates: once plates exist some nodes get a
-        Fix relation instead. Needs: an open part. Changes: adds a weldment
-        feature (first time), a 3D sketch and the members. Returns: `members`
-        with `feature`, `profile`, `sketch`, `segments`, `groups`, `bodies_after`,
-        `skeleton` (`definition`, `dimensions`, `fixed`) and `folder`.
+        Each segment ([x1, y1, z1, x2, y2, z2] mm, centre lines, y up) becomes
+        a member with its cut-list length and end angles; or give a `sketch`.
+        Segments joined end to end are mitred, except where a column already
+        stands; one call is one profile. Each profile's height points `up`
+        (default model y: nothing sloped comes out rolled); columns need an
+        `up` across them. Draw one of a repeated member and copy it with
+        `pattern_members`. Then `create_trim_extend` where members meet;
+        sizes from `list_weldment_profiles`; many segments go in a
+        `segments_file`. The new sketch is fully defined (`define`): nodes
+        dimensioned to the main planes. Give `name` (the sketch becomes
+        '<name> skeleton') and `folder`; draw members before plates. Needs:
+        an open part. Changes: adds a weldment feature (first time), a 3D
+        sketch and the members. Returns: `members` with `feature`, `profile`,
+        `sketch`, `segments`, `groups`, `bodies_after`, `orientation`
+        (measured: `max_roll_deg`), `skeleton` and `folder`; a `warning` when
+        a member couldn't face `up`.
 
         Args:
             input_data: `size` plus `standard` and `profile_type` (or
@@ -918,13 +1115,17 @@ async def register_weldment_tools(
         require_success(result, context="Failed to create the structural members")
         data = result.data or {}
         profile = data.get("profile") or {}
-        return {
+        reply: dict[str, Any] = {
             "status": "success",
             "message": f"Added {data.get('segments')} {profile.get('size')} member(s) "
             f"as {data.get('feature')}",
             "members": data,
             "execution_time": result.execution_time,
         }
+        warning = (data.get("orientation") or {}).get("warning")
+        if warning:
+            reply["warning"] = warning
+        return reply
 
     @mcp.tool()
     async def create_trim_extend(
@@ -1167,6 +1368,54 @@ async def register_weldment_tools(
         return reply
 
     @mcp.tool()
+    async def pattern_members(input_data: PatternMembersInput) -> dict[str, Any]:
+        """Copy finished members, plates or caps in a row, a grid, around an axis, or mirrored, instead of drawing each.
+
+        Use it whenever an element repeats inside one piece: balusters, frames
+        on a pitch, purlins per bay, stiffeners, base plates under a row of
+        columns, the other hand of a symmetric frame. Build and finish one
+        original (trims, plates, cuts, caps), then copy it with `along`
+        (`direction`, `spacing`, `count`; `along2` for a grid; `skip` leaves
+        instances out, e.g. at a door), `around` (`axis`, `point`, `count`,
+        `angle`) or `mirror` (`plane`, or `point` and `normal`). The copies are
+        one SolidWorks pattern feature on a named main axis or a fully defined
+        direction line: a specialist changes the pitch or count in one place,
+        and the cut list counts the copies with their original. Identical
+        separate pieces are better one part placed N times in an assembly
+        (`add_components`). Needs: an open weldment part with the original
+        built, no sketch open. Changes: adds the pattern (and its axis or
+        direction line) in `folder`. Returns: `pattern` with `feature`,
+        `kind`, `instances`, `seed_bodies`, `bodies_added`, `bodies_after`,
+        `references` and `folder`; a `warning` when the body count is off.
+
+        Args:
+            input_data: `members` and one of `along` (+ `along2`, `skip`),
+                `around` or `mirror`; `name` and `folder` optional.
+
+        Returns:
+            dict[str, Any]: The pattern made.
+        """
+        input_data = normalize_input(input_data, PatternMembersInput)
+        require_capability(
+            adapter, "pattern_members", "Active adapter can't pattern bodies"
+        )
+        result = await adapter.pattern_members(input_data.model_dump(exclude_none=True))
+        require_success(result, context="Failed to copy the members")
+        data = dict(result.data or {})
+        warning = data.pop("warning", None)
+        reply: dict[str, Any] = {
+            "status": "success",
+            "message": f"{data.get('kind')} pattern {data.get('feature')}: "
+            f"{data.get('instances')} instance(s), {data.get('bodies_added')} "
+            "body(ies) added",
+            "pattern": data,
+            "execution_time": result.execution_time,
+        }
+        if warning:
+            reply["warning"] = warning
+        return reply
+
+    @mcp.tool()
     async def create_vent_holes(input_data: CreateVentHolesInput) -> dict[str, Any]:
         """Cut the vent and drain holes hot-dip galvanizing needs in closed hollow members (RHS, SHS).
 
@@ -1283,4 +1532,4 @@ async def register_weldment_tools(
             reply["warning"] = warning
         return reply
 
-    return 10
+    return 11

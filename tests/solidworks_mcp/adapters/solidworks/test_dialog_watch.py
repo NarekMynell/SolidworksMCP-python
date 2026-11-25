@@ -16,10 +16,11 @@ from solidworks_mcp.adapters.solidworks.dialog_watch import (
     DialogSeen,
     DialogWatch,
     Win32Windows,
+    refused_message,
     waited_message,
 )
 
-WM_CLOSE, WM_COMMAND = 0x0010, 0x0111
+WM_CLOSE, WM_COMMAND, BM_CLICK, TDM_CLICK_BUTTON = 0x0010, 0x0111, 0x00F5, 0x0466
 
 
 class FakeWindows:
@@ -28,6 +29,7 @@ class FakeWindows:
     def __init__(self, dialogs: dict[int, tuple[str, list[tuple[int, str, str]]]]):
         self.open = dict(dialogs)
         self.posted: list[tuple[int, int, int, int]] = []
+        self.disabled: set[int] = set()
 
     def dialogs(self, pid: int) -> list[int]:
         assert pid == 42
@@ -41,6 +43,9 @@ class FakeWindows:
 
     def control_id(self, hwnd: int) -> int:
         return hwnd % 100
+
+    def enabled(self, hwnd: int) -> bool:
+        return hwnd not in self.disabled
 
     def post(self, hwnd: int, message: int, wparam: int, lparam: int) -> None:
         self.posted.append((hwnd, message, wparam, lparam))
@@ -74,10 +79,37 @@ def test_a_dialog_is_answered_only_after_the_timeout() -> None:
 
     clock.now = 5.0
     watch.check()
-    watch.check()  # answered once only
+    del windows.open[1]  # the press closed it
+    watch.check()
 
     assert windows.posted == [(1, WM_COMMAND, 2, 102)]
     assert watch.seen == [DialogSeen("SOLIDWORKS", "Done", ("OK",), "OK")]
+
+
+def test_a_dialog_a_press_missed_is_pressed_again_a_few_times() -> None:
+    windows, clock = FakeWindows({1: _MSGBOX}), Clock()
+    watch = _watch(windows, clock)
+
+    watch.check()
+    clock.now = 5.0
+    for _ in range(10):
+        watch.check()
+
+    assert windows.posted == [(1, WM_COMMAND, 2, 102)] * 5
+    assert len(watch.seen) == 1
+
+
+def test_a_dialog_showing_its_own_prompt_is_not_pressed_again() -> None:
+    windows, clock = FakeWindows({1: _MSGBOX}), Clock()
+    watch = _watch(windows, clock)
+
+    watch.check()
+    clock.now = 5.0
+    watch.check()
+    windows.disabled.add(1)  # its Cancel opened a confirmation over it
+    watch.check()
+
+    assert windows.posted == [(1, WM_COMMAND, 2, 102)]
 
 
 def test_cancel_wins_over_ok() -> None:
@@ -176,12 +208,122 @@ def test_a_failing_watch_stops_quietly() -> None:
         (DialogSeen("UserForm1", "", (), "closed"), "'UserForm1' (closed)"),
         (
             DialogSeen("Save?", "", ("Yes", "No"), None),
-            "'Save?' (left open: it has no Cancel and more than one button)",
+            "'Save?' (left open for the user)",
         ),
     ],
 )
 def test_describe(seen: DialogSeen, expected: str) -> None:
     assert seen.describe() == expected
+
+
+# SolidWorks' memory warning, as read live: a task dialog, its message in a
+# link control, buttons without IDs (hwnd % 100 == 0 here).
+_LOW_MEMORY = (
+    "SOLIDWORKS",
+    [
+        (101, "DirectUIHWND", ""),
+        (
+            102,
+            "SysLink",
+            "WARNING! Your system is running critically low on memory.\n"
+            "Executing this command might cause SOLIDWORKS to fail.\n\n"
+            'Do you want to continue?\n\n<a href="https://x">Online Solutions</a>',
+        ),
+        (300, "Button", "&Yes"),
+        (400, "Button", "&No"),
+    ],
+)
+
+
+@pytest.mark.parametrize("only_known", [True, False])
+def test_a_known_dialog_gets_its_safe_answer(only_known: bool) -> None:
+    windows, clock = FakeWindows({1: _LOW_MEMORY}), Clock()
+    watch = DialogWatch(42, 2, windows=windows, clock=clock, only_known=only_known)
+
+    watch.check()
+    clock.now = 2
+    watch.check()
+
+    # the No button's own click, and the dialog asked to click its IDNO
+    assert windows.posted == [(400, BM_CLICK, 0, 0), (1, TDM_CLICK_BUTTON, 7, 0)]
+    assert watch.seen[0].answer == "No"
+    assert watch.seen[0].text == (
+        "WARNING! Your system is running critically low on memory. Executing "
+        "this command might cause SOLIDWORKS to fail. Do you want to continue? "
+        "Online Solutions"
+    )
+
+
+def test_a_known_dialog_open_before_the_call_is_answered_too() -> None:
+    windows, clock = FakeWindows({1: _LOW_MEMORY, 2: _MSGBOX}), Clock()
+    watch = DialogWatch(42, 2, windows=windows, clock=clock, only_known=True)
+    watch._before = {1, 2}  # both up when the call started
+
+    watch.check()
+    clock.now = 2
+    watch.check()
+
+    assert [seen.answer for seen in watch.seen] == ["No"]  # the message box isn't ours
+    assert watch.seen[0].opened_before is True
+
+
+def test_a_press_that_does_not_go_through_answers_nothing() -> None:
+    class Gone(FakeWindows):
+        def post(self, hwnd: int, message: int, wparam: int, lparam: int) -> None:
+            raise OSError("invalid window handle")
+
+    windows, clock = Gone({1: _LOW_MEMORY}), Clock()
+    watch = DialogWatch(42, 0, windows=windows, clock=clock, only_known=True)
+
+    watch.check()
+
+    assert watch.seen[0].answer is None  # closed by the user, or out of reach
+
+
+def test_watching_only_known_dialogs_leaves_the_others() -> None:
+    windows, clock = FakeWindows({1: _MSGBOX, 2: ("UserForm1", [])}), Clock()
+    watch = DialogWatch(42, 2, windows=windows, clock=clock, only_known=True)
+
+    watch.check()
+    clock.now = 3
+    watch.check()
+
+    assert windows.posted == []
+    assert [seen.answer for seen in watch.seen] == [None, None]
+
+
+def test_a_watch_that_cannot_list_windows_stays_out_of_the_way() -> None:
+    class Blind(FakeWindows):
+        def dialogs(self, pid: int) -> list[int]:
+            raise OSError("no desktop")
+
+    with DialogWatch(42, 2, windows=Blind({})) as watch:
+        pass
+
+    assert watch._thread is None and watch.seen == []
+
+
+def test_a_watch_whose_thread_cannot_start_stays_out_of_the_way(monkeypatch) -> None:
+    def no_thread(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(
+        "solidworks_mcp.adapters.solidworks.dialog_watch.threading.Thread", no_thread
+    )
+
+    with DialogWatch(42, 2, windows=FakeWindows({})) as watch:
+        pass
+
+    assert watch._thread is None
+
+
+def test_the_refusal_names_the_call_and_the_dialog() -> None:
+    seen = DialogSeen("SOLIDWORKS", "Memory is low.", ("Yes", "No"), "No")
+
+    assert refused_message("create_part", [seen]) == (
+        "SolidWorks stopped create_part with a dialog: 'SOLIDWORKS': "
+        "'Memory is low.' (answered 'No')."
+    )
 
 
 def test_the_error_names_the_dialog_and_the_rule() -> None:
@@ -230,6 +372,9 @@ class FakeGui:
     def GetDlgCtrlID(self, hwnd: int) -> int:
         return self.windows[hwnd]["id"]
 
+    def IsWindowEnabled(self, hwnd: int) -> bool:
+        return hwnd == 1
+
     def PostMessage(self, hwnd: int, message: int, wparam: int, lparam: int) -> None:
         self.posted.append((hwnd, message, wparam, lparam))
 
@@ -245,6 +390,7 @@ def test_win32_windows_reads_and_posts_through_win32gui() -> None:
     assert windows.title(1) == "SOLIDWORKS"
     assert windows.children(1) == [(11, "Static", "Done"), (12, "Button", "OK")]
     assert windows.control_id(12) == 2
+    assert windows.enabled(1) and not windows.enabled(2)
     windows.post(1, WM_COMMAND, 2, 12)
     assert gui.posted == [(1, WM_COMMAND, 2, 12)]
 

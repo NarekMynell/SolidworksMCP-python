@@ -864,3 +864,137 @@ async def test_vent_holes_in_hollow_members_only(mcp_server, mock_adapter) -> No
 def test_vent_input_refusals(kwargs: dict[str, Any], message: str) -> None:
     with pytest.raises(ValueError, match=message):
         CreateVentHolesInput(**kwargs)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"members": ["F"]}, "along, around or mirror, one of them"),
+        (
+            {
+                "members": ["F"],
+                "along": {"direction": [1, 0, 0], "spacing": 100, "count": 3},
+                "mirror": {"plane": "Front"},
+            },
+            "along, around or mirror, one of them",
+        ),
+        (
+            {
+                "members": ["F"],
+                "around": {"axis": [0, 1, 0], "count": 4},
+                "along2": {"direction": [1, 0, 0], "spacing": 100, "count": 3},
+            },
+            "along2 needs along",
+        ),
+        (
+            {"members": ["F"], "around": {"axis": [0, 1, 0], "count": 4}, "skip": [2]},
+            "skip works with along only",
+        ),
+        (
+            {
+                "members": ["F"],
+                "along": {"direction": [1, 0, 0], "spacing": 100, "count": 3},
+                "skip": [1],
+            },
+            "can't be skipped",
+        ),
+        (
+            {
+                "members": ["F"],
+                "along": {"direction": [1, 0, 0], "spacing": 100, "count": 3},
+                "skip": [4],
+            },
+            "outside the pattern",
+        ),
+        (
+            {
+                "members": ["F"],
+                "along": {"direction": [1, 0, 0], "spacing": 100, "count": 3},
+                "along2": {"direction": [0, 0, 1], "spacing": 100, "count": 2},
+                "skip": [2],
+            },
+            "needs 2 number",
+        ),
+        (
+            {
+                "members": ["F"],
+                "along": {"direction": [0, 0, 0], "spacing": 100, "count": 3},
+            },
+            "direction has no length",
+        ),
+        (
+            {"members": ["F"], "mirror": {"point": [0, 0, 0]}},
+            "give plane, or point and normal",
+        ),
+    ],
+)
+def test_pattern_input_refusals(kwargs: dict[str, Any], message: str) -> None:
+    from solidworks_mcp.tools.weldments import PatternMembersInput
+
+    with pytest.raises(ValueError, match=message):
+        PatternMembersInput(**kwargs)
+
+
+@pytest.mark.asyncio
+async def test_one_baluster_copied_with_a_gate_gap(mcp_server, mock_adapter) -> None:
+    tools = await _tools(mcp_server, mock_adapter)
+    await mock_adapter.create_part()
+    await tools["create_structural_members"](
+        {
+            "standard": "BSI",
+            "profile_type": "shs",
+            "size": "RHS60x60x4",
+            "segments": [[100, 100, 0, 100, 1000, 0]],
+            "name": "Baluster",
+            "folder": "Railing",
+        }
+    )
+
+    made = await tools["pattern_members"](
+        {
+            "members": ["Baluster"],
+            "along": {"direction": [1, 0, 0], "spacing": 120, "count": 25},
+            "skip": [10, 11],
+            "name": "Balusters",
+            "folder": "Railing",
+        }
+    )
+
+    assert made["status"] == "success", made
+    data = made["pattern"]
+    assert (data["kind"], data["instances"], data["bodies_added"]) == ("linear", 23, 22)
+    assert data["folder"]["folder"] == "Railing"
+    cut = await tools["get_cut_list"]({})
+    assert cut["cut_list"]["pieces"] == 23
+
+
+@pytest.mark.asyncio
+async def test_patterns_around_and_mirrored_and_unknown_names(
+    mcp_server, mock_adapter
+) -> None:
+    tools = await _tools(mcp_server, mock_adapter)
+    await mock_adapter.create_part()
+    await tools["create_structural_members"](
+        {
+            "standard": "BSI",
+            "profile_type": "shs",
+            "size": "RHS60x60x4",
+            "segments": [[0, 0, 0, 0, 0, 800]],
+            "name": "Spoke",
+        }
+    )
+    around = await tools["pattern_members"](
+        {"members": ["Spoke"], "around": {"axis": [0, 1, 0], "count": 6}}
+    )
+    assert around["pattern"]["bodies_added"] == 5
+    assert around["pattern"]["feature"] == "Spoke pattern"
+    mirror = await tools["pattern_members"](
+        {"members": ["Spoke"], "mirror": {"plane": "Right"}, "name": "Other hand"}
+    )
+    assert mirror["pattern"]["kind"] == "mirror"
+    assert mirror["pattern"]["bodies_added"] == 1
+    missing = await tools["pattern_members"](
+        {"members": ["Nothing"], "mirror": {"plane": "Right"}}
+    )
+    assert missing["status"] == "error"
+    assert "Nothing" in missing["message"]

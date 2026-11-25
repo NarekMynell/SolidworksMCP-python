@@ -265,7 +265,11 @@ class ProfileLibrary:
 Point = tuple[float, float, float]
 
 
-def chains(ends: list[tuple[Point, Point]], tolerance: float = 1e-6) -> list[list[int]]:
+def chains(
+    ends: list[tuple[Point, Point]],
+    tolerance: float = 1e-6,
+    stops: set[tuple[float, float, float]] | None = None,
+) -> list[list[int]]:
     """Split segments into groups SolidWorks accepts: chains joined end to end.
 
     A structural-member group is segments joined end to end without
@@ -274,11 +278,15 @@ def chains(ends: list[tuple[Point, Point]], tolerance: float = 1e-6) -> list[lis
     ``None``), so each chain grows from a segment along the straightest
     unused segment at each end. A chord stays one chain through the nodes
     where web members meet it, and a closed frame is one chain, mitred at
-    every corner.
+    every corner. A chain ends at a ``stops`` point: where a column already
+    stands, beams meeting there are separate members to trim to it, not a
+    ring mitred round it (a floor ring chained through six columns and
+    trimmed to them came back with four beams twice, seen live).
 
     Args:
         ends: Each segment's two end points.
         tolerance: How close two ends must be to be one point.
+        stops: Points no chain runs through.
 
     Returns:
         list[list[int]]: Groups of segment indexes, each in chain order.
@@ -291,6 +299,7 @@ def chains(ends: list[tuple[Point, Point]], tolerance: float = 1e-6) -> list[lis
             round(point[2] / tolerance),
         )
 
+    stopped = {key(p) for p in stops or ()}
     at: dict[tuple[int, int, int], list[int]] = {}
     for index, (start, end) in enumerate(ends):
         for point in (start, end):
@@ -315,7 +324,7 @@ def chains(ends: list[tuple[Point, Point]], tolerance: float = 1e-6) -> list[lis
         loop at the chain's other end (``opposite``), as a closed frame does.
         """
         grown: list[int] = []
-        while degree.get(key(node), 0) < 2:
+        while degree.get(key(node), 0) < 2 and key(node) not in stopped:
             heading = direction(came_from, node)
 
             def fits(index: int, at_node: Point = node) -> bool:

@@ -594,6 +594,40 @@ def _payload_dict(data: Any) -> dict[str, Any]:
     return {key: value for key, value in vars(data).items() if not key.startswith("_")}
 
 
+def _save_as_refused(adapter: Any, path: str) -> str:
+    """Why SolidWorks refused to save over ``path``, when it can be told.
+
+    A part an open assembly or drawing uses stays open with it, and
+    ``CloseDoc`` doesn't close it: saving a rebuilt part over it failed with
+    no reason given (seen live).
+    """
+    holder = (
+        adapter._attempt(lambda: adapter.swApp.GetOpenDocumentByName(path))
+        if adapter.swApp
+        else None
+    )
+    if holder is None:
+        return f"Failed to save as: {path}"
+    return (
+        f"Failed to save as: {path}: SolidWorks has that file open, kept by an "
+        "open assembly or drawing that uses it; close that document first "
+        "(list_open_documents, close_model)"
+    )
+
+
+#: An overlap under this (mm^3), or thinner than ``TOUCHING_DEPTH_MM``, is
+#: faces set against each other, not a clash: a 3 mm panel on a post's face
+#: overlapped it by 0.38 mm^3, and brace flats laid on gussets on a slope by
+#: 17 mm^3 two thousandths of a millimetre deep (seen live). The depth is
+#: twice the overlap's volume over its surface area, a thin slab's
+#: thickness. ``check_joints`` uses the same two rules.
+TOUCHING_MM3 = 1.0
+TOUCHING_DEPTH_MM = 0.01
+#: A thin interference this large or larger stays an interference: its body's
+#: depth is an average over its lumps, and could hide a deep one.
+TOUCHING_SLIVER_MAX_MM3 = 100.0
+
+
 def _interference_details(adapter: Any, interferences: Any) -> list[dict[str, Any]]:
     """Describe each interference: the components involved and the overlap.
 
@@ -643,16 +677,30 @@ def _interference_details(adapter: Any, interferences: Any) -> list[dict[str, An
                 name = adapter._attempt(lambda c=comp: c.Name2, default=None)
                 names.append(str(name) if name else "<unnamed>")
 
-        details.append(
-            {
-                "components": names,
-                "component_count": int(component_count)
-                if component_count
-                else len(names),
-                "volume_mm3": volume_mm3,
-            }
-        )
+        entry: dict[str, Any] = {
+            "components": names,
+            "component_count": int(component_count) if component_count else len(names),
+            "volume_mm3": volume_mm3,
+        }
+        depth = _interference_depth_mm(adapter, wrapped)
+        if depth is not None:
+            entry["depth_mm"] = depth
+        details.append(entry)
     return details
+
+
+def _interference_depth_mm(adapter: Any, interference: Any) -> float | None:
+    """How deep an interference is (mm): twice its body's volume over its area."""
+    body = adapter._attempt(lambda: interference.GetInterferenceBody(), default=None)
+    if body is None:
+        return None
+    values = adapter._attempt(
+        lambda: _sw_type_info.flagged(body, "IBody2").GetMassProperties(1.0),
+        default=None,
+    )
+    if not isinstance(values, (list, tuple)) or len(values) < 5 or not values[4]:
+        return None
+    return round(2 * float(values[3]) / float(values[4]) * 1000.0, 6)
 
 
 def _component_pairs(adapter: Any, assembly: Any) -> list[tuple[str, Any]]:
@@ -2088,12 +2136,10 @@ class SolidWorksIOMixin:
                 save_as3_result = adapter.currentModel.SaveAs3(resolved_path, 0, 0)
                 if not self._is_success(save_as3_result):
                     save_as = getattr(adapter.currentModel, "SaveAs", None)
-                    if callable(save_as):
-                        fallback_result = save_as(resolved_path)
-                        if not self._is_success(fallback_result):
-                            raise Exception(f"Failed to save as: {resolved_path}")
-                    else:
-                        raise Exception(f"Failed to save as: {resolved_path}")
+                    if not callable(save_as) or not self._is_success(
+                        save_as(resolved_path)
+                    ):
+                        raise Exception(_save_as_refused(adapter, resolved_path))
 
                 if not os.path.exists(resolved_path):
                     raise Exception(f"File not written after save: {resolved_path}")
@@ -3867,8 +3913,12 @@ class SolidWorksIOMixin:
         Returns:
             AdapterResult[dict[str, Any]]: ``interference_found``,
             ``interference_count``, and per-interference component pairs with
-            overlap volumes in mm^3. ``ERROR`` when there is no active model
-            or the active document is not an assembly.
+            overlap volumes in mm^3 (and ``depth_mm``); overlaps under
+            ``TOUCHING_MM3`` or thinner than ``TOUCHING_DEPTH_MM`` are faces
+            set against each other, counted in ``touching_count`` and listed
+            (ten) in ``touching``, not as interferences. ``ERROR`` when
+            there is no active model or the active document is not an
+            assembly.
 
         Raises:
             Exception: Propagated through ``_handle_com_operation``.
@@ -3945,11 +3995,32 @@ class SolidWorksIOMixin:
                     for item in details
                     if wanted_names & set(item.get("components", []))
                 ]
+            # Asked to count coincident faces, every one is kept.
+            touching = [
+                item
+                for item in details
+                if not coincident
+                and item.get("volume_mm3") is not None
+                and (
+                    item["volume_mm3"] < TOUCHING_MM3
+                    or (
+                        item.get("depth_mm") is not None
+                        and item["depth_mm"] < TOUCHING_DEPTH_MM
+                        and item["volume_mm3"] < TOUCHING_SLIVER_MAX_MM3
+                    )
+                )
+            ]
+            clashes = [item for item in details if item not in touching]
+            # Without a filter SolidWorks' own count stands (an entry that
+            # couldn't be read is still a clash), less the touching ones.
+            found = len(clashes) if wanted_names else count - len(touching)
 
             return {
-                "interference_found": bool(details) if wanted_names else count > 0,
-                "interference_count": len(details) if wanted_names else count,
-                "interferences": details,
+                "interference_found": found > 0,
+                "interference_count": found,
+                "interferences": clashes,
+                "touching_count": len(touching),
+                "touching": touching[:10],
                 "coincident_treated_as_interference": coincident,
                 "scope": sorted(wanted_names) if wanted_names else "whole assembly",
                 # Said plainly rather than silently dropped: a caller passing a

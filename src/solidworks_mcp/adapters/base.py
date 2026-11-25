@@ -2014,6 +2014,22 @@ class SolidWorksAdapter(ABC):
             error="create_cuts is not implemented by this adapter",
         )
 
+    async def pattern_members(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Copy weldment bodies along a direction, around an axis, or mirrored.
+
+        Args:
+            params (dict[str, Any]): The members, the pattern and its name.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The result, or error.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="pattern_members is not implemented by this adapter",
+        )
+
     async def pack_and_go_assembly(
         self, source_path: str, target_dir: str
     ) -> AdapterResult[dict[str, Any]]:
