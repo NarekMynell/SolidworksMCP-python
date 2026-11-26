@@ -156,6 +156,34 @@ async def test_a_catalog_is_built_and_its_results_written(
 
 
 @pytest.mark.asyncio
+async def test_the_callers_meta_comes_back_in_the_results_file(
+    mcp_server: Any, mock_adapter: Any, tmp_path: Path
+) -> None:
+    """A platform's spec carries each item's id for its upload step (opus_catalog.py)."""
+    tools = await _tools(mcp_server, mock_adapter)
+    tagged, plain = copy.deepcopy(_catalog()[0]), copy.deepcopy(_catalog()[1])
+    tagged["meta"] = {"id": "01a2-item", "geometry_hash": "abc123"}
+    spec = _spec(tmp_path, [tagged, plain])
+
+    reply = await tools["build_weldment_profiles"](
+        {"spec_file": spec, "root": str(tmp_path / "root")}
+    )
+
+    assert reply["status"] == "success", reply
+    assert [i["status"] for i in reply["profiles"]["items"]] == ["built", "built"]
+    assert set(reply["profiles"]["items"][0]) == {
+        "path",
+        "status",
+        "error",
+        "seconds",
+        "sha256",
+    }
+    rows = _results(spec)["profiles"]
+    assert rows[0]["meta"] == {"id": "01a2-item", "geometry_hash": "abc123"}
+    assert "meta" not in rows[1]
+
+
+@pytest.mark.asyncio
 async def test_bad_entries_fail_alone(
     mcp_server: Any, mock_adapter: Any, tmp_path: Path
 ) -> None:

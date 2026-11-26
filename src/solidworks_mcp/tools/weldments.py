@@ -1081,7 +1081,8 @@ class BuildWeldmentProfilesInput(CompatInput):
         description='A .json file of profiles, {"profiles": [...]}: each a path '
         "(<standard>/<type>/<size>.sldlfp under root), an outline (outer and holes, "
         "lines and arcs in mm) and properties; designation, shape, dims, area_mm2 "
-        "and mass_per_m optional",
+        "and mass_per_m optional; meta (the caller's own data) comes back in the "
+        "results file",
     )
     root: str | None = Field(
         default=None,
@@ -1118,6 +1119,7 @@ class WeldmentProfileSpec(BaseModel):
         mass_per_m (float | None): The expected steel mass, checked.
         outline (dict[str, Any]): The outer loop and the holes.
         properties (dict[str, str | int | float]): The file's custom properties.
+        meta (dict[str, Any] | None): The caller's own data, returned as is.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -1150,6 +1152,11 @@ class WeldmentProfileSpec(BaseModel):
     properties: dict[str, str | int | float] = Field(
         default_factory=dict,
         description="The file's custom properties; a cut list takes them over",
+    )
+    meta: dict[str, Any] | None = Field(
+        default=None,
+        description="Anything the caller keeps with the profile (a catalog "
+        "item's id, say); written to its row of the results file as is",
     )
 
     @field_validator("path")
@@ -1268,6 +1275,8 @@ def select_profiles(entries: list[Any], only: list[str] | None) -> ProfileSelect
             "dims": profile.dims,
             "properties": properties,
         }
+        if profile.meta is not None:
+            selection.expected[index]["meta"] = profile.meta
         selection.plans.append(
             (
                 index,

@@ -29,6 +29,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`docs/proofs/user-settings.json`): off inside each call, on after it, a
   dimension with no Modify box; 16 ms per call with the options off, 47 ms
   with all five on.
+- **`build_weldment_profiles` takes a catalog's spec as written.** A spec
+  entry refused every field it didn't define, so the spec the Opus catalog
+  script writes (each item's id beside its profile, for the upload step)
+  failed in full. An entry may now carry `meta`, the caller's own data,
+  written back to its row of the results file; any other unknown field is
+  still refused.
 
 ### Changed
 
