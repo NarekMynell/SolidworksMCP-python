@@ -258,6 +258,11 @@ SUPPORT_LEVELS: dict[str, Support] = {
     "set_component_position": _STABLE,
     # weldments
     "list_weldment_profiles": _STABLE,
+    "build_weldment_profiles": Support(
+        SupportLevel.BETA,
+        "`define: dimensions` leaves some outlines under defined (an I-beam of "
+        "the 11 checked live); those profiles work the same.",
+    ),
     "create_structural_members": _STABLE,
     "create_trim_extend": _STABLE,
     "check_joints": _STABLE,

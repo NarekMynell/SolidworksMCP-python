@@ -107,6 +107,7 @@ name and tell two tools apart by name alone. Pick the verb by meaning:
 | Verb | Meaning |
 | --- | --- |
 | `create_` | makes a new document, or a new feature built from a sketch or acting on the whole body (extrusion, rib, hole, shell) |
+| `build_` | writes many library files from a spec in one call, each a document made, saved and closed (weldment profiles) |
 | `add_` | adds an entity to an open sketch or a drawing, or treats edges or faces of an existing body (fillet, chamfer, draft, thread) |
 | `pattern_`, `mirror_` | repeats existing features or components |
 | `sketch_` | an operation on the open sketch's entities (offset, mirror, pattern, convert) |

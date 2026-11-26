@@ -42,6 +42,7 @@ from .solidworks import (
     SolidWorksWeldmentCutsMixin,
     SolidWorksWeldmentPatternsMixin,
     SolidWorksWeldmentPlatesMixin,
+    SolidWorksWeldmentProfilesMixin,
     SolidWorksWeldmentsMixin,
     SolidWorksWeldmentVentsMixin,
     SolidWorksWeldmentWeldsMixin,
@@ -183,6 +184,7 @@ def _headless_requested() -> bool:
 _DOCUMENT_OPERATIONS = frozenset(
     {
         "activate_document",
+        "build_weldment_profile",
         "close_model",
         "create_assembly",
         "create_drawing",
@@ -1752,6 +1754,7 @@ class PyWin32Adapter(
     SolidWorksWeldmentCutsMixin,
     SolidWorksWeldmentPatternsMixin,
     SolidWorksWeldmentPlatesMixin,
+    SolidWorksWeldmentProfilesMixin,
     SolidWorksWeldmentVentsMixin,
     SolidWorksWeldmentWeldsMixin,
     SolidWorksWeldmentsMixin,

@@ -18,11 +18,15 @@ runs into another, `create_end_caps` on the open hollow ends,
 holes, `create_cuts` for the bolt holes and copes in the members,
 `create_vent_holes` in closed hollow members of galvanized work, `set_material`, then `get_cut_list`, `export_plate_dxfs` for the
 cutting table and `check_feature_tree` before the model is handed over.
+Sections the library doesn't have, a materials catalog's own, become
+profiles with `build_weldment_profiles`.
 
 Every sketch these tools draw comes out fully defined: a skeleton's nodes
 are dimensioned to the Right, Top and Front planes and a plate's corners and
 holes from the origin, so nothing moves when dragged and a specialist can
-edit any coordinate. Give each call a `name` and a `folder` to keep the tree
+edit any coordinate. A profile's sketch is the exception where SolidWorks'
+Fully Define Sketch can't manage it (an I-beam of 11 checked):
+`build_weldment_profiles` names those. Give each call a `name` and a `folder` to keep the tree
 readable.
 
 ### `list_weldment_profiles`
@@ -48,6 +52,77 @@ List SolidWorks' weldment profile library: standards, profile types and sizes, o
 
 ---
 
+### `build_weldment_profiles`
+
+Build weldment profiles (`.sldlfp`) from exact section outlines, many in one call: a materials catalog as a SolidWorks profile library.
+
+**Prerequisite:** SolidWorks running
+
+**SolidWorks automation note:** Each profile is a new part (`ISldWorks.NewPart`, the default part template) with one sketch on the Front plane (found by its place in the tree, in any language): the outline's lines (`ISketchManager.CreateLine`) and true arcs (`Create3PointArc` through the arc's ends and the middle of its sweep), a point (`CreatePoint`) at each pierce point, all with `AddToDB` on, then, with `define: dimensions`, SolidWorks' Fully Define Sketch and a tie to the origin. `ISketch.CheckFeatureUse` for a sweep section must find no fault and one closed contour per loop. The custom properties go in at file level (`ICustomPropertyManager.Add3`), the sketch is selected and `IModelDocExtension.SaveAs2` saves the part, silently, as a library feature part in a private folder. The part is closed (`ISldWorks.CloseDoc`, by its full path once saved) on every way out, a failure and an interrupt too, and only a profile that was saved, closed and checked is copied into the library, under the spelling asked for. Each profile is its own SolidWorks operation: a dialog fails that profile alone, one left open 10 s is refused (Cancel, No, Abort, its only button, or closed), and a cancelled call stops between profiles. The four settings Fully Define Sketch switches off are put back when the call ends. What SolidWorks 2025 took and refused on the way: [COM pitfall #48](../../agents/com-api-pitfalls.md#48-weldment-profiles-what-solidworks-2025-takes-and-what-it-refuses).
+
+Checked live on 2025 SP4 (receipt: `docs/proofs/weldment-profiles.json`): the 11 profiles of a materials catalog (rectangular, round and oval tubes, an angle, a channel, an I-beam, a tee, a flat, and round, square and hex bars), each then a structural member 1000 mm long whose volume over 1000 was the catalog's area within 0.0001 % and whose cut-list item carried the profile's properties. Fully Define Sketch left the I-beam under defined. Each profile waits twice for `SOLIDWORKS_MCP_DOC_SETTLE_SECONDS` (default 1 s), after its new part and after it is closed; at the live test's 2.5 s a profile took 8.3 to 12.8 s with `define: dimensions` (median 8.7 s) and 7.1 to 7.7 s with `none`. Each profile's `seconds` is in the reply; a long spec can be built in parts with `only`.
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `spec_file` | `str` | ✅ | | A `.json` file of profiles, `{"profiles": [...]}` (below) |
+| `root` | `str?` | — | `None` | The library folder the paths go under; default the first Weldment Profiles folder of SolidWorks' File Locations |
+| `overwrite` | `bool` | — | `false` | Build profiles whose file exists again; `false` skips them |
+| `only` | `list[str]?` | — | `None` | Only these paths of the spec, e.g. `["Opus/angles/L63x40x5.sldlfp"]` |
+| `define` | `str` | — | `dimensions` | `dimensions` runs Fully Define Sketch on each sketch (some outlines stay under defined: each profile's `definition` says); `none` leaves it as drawn, under defined |
+
+**Sample call:**
+
+```json
+{"spec_file": "C:\\catalog\\opus_profiles.json", "root": "D:\\Library\\Weldment Profiles", "only": ["Opus/rhs-welded/80x60x2.7.sldlfp"]}
+```
+
+#### The spec file
+
+Abbreviated: the whole tube has 8 segments in each loop, and
+`tests/live/data/weldment_profiles/opus_profiles.json` holds 11 profiles in full.
+
+```json
+{"profiles": [{
+  "path": "Opus/rhs-welded/80x60x2.7.sldlfp",
+  "designation": "80×60×2.7", "shape": "rect_tube", "dims": {"h": 80, "b": 60, "t": 2.7},
+  "area_mm2": 708.0666, "mass_per_m": 5.5583,
+  "outline": {"outer": [
+    {"k": "arc", "a": [-30, -34.6], "b": [-24.6, -40], "c": [-24.6, -34.6], "r": 5.4, "ccw": true},
+    {"k": "line", "a": [-24.6, -40], "b": [24.6, -40]},
+    ...
+  ], "holes": [[...]]},
+  "properties": {"Description": "80×60×2.7", "Opus code": "rhs-welded/80x60x2.7", "Material": "Steel"}
+}]}
+```
+
+- `path` (required): `<standard>/<type>/<size>.sldlfp` under `root`. Folders are made as needed. A path leaving the root, with another number of parts, or with a character Windows or SolidWorks refuse (`<>:"|?*@`) is refused.
+- `outline` (required), in millimetres: `outer`, a loop running counter-clockwise, and `holes`, loops running clockwise. A segment is `{"k": "line", "a": [x, y], "b": [x, y]}` or `{"k": "arc", "a", "b", "c": [cx, cy], "r": radius, "ccw": true|false}`, an arc from `a` to `b` about `c`, counter-clockwise when `ccw`. Each segment starts where the one before ends (within 0.001 mm; it is drawn from that end, so the loop closes exactly), the last ends where the first starts, an arc's ends lie on its circle (within 0.001 mm), and a full circle is two arcs. Holes lie inside the outer loop and apart from each other. The outline's origin is the sketch's origin, the member's default pierce point: a tube or bar centred on it, an angle's heel on it, a channel or beam on y = 0.
+- `properties`: the file's custom properties, as text. A structural member's cut-list item takes them over.
+- `area_mm2` and `mass_per_m` (steel, 7850 kg/m³) are checked against the outline's own area, which counts each arc only over its sweep: off by more than 0.2 %, the profile gets a `warning`.
+- `designation`, `shape` and `dims` go into the results file. Any other key is refused.
+
+A profile with a bad entry is refused alone, with every problem it has, before SolidWorks is called; one SolidWorks' own sketch check refuses (loops that cross themselves or each other) fails alone. Two entries for one path are both refused. A failed profile leaves no file, and a failed `overwrite` leaves the old file as it was (its error says so).
+
+#### What comes back
+
+Each profile's `path`, `status` (`built`; `skipped`, the file exists and `overwrite` is off; or `error`), `error`, `seconds` and the file's `sha256` (a skipped profile's: the file there), with a `warning` when its outline disagrees with its area or mass. `<spec>.results.json` beside the spec (`opus_profiles.json` gives `opus_profiles.results.json`) has the same for each profile and also `file`, `bytes`, `designation`, `shape`, `dims`, `properties`, the outline's `area_mm2`, the expected area and mass, the sketch's `definition`, the `define` it was built with and when (`at`), for an upload step. A spec built in parts keeps one results file: each call adds or replaces its own profiles, in spec order, and a profile no longer in the spec drops out. When no profile is built or skipped, the call is an error with every profile under `data`: `profiles_not_built`, or `solidworks_unavailable` when the connection was lost. A SolidWorks that stops answering, or a connection to it that broke, stops the batch: the rest are reported not built, and the error (or, after some were built, the first warning) says so.
+
+#### The library layout
+
+`<root>/<standard>/<type>/<size>.sldlfp`: a folder per standard and per type and a file per size, the layout of SolidWorks' libraries before 2018 (since then a file per type with a configuration per size). Each file has the one configuration of the part template (`Default` in English). `list_weldment_profiles` reads both layouts (checked live on the built root: the standard `Opus` with its 11 types and sizes); `create_structural_members` takes a profile by `standard`, `profile_type` and `size` once the root is a Weldment Profiles folder, or by `profile_path` (`size` its file name) from anywhere.
+
+#### Pointing SolidWorks at the folder
+
+Tools > Options > System Options > File Locations > Show folders for: **Weldment Profiles** > Add, and pick the folder that holds the standard folders, the `root` (`D:\Library\Weldment Profiles`, holding `Opus\`). With no `root`, the profiles are built in the first folder listed there, by default SolidWorks' own library (`C:\ProgramData\SOLIDWORKS\SOLIDWORKS 2025\Weldment Profiles`), beside `DIN` and `ISO`.
+
+#### Pierce points
+
+Each sketch has a point at the centre of the outline's box, at its four corners and four edge midpoints, and at the area centroid; points that coincide (a tube's centre and centroid) are one. Structural Member's Locate Profile picks one; `IStructuralMemberFeatureData.LocateProfilePoint` does through the API. Checked live: an RHS 80x60 pierced at its box's corner moved 30 and 40 mm, the corner along its line.
+
+---
+
 ### `create_structural_members`
 
 Put a weldment profile on many segments in one call: columns, beams, truss chords and web members.
@@ -63,7 +138,7 @@ Put a weldment profile on many segments in one call: columns, beams, truss chord
 | `size` | `str` | ✅ | | Profile size as the library names it, e.g. `IPE300`, `HE400B`, `RHS100x100x5` |
 | `standard` | `str?` | — | `None` | Library standard, e.g. `DIN` |
 | `profile_type` | `str?` | — | `None` | Library profile type, e.g. `ipe`, `hea`, `shs` |
-| `profile_path` | `str?` | — | `None` | A `.sldlfp` profile of your own instead of `standard` and `profile_type`; for a file of one size, `size` is its file name |
+| `profile_path` | `str?` | — | `None` | A `.sldlfp` profile of your own instead of `standard` and `profile_type`; for a file of one size (as `build_weldment_profiles` writes), `size` is its file name |
 | `segments` | `list[list[float]]?` | — | `None` | Member axes to draw as a new 3D sketch, each `[x1, y1, z1, x2, y2, z2]` in mm |
 | `segments_file` | `str?` | — | `None` | A `.json` file of segments instead (a list, or `{"segments": [...]}`), such as a lattice generator writes; up to 2000 |
 | `sketch` | `str?` | — | `None` | An existing sketch whose lines and arcs to use instead |

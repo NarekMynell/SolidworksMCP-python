@@ -2001,6 +2001,20 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             input_dict={"params": params},
         )
 
+    async def build_weldment_profiles(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Build weldment profile files, through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "build_weldment_profiles",
+            lambda: self.adapter.build_weldment_profiles(params),
+            # The paths only: a catalog's outlines are too big to log.
+            input_dict={
+                "root": params.get("root"),
+                "paths": [p.get("path") for p in params.get("profiles") or []],
+            },
+        )
+
     async def create_trim_extend(
         self, params: dict[str, Any]
     ) -> AdapterResult[dict[str, Any]]:

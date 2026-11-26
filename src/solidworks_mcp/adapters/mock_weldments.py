@@ -10,10 +10,15 @@ density warning, as it does live.
 The joint check works on the centre lines: members that meet overlap until
 the one that ends on the other is trimmed (or, at a corner of one chain,
 mitred); an end that meets nothing and isn't capped is open.
+
+Profiles built from outlines are small marker files, never SolidWorks parts:
+their outlines are checked as live, and they are skipped, rebuilt and hashed
+as live files are.
 """
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import re
@@ -29,6 +34,10 @@ from .solidworks.weldment_plates import (
     plate_frame,
     write_listing,
 )
+from .solidworks.weldment_profiles import check_outline, digest, pierce_points
+
+#: The first line of a mock profile file: it is no SolidWorks part.
+MOCK_PROFILE_HEADER = b"solidworks-mcp mock weldment profile, not a SolidWorks file\n"
 
 #: ``{standard: {type: {size: kg per metre}}}``, nominal masses.
 SAMPLE_PROFILES: dict[str, dict[str, dict[str, float]]] = {
@@ -249,6 +258,67 @@ class MockWeldmentsMixin:
         return AdapterResult(
             status=AdapterResultStatus.SUCCESS,
             data={**base, "standard": std, "type": kind, "sizes": list(kinds[kind])},
+        )
+
+    async def build_weldment_profiles(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock profiles: a small marker file each, skipped and failed as live.
+
+        The mock has no SolidWorks options, so ``root`` must be given. Each
+        outline is checked as live (a bad one fails alone); the file holds a
+        marker line, then the outline's counts and the properties as JSON, so
+        its SHA-256 changes with them.
+        """
+        if not params.get("root"):
+            return _error(
+                "The mock adapter has no Weldment Profiles folder setting: give root"
+            )
+        root = os.path.abspath(str(params["root"]))
+        overwrite = bool(params.get("overwrite"))
+        defined = str(params.get("define") or "dimensions") == "dimensions"
+        items = []
+        for spec in params.get("profiles") or []:
+            path = str(spec["path"])
+            target = os.path.join(root, *path.split("/"))
+            item: dict[str, Any] = {
+                "path": path,
+                "file": target,
+                "status": "error",
+                "error": None,
+                "seconds": 0.0,
+                "sha256": None,
+                "bytes": None,
+                "definition": None,
+            }
+            try:
+                if os.path.isfile(target) and not overwrite:
+                    item["status"] = "skipped"
+                else:
+                    outline = check_outline(spec["outline"])
+                    body = {
+                        "path": path,
+                        **outline.counts(),
+                        "pierce_points": len(pierce_points(outline)),
+                        "properties": spec.get("properties") or {},
+                    }
+                    os.makedirs(os.path.dirname(target), exist_ok=True)
+                    with open(target, "wb") as handle:
+                        handle.write(
+                            MOCK_PROFILE_HEADER
+                            + json.dumps(
+                                body, sort_keys=True, ensure_ascii=False
+                            ).encode("utf-8")
+                        )
+                    item["status"] = "built"
+                    item["definition"] = "fully defined" if defined else "under defined"
+                item["sha256"], item["bytes"] = digest(target)
+            except (OSError, ValueError) as error:
+                item["error"] = str(error)
+            items.append(item)
+        self._operation_count += 1
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS, data={"root": root, "items": items}
         )
 
     def _profile(self, params: dict[str, Any]) -> tuple[dict[str, str], float] | str:

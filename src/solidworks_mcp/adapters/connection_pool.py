@@ -1852,6 +1852,15 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             lambda adapter: adapter.create_structural_members(params),
         )
 
+    async def build_weldment_profiles(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Build weldment profile files, using pool."""
+        return await self._execute_with_pool(
+            "build_weldment_profiles",
+            lambda adapter: adapter.build_weldment_profiles(params),
+        )
+
     async def create_trim_extend(
         self, params: dict[str, Any]
     ) -> AdapterResult[dict[str, Any]]:

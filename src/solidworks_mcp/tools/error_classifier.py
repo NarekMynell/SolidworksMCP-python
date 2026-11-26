@@ -77,6 +77,7 @@ DEFAULT_RULES: tuple[ErrorRule, ...] = (
             r"not connected to solidworks",
             r"solidworks (application )?(is )?not connected",
             r"solidworks is not running",
+            r"solidworks stopped answering",
         ),
     ),
     ErrorRule(
@@ -273,6 +274,16 @@ DEFAULT_RULES: tuple[ErrorRule, ...] = (
             "the component's place."
         ),
         patterns=(r"No file at .* to replace",),
+    ),
+    ErrorRule(
+        error_type="profiles_not_built",
+        hint=(
+            "Every profile failed. Each one's error is in data.profiles.items and "
+            "in the results file: fix its path or outline in the spec, or close "
+            "the SolidWorks document it names, then build those paths again with "
+            "only."
+        ),
+        patterns=(r"No weldment profile was built",),
     ),
     ErrorRule(
         error_type="not_found",

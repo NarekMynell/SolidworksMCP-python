@@ -40,6 +40,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`build_weldment_profiles`: a materials catalog as SolidWorks weldment
+  profiles, many in one call** (beta). A JSON spec gives each profile its
+  path (`<standard>/<type>/<size>.sldlfp`: a folder per standard and type, a
+  file per size), its exact outline (lines and arcs, mm, holes inside) and
+  its custom properties, which its members' cut-list items take over. Each
+  becomes a library feature part: one sketch on the Front plane with those
+  lines and true arcs and a point at each pierce point (the box's centre,
+  corners and edge midpoints, and the centroid), checked by SolidWorks' own
+  sketch check, saved in a private folder, closed, and only then copied into
+  the library, so a profile that fails leaves no file and a failed overwrite
+  the old one. Each profile is its own SolidWorks operation: a dialog fails
+  that profile alone and a cancelled call stops between profiles. Existing
+  files are skipped unless `overwrite`; each profile's status, time and
+  SHA-256 go in the reply and in `<spec>.results.json` with what the spec says
+  of it, for an upload step (a spec built in parts with `only` keeps one
+  results file). Beta: `define: dimensions` runs Fully Define Sketch, which
+  leaves some outlines under defined (the I-beam of the 11 below). Checked
+  live on SolidWorks 2025 SP4 (`docs/proofs/weldment-profiles.json`): 11
+  catalog profiles (tubes, angle, channel, I-beam, tee, flat and bars), each
+  then a 1000 mm structural member whose volume matched the catalog's area
+  within 0.0001 % and whose cut-list item carried the profile's properties;
+  a member pierced at its box's corner point moved onto it. At the live
+  test's pauses (2.5 s twice per profile) a profile took 8.3 to 12.8 s with
+  `define: dimensions` and 7.1 to 7.7 s with `none`. What SolidWorks took and
+  refused on the way is COM pitfall #48.
 - **`create_weld_beads`: a cosmetic fillet weld on every shop joint, with its
   length.** Inside a weldment every member end landing on a plate or member,
   and every plate edge landing on one, is a shop weld; the tool finds those
@@ -173,7 +198,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refuses a profile of one configuration under that configuration's name
   (`Default`, or the name a template in another language gives): it takes it
   with none, as a library with one file per size is read. A file of one
-  configuration now goes in with none, its `size` its file name.
+  configuration now goes in with none, its `size` its file name (checked
+  live with `Default` and a renamed configuration).
 - **`export_plate_dxfs` cut mirrored members as plates and left stale DXFs.**
   A body mirrored or patterned from a member has no member feature, so two
   mirrored web angles, alone in their cut-list items, came out as plate DXFs.

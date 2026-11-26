@@ -10,6 +10,11 @@ CALLS: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = [
     ("create_vent_holes", ({"members": ["Rails"], "diameter": 12},), {}),
     ("set_feature_folders", ({"rename": {"Plane7": "Splice plane"}},), {}),
     ("check_feature_tree", ({"max_listed": 5},), {}),
+    (
+        "build_weldment_profiles",
+        ({"root": "C:/lib", "profiles": [{"path": "Opus/rhs/80x60x2.7.sldlfp"}]},),
+        {},
+    ),
 ]
 
 IDS = [call[0] for call in CALLS]

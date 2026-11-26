@@ -66,6 +66,16 @@ def classifier() -> ErrorClassifier:
         ("No active model", "no_active_document"),
         ("No active document", "no_active_document"),
         ("Feature not found: Boss-Extrude9", "not_found"),
+        (
+            "No weldment profile was built: 2 failed; each one's error is in "
+            "data.profiles.items",
+            "profiles_not_built",
+        ),
+        (
+            "SolidWorks stopped answering while the profiles were built: "
+            "(-2147023179, 'The interface is unknown.', None, None)",
+            "solidworks_unavailable",
+        ),
         ("Model file not found: C:/x.sldprt", "not_found"),
         ("Configuration 'X' does not exist", "not_found"),
         (

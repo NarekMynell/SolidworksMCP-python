@@ -766,8 +766,9 @@ class SolidWorksWeldmentsMixin:
         """The profile ``params`` name: a library entry, or a file and size.
 
         A file with one configuration is one size, as each file of a library
-        with a file per size is: ``size`` is its file name (or that
-        configuration's), and it goes in with no configuration. ``InsertStructuralWeldment5`` refused such a
+        with a file per size is (``build_weldment_profiles`` writes them):
+        ``size`` is its file name (or that configuration's), and it goes in
+        with no configuration. ``InsertStructuralWeldment5`` refused such a
         file under its configuration's name, ``Default`` or another, and took
         it with an empty one (seen live on 2025 SP4). A file whose
         configurations can't be read goes in with ``size`` as before.

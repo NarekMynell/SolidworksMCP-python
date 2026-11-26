@@ -5,6 +5,7 @@ a profile (IPE, HEB, SHS, RHS, UPN, angle...) from SolidWorks' weldment
 library on many sketch segments, the joint check measures where members run
 into each other or end in the air, end caps close hollow ends, and the cut
 list gives every member's length, end angles, quantity and mass for the shop.
+A materials catalog becomes profiles of that library in one call too.
 """
 
 from __future__ import annotations
@@ -12,17 +13,35 @@ from __future__ import annotations
 import json
 import math
 import os
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from fastmcp import FastMCP
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from ..adapters.base import SolidWorksAdapter
 from ..adapters.solidworks.weldment_cuts import check_cut
 from ..adapters.solidworks.weldment_plates import check_plate, plate_frame
+from ..adapters.solidworks.weldment_profiles import (
+    check_outline,
+    check_path,
+    lost_solidworks,
+    net_area,
+    path_key,
+)
 from .input_compat import CompatInput
 from .tool_boundary import (
     InvalidInputError,
+    ToolOperationError,
+    describe_validation_error,
     normalize_input,
     require_capability,
     require_success,
@@ -159,8 +178,8 @@ class CreateStructuralMembersInput(CompatInput):
     profile_path: str | None = Field(
         default=None,
         description="A .sldlfp profile of your own instead of standard and "
-        "profile_type; for a file of one size (a library with a file per size), "
-        "size is its file name",
+        "profile_type; for a file of one size (a library with a file per size, "
+        "as build_weldment_profiles writes), size is its file name",
     )
     segments: list[Segment] | None = Field(
         default=None,
@@ -572,16 +591,13 @@ class CreatePlatesInput(CompatInput):
         return self
 
 
-def _load(
-    path: str, key: str, spec: type[BaseModel], most: int
-) -> list[dict[str, Any]]:
-    """The items a JSON file holds (a list, or ``{key: [...]}``), each checked by ``spec``.
+def _read_items(path: str, key: str, source: str, most: int | None = None) -> list[Any]:
+    """The items a JSON file holds: a list, or ``{key: [...]}``, unchecked.
 
     Raises:
-        InvalidInputError: The file is missing, isn't JSON, holds too many
-            items, or an item is wrong.
+        InvalidInputError: The file is missing, isn't JSON, holds no list of
+            items, or more than ``most``.
     """
-    source = f"{key}_file"
     if not os.path.isfile(path):
         raise InvalidInputError(f"{source} {path!r} doesn't exist")
     try:
@@ -597,12 +613,25 @@ def _load(
         raise InvalidInputError(
             f'{source} {path!r} must hold a list of {key}, or {{"{key}": [...]}}'
         )
-    if len(data) > most:
+    if most is not None and len(data) > most:
         raise InvalidInputError(
             f"{source} {path!r} has {len(data)} {key}; one call takes {most}: split it"
         )
+    return data
+
+
+def _load(
+    path: str, key: str, spec: type[BaseModel], most: int
+) -> list[dict[str, Any]]:
+    """The items a JSON file holds (a list, or ``{key: [...]}``), each checked by ``spec``.
+
+    Raises:
+        InvalidInputError: The file is missing, isn't JSON, holds too many
+            items, or an item is wrong.
+    """
+    source = f"{key}_file"
     items = []
-    for index, item in enumerate(data):
+    for index, item in enumerate(_read_items(path, key, source, most)):
         try:
             items.append(spec.model_validate(item).model_dump())
         except ValidationError as error:
@@ -1028,6 +1057,450 @@ class GetCutListInput(CompatInput):
     )
 
 
+#: The most profiles one call builds; ``only`` picks some of a bigger spec.
+MAX_PROFILES = 2000
+#: The outline's area (or mass) and the spec's may differ by this share, 0.2 %.
+AREA_TOLERANCE = 0.002
+#: Steel's mass per metre of section, kg per mm² (7850 kg/m³).
+_STEEL_KG_PER_M_PER_MM2 = 7850e-6
+
+
+class BuildWeldmentProfilesInput(CompatInput):
+    """Input schema for building weldment profiles from a catalog.
+
+    Attributes:
+        spec_file (str): The JSON file of profiles.
+        root (str | None): The library folder the paths are under.
+        overwrite (bool): Rebuild profiles whose file exists.
+        only (list[str] | None): Only these paths of the spec.
+        define (str): How each profile's sketch is tied down.
+    """
+
+    spec_file: str = Field(
+        min_length=1,
+        description='A .json file of profiles, {"profiles": [...]}: each a path '
+        "(<standard>/<type>/<size>.sldlfp under root), an outline (outer and holes, "
+        "lines and arcs in mm) and properties; designation, shape, dims, area_mm2 "
+        "and mass_per_m optional",
+    )
+    root: str | None = Field(
+        default=None,
+        description="The library folder the paths go under; default the first "
+        "folder of SolidWorks' Tools > Options > File Locations > Weldment Profiles",
+    )
+    overwrite: bool = Field(
+        default=False,
+        description="Build profiles whose file exists again; false skips them",
+    )
+    only: list[str] | None = Field(
+        default=None,
+        min_length=1,
+        description="Only these paths of the spec, e.g. "
+        "['Opus/angles/L63x40x5.sldlfp']; all of them when omitted",
+    )
+    define: Literal["dimensions", "none"] = Field(
+        default="dimensions",
+        description="'dimensions' runs SolidWorks' Fully Define Sketch on each "
+        "profile's sketch (some outlines stay under defined: each profile's "
+        "definition is reported); 'none' leaves it as drawn, under defined",
+    )
+
+
+class WeldmentProfileSpec(BaseModel):
+    """One profile of a spec file: where its file goes, its outline and properties.
+
+    Attributes:
+        path (str): ``<standard>/<type>/<size>.sldlfp`` under the root.
+        designation (str | None): The catalog's name for the size.
+        shape (str | None): The kind of section.
+        dims (dict[str, Any] | None): The catalog's dimensions.
+        area_mm2 (float | None): The expected area, checked.
+        mass_per_m (float | None): The expected steel mass, checked.
+        outline (dict[str, Any]): The outer loop and the holes.
+        properties (dict[str, str | int | float]): The file's custom properties.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(
+        description="Where the file goes under root: <standard>/<type>/<size>.sldlfp"
+    )
+    designation: str | None = Field(
+        default=None, description="The catalog's name for the size, e.g. '80×60×2.7'"
+    )
+    shape: str | None = Field(
+        default=None, description="The kind of section, e.g. 'rect_tube'"
+    )
+    dims: dict[str, Any] | None = Field(
+        default=None, description="The catalog's dimensions, mm"
+    )
+    area_mm2: float | None = Field(
+        default=None, gt=0, description="The expected area, mm², checked"
+    )
+    mass_per_m: float | None = Field(
+        default=None,
+        gt=0,
+        description="The expected mass of steel (7850 kg/m³), kg/m, checked",
+    )
+    outline: dict[str, Any] = Field(
+        description="outer (counter-clockwise) and holes (clockwise): lists of "
+        'segments, {"k": "line", "a", "b"} or {"k": "arc", "a", "b", "c", "r", '
+        '"ccw"}, mm'
+    )
+    properties: dict[str, str | int | float] = Field(
+        default_factory=dict,
+        description="The file's custom properties; a cut list takes them over",
+    )
+
+    @field_validator("path")
+    @classmethod
+    def _readable_path(cls, path: str) -> str:
+        """A path SolidWorks reads as standard, type and size, with ``/``."""
+        return check_path(path)
+
+    @field_validator("outline")
+    @classmethod
+    def _closed_outline(cls, outline: dict[str, Any]) -> dict[str, Any]:
+        """Closed loops, the outer one counter-clockwise, the holes inside it."""
+        check_outline(outline)
+        return outline
+
+    @field_validator("properties")
+    @classmethod
+    def _named(
+        cls, properties: dict[str, str | int | float]
+    ) -> dict[str, str | int | float]:
+        """Every property has a name."""
+        if any(not name.strip() for name in properties):
+            raise ValueError("every property needs a name")
+        return properties
+
+
+def load_profile_spec(path: str) -> list[Any]:
+    """The profile entries a spec file holds: ``{"profiles": [...]}``, or a list.
+
+    Raises:
+        InvalidInputError: The file is missing, isn't JSON, or holds no profiles.
+    """
+    return _read_items(path, "profiles", "spec_file")
+
+
+def _entry_error(error: ValidationError) -> str:
+    """A spec entry's problems in words: ``outline: outer[3] ends at ...``."""
+    return describe_validation_error(error).replace("Value error, ", "")
+
+
+@dataclass
+class ProfileSelection:
+    """The entries of a spec a call builds.
+
+    Attributes:
+        plans: ``(index, profile)`` for each entry to build, in spec order.
+        refused: Each refused entry's result, by its index in the spec.
+        expected: Each entry's outline area and what the spec says of it, by index.
+        keys: Every entry's path key, in spec order (``profiles[i]`` for one
+            with no path).
+    """
+
+    plans: list[tuple[int, dict[str, Any]]] = field(default_factory=list)
+    refused: dict[int, dict[str, Any]] = field(default_factory=dict)
+    expected: dict[int, dict[str, Any]] = field(default_factory=dict)
+    keys: list[str] = field(default_factory=list)
+
+
+def _refused(path: str, error: str) -> dict[str, Any]:
+    """The result of an entry that was never built."""
+    return {
+        "path": path,
+        "file": None,
+        "status": "error",
+        "error": error,
+        "seconds": 0.0,
+        "sha256": None,
+        "bytes": None,
+        "definition": None,
+    }
+
+
+def select_profiles(entries: list[Any], only: list[str] | None) -> ProfileSelection:
+    """Check each entry ``only`` picks; a bad one is refused alone, with why.
+
+    Two entries for one path are both refused: which one is meant can't be
+    told.
+
+    Raises:
+        InvalidInputError: ``only`` names a path the spec doesn't have.
+    """
+    labels = [
+        e["path"] if isinstance(e, dict) and isinstance(e.get("path"), str) else ""
+        for e in entries
+    ]
+    wanted = {path_key(p) for p in only or []}
+    known = {path_key(label) for label in labels if label}
+    missing = [p for p in only or [] if path_key(p) not in known]
+    if missing:
+        raise InvalidInputError(
+            f"only names {len(missing)} path(s) the spec doesn't have: "
+            f"{', '.join(missing[:5])}; it has {len(entries)} profile(s)"
+        )
+    selection = ProfileSelection(
+        keys=[path_key(label or f"profiles[{i}]") for i, label in enumerate(labels)]
+    )
+    owners: dict[str, list[int]] = {}
+    for index, (entry, label) in enumerate(zip(entries, labels, strict=True)):
+        if wanted and path_key(label) not in wanted:
+            continue
+        name = label or f"profiles[{index}]"
+        try:
+            profile = WeldmentProfileSpec.model_validate(entry)
+        except ValidationError as error:
+            selection.refused[index] = _refused(name, _entry_error(error))
+            continue
+        owners.setdefault(path_key(profile.path), []).append(index)
+        outline = check_outline(profile.outline)
+        properties = {k: str(v) for k, v in profile.properties.items()}
+        selection.expected[index] = {
+            "area_mm2": round(net_area(outline), 4),
+            "expected_area_mm2": profile.area_mm2,
+            "expected_mass_per_m": profile.mass_per_m,
+            "designation": profile.designation,
+            "shape": profile.shape,
+            "dims": profile.dims,
+            "properties": properties,
+        }
+        selection.plans.append(
+            (
+                index,
+                {
+                    "path": profile.path,
+                    "outline": profile.outline,
+                    "properties": properties,
+                },
+            )
+        )
+    for indexes in owners.values():
+        if len(indexes) < 2:
+            continue
+        where = ", ".join(f"profiles[{i}]" for i in indexes)
+        for index in indexes:
+            path = next(p["path"] for i, p in selection.plans if i == index)
+            selection.refused[index] = _refused(
+                path, f"{where} all go to {path}: give each profile its own path"
+            )
+    selection.plans = [(i, p) for i, p in selection.plans if i not in selection.refused]
+    return selection
+
+
+def _mismatch(expected: dict[str, Any]) -> str | None:
+    """Where an outline's area disagrees with the spec's area or steel mass."""
+    area = float(expected["area_mm2"])
+    notes = []
+    given = expected.get("expected_area_mm2")
+    if given and abs(area - given) > AREA_TOLERANCE * given:
+        notes.append(
+            f"the outline's area is {area:g} mm², area_mm2 says {given:g} "
+            f"({(area - given) / given * 100:+.2f} %)"
+        )
+    mass = expected.get("expected_mass_per_m")
+    if mass and abs(area * _STEEL_KG_PER_M_PER_MM2 - mass) > AREA_TOLERANCE * mass:
+        steel = area * _STEEL_KG_PER_M_PER_MM2
+        notes.append(
+            f"its steel weighs {steel:.4f} kg/m, mass_per_m says {mass:g} "
+            f"({(steel - mass) / mass * 100:+.2f} %)"
+        )
+    return "; ".join(notes) or None
+
+
+def results_path(spec_file: str) -> str:
+    """The results file beside a spec: ``profiles.json`` -> ``profiles.results.json``."""
+    base, extension = os.path.splitext(spec_file)
+    return (base if extension.lower() == ".json" else spec_file) + ".results.json"
+
+
+def merged_results(
+    path: str, keys: list[str], items: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], str | None]:
+    """This call's results, with what an earlier call wrote for the spec's other profiles.
+
+    A spec built in parts (``only``) keeps one results file listing every
+    profile built so far, in spec order; a profile no longer in the spec
+    drops out.
+
+    Args:
+        path: The results file.
+        keys: The spec's path keys, in order.
+        items: This call's results.
+
+    Returns:
+        tuple[list[dict[str, Any]], str | None]: The results to write, and a
+        note when the old file couldn't be read (it is then replaced).
+    """
+    now = {path_key(i["path"]): i for i in items}
+    old: dict[str, dict[str, Any]] = {}
+    note = None
+    if os.path.isfile(path):
+        try:
+            with open(path, encoding="utf-8-sig") as handle:
+                earlier = json.load(handle).get("profiles") or []
+            old = {
+                path_key(i["path"]): i
+                for i in earlier
+                if isinstance(i, dict) and isinstance(i.get("path"), str)
+            }
+        except (OSError, ValueError, AttributeError) as error:
+            note = (
+                f"the old results file couldn't be read ({error}); it now lists "
+                "this call's profiles only"
+            )
+    listed = []
+    for key in dict.fromkeys(keys):
+        if key in now or key in old:
+            listed.append(now.get(key) or old[key])
+    return listed, note
+
+
+def write_results(path: str, document: dict[str, Any]) -> str | None:
+    """Write the results file for an upload step; why it couldn't be, or None."""
+    try:
+        with open(path, "w", encoding="utf-8", newline="\n") as handle:
+            json.dump(document, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+    except OSError as error:
+        return f"the results file couldn't be written: {error}"
+    return None
+
+
+#: The fields of each profile in the tool's reply; the results file has every field.
+_REPLY_FIELDS = ("path", "status", "error", "seconds", "sha256")
+
+
+def profile_reply(
+    spec_file: str,
+    root: str | None,
+    selection: ProfileSelection,
+    found: dict[int, dict[str, Any]],
+    define: str,
+    execution_time: float,
+) -> dict[str, Any]:
+    """The tool's reply for one call, with the results file written beside the spec.
+
+    Args:
+        spec_file: The spec, absolute.
+        root: The library folder the profiles went to (None when none was built).
+        selection: What the spec asked for.
+        found: Each entry's result by its index in the spec: built, skipped
+            or refused.
+        define: The call's ``define``.
+        execution_time: The adapter's time.
+
+    Returns:
+        dict[str, Any]: ``status``, ``message``, ``profiles`` and, when
+        something needs a look, ``warning``.
+
+    Raises:
+        ToolOperationError: No profile was built or skipped; ``data.profiles``
+            still has every result and the results file was written.
+    """
+    written = datetime.now(UTC).isoformat(timespec="seconds")
+    items = []
+    mismatched = []
+    for index in sorted(found):
+        item = {**found[index], **selection.expected.get(index, {}), "at": written}
+        if item["status"] == "built":
+            item["define"] = define
+        note = _mismatch(item) if index in selection.expected else None
+        if note:
+            item["warning"] = note
+            mismatched.append(f"{item['path']}: {note}")
+        items.append(item)
+    counts = {
+        status: sum(1 for i in items if i["status"] == status)
+        for status in ("built", "skipped", "error")
+    }
+    results_file: str | None = results_path(spec_file)
+    listed, unread = merged_results(str(results_file), selection.keys, items)
+    unwritten = write_results(
+        str(results_file),
+        {
+            "spec_file": spec_file,
+            "root": root,
+            "written": written,
+            "built": sum(1 for i in listed if i["status"] == "built"),
+            "skipped": sum(1 for i in listed if i["status"] == "skipped"),
+            "failed": sum(1 for i in listed if i["status"] == "error"),
+            "profiles": listed,
+        },
+    )
+    notes = [n for n in (unread, unwritten) if n]
+    if unwritten:
+        results_file = None
+    payload = {
+        "root": root,
+        "spec_file": spec_file,
+        "results_file": results_file,
+        "built": counts["built"],
+        "skipped": counts["skipped"],
+        "failed": counts["error"],
+        "seconds": round(sum(float(i.get("seconds") or 0.0) for i in items), 2),
+        "items": [
+            {
+                **{k: i.get(k) for k in _REPLY_FIELDS},
+                **({"warning": i["warning"]} if i.get("warning") else {}),
+            }
+            for i in items
+        ],
+    }
+    failed = [i for i in items if i["status"] == "error"]
+    gone = next((i for i in failed if lost_solidworks(i["error"])), None)
+    if failed and not counts["built"] and not counts["skipped"]:
+        raise ToolOperationError(
+            f"SolidWorks stopped answering while the profiles were built: "
+            f"{gone['error']}; restart it (and the MCP server) and build again"
+            if gone
+            else f"No weldment profile was built: {len(failed)} failed; each "
+            "one's error is in data.profiles.items",
+            execution_time=execution_time,
+            data={"profiles": payload, "notes": notes},
+        )
+    if gone:
+        notes.insert(
+            0,
+            f"SolidWorks stopped answering at {gone['path']}: restart it (and the "
+            "MCP server), then build the failed paths again with only",
+        )
+    if failed:
+        notes.append(
+            f"{len(failed)} profile(s) failed: "
+            + "; ".join(f"{i['path']}: {i['error']}" for i in failed[:3])
+        )
+    if mismatched:
+        notes.append(
+            f"{len(mismatched)} outline(s) disagree with their area_mm2 or "
+            f"mass_per_m by more than {AREA_TOLERANCE * 100:g} %: "
+            + "; ".join(mismatched[:3])
+        )
+    loose = [
+        i["path"]
+        for i in items
+        if i["status"] == "built" and i.get("definition") != "fully defined"
+    ]
+    if loose and define == "dimensions":
+        notes.append(
+            f"{len(loose)} sketch(es) Fully Define Sketch left under defined "
+            "(the profiles work the same): " + ", ".join(loose[:10])
+        )
+    reply: dict[str, Any] = {
+        "status": "success",
+        "message": f"Built {counts['built']}, skipped {counts['skipped']}, failed "
+        f"{counts['error']} of {len(items)} weldment profile(s) under {root}",
+        "profiles": payload,
+        "execution_time": execution_time,
+    }
+    if notes:
+        reply["warning"] = "; ".join(notes).rstrip(".") + "."
+    return reply
+
+
 async def register_weldment_tools(
     mcp: FastMCP, adapter: SolidWorksAdapter, config: Any
 ) -> int:
@@ -1092,6 +1565,75 @@ async def register_weldment_tools(
             "profiles": data,
             "execution_time": result.execution_time,
         }
+
+    @mcp.tool()
+    async def build_weldment_profiles(
+        input_data: BuildWeldmentProfilesInput,
+    ) -> dict[str, Any]:
+        """Build weldment profiles (.sldlfp) from exact section outlines, many in one call: a materials catalog as a SolidWorks profile library.
+
+        Use it to make a catalog's tubes, angles, channels, beams and bars
+        into profiles for `create_structural_members` (`profile_path`, or
+        `standard` and `profile_type` once `root` is a SolidWorks profile
+        folder). `spec_file` lists them: each a `path`
+        (`<standard>/<type>/<size>.sldlfp`), an `outline` (lines and arcs,
+        mm, outer loop counter-clockwise, holes clockwise) and `properties`
+        for the cut list. Each becomes a part: one Front-plane sketch of those
+        lines and true arcs with points to pierce at (box centre, corners,
+        edge midpoints, centroid), saved and closed. A bad profile fails
+        alone and leaves no file; existing files are skipped unless
+        `overwrite`. Needs: SolidWorks running. Changes: writes the files and
+        `<spec>.results.json`. Returns: `profiles` with `root`,
+        `results_file`, `built`, `skipped`, `failed` and `items` (each
+        `path`, `status`, `error`, `seconds`, `sha256`).
+
+        Args:
+            input_data: `spec_file` is required; `root` (SolidWorks' profile
+                folder), `overwrite` (false), `only` and `define` have
+                defaults.
+
+        Returns:
+            dict[str, Any]: What was built, skipped or failed, per profile.
+        """
+        input_data = normalize_input(input_data, BuildWeldmentProfilesInput)
+        require_capability(
+            adapter,
+            "build_weldment_profiles",
+            "Active adapter can't build weldment profiles",
+        )
+        spec_file = os.path.abspath(input_data.spec_file)
+        selection = select_profiles(load_profile_spec(spec_file), input_data.only)
+        if len(selection.plans) > MAX_PROFILES:
+            raise InvalidInputError(
+                f"{len(selection.plans)} profiles in one call; it takes "
+                f"{MAX_PROFILES}: give only, or split the spec"
+            )
+        found: dict[int, dict[str, Any]] = dict(selection.refused)
+        root = os.path.abspath(input_data.root) if input_data.root else None
+        execution_time = 0.0
+        if selection.plans:
+            result = await adapter.build_weldment_profiles(
+                {
+                    "root": root,
+                    "overwrite": input_data.overwrite,
+                    "define": input_data.define,
+                    "profiles": [profile for _, profile in selection.plans],
+                }
+            )
+            require_success(result, context="Failed to build the weldment profiles")
+            data = result.data or {}
+            root = data.get("root") or root
+            execution_time = result.execution_time or 0.0
+            found.update(
+                zip(
+                    (index for index, _ in selection.plans),
+                    data.get("items") or [],
+                    strict=True,
+                )
+            )
+        return profile_reply(
+            spec_file, root, selection, found, input_data.define, execution_time
+        )
 
     @mcp.tool()
     async def create_structural_members(
@@ -1624,4 +2166,4 @@ async def register_weldment_tools(
             reply["warning"] = warning
         return reply
 
-    return 11
+    return 13

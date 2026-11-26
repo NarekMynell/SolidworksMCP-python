@@ -1364,3 +1364,76 @@ through the selection (`SketchAddConstraints`) and proven by the relation count
 going up (`sketch._point_relation`). Pass entities to `AddRelation` as a
 `VARIANT(VT_ARRAY | VT_DISPATCH, ...)`; a plain Python list makes SolidWorks
 throw "The server threw an exception".
+
+---
+
+## 48. Weldment profiles: what SolidWorks 2025 takes and what it refuses
+
+Found building `build_weldment_profiles` on SolidWorks 2025 SP4 from a
+catalog's sections (an RHS, a channel and an I-beam with arcs rounded to
+1e-4 mm, round tubes as two half arcs). `tests/live/test_live_sw_weldment_profiles.py`
+repeats what the tool relies on and writes `docs/proofs/weldment-profiles.json`;
+the points marked *(exploring)* were seen once while finding the way and no
+test repeats them.
+
+- **Saving a profile.** A new part (`ISldWorks.NewPart`) with one sketch,
+  the sketch selected, saved by `IModelDocExtension.SaveAs2(path, 0,
+  swSaveAsOptions_Silent, <VT_DISPATCH null>, "", False, errors, warnings)` to
+  a `.sldlfp` path, is a library feature part: reopened, its tree holds
+  `LibFeat1` (`LibraryFeature`) with the sketch under it. *(exploring)* The
+  same with nothing selected and through `IModelDoc2.SaveAs3`; it overwrites
+  an existing file without asking, and a new file's extension comes out in
+  capitals (`80x60x2.7.SLDLFP`). The tool saves in a private folder and copies
+  the file into the library under the spelling asked for.
+- **Closing it.** *(exploring)* `IModelDoc2.Close` is not implemented
+  (E_NOTIMPL). SolidWorks opens no second document with the file name of one
+  already open (`OpenDoc6` returned nothing), but a new part saved under that
+  name saved, and `ISldWorks.CloseDoc` with the name then closed the other
+  document, leaving the new one open; `CloseDoc` with the full path closed the
+  right one. So a profile whose file name is open is refused, and the tool's
+  part is closed by its path once saved; the live test finds no document left
+  open, an unsaved one included, after a profile SolidWorks refused.
+- **Inserting it.** Such a file has the template's one configuration
+  (`Default` here). `IFeatureManager.InsertStructuralWeldment5(path, 1, True,
+  groups, "Default")` returns nothing, and so does the configuration renamed
+  (`Размер 40×4`) under its new name; with `""` both insert the member, its
+  volume per mm the catalog's area. `create_structural_members` passed the
+  size as the configuration, so a `profile_path` of one size never went in; a
+  file of one configuration now goes in with `""`.
+- **Arcs.** *(exploring)* `ISketchManager.CreateArc(centre, start, end,
+  direction)` with an end 1e-4 mm off its circle returned an object but drew
+  no arc: the channel's two root arcs were missing,
+  `ISketch.CheckFeatureUse` said `swSketchCheckFeatureStatus_ZeroLengthEnt`
+  and the sketch had no region. `Create3PointArc(start, end, mid)` puts the
+  ends exactly where the lines start and end, so the loop closes; the centre
+  moves by the rounding (1.2e-4 mm). The live test checks each sketch's
+  lines and arcs against its outline, and `CheckFeatureUse`
+  (`swSketchCheckFeature_SWEEPSECTION`) must find no fault and one closed
+  contour per loop: a self-crossing outline fails with
+  `swSketchCheckFeatureStatus_EntXEnt` ("two entities cross").
+- **Defining it.** `sketch_define.define_sketch` (Fully Define Sketch, then a
+  tie to the origin) leaves 10 of the 11 fully defined; the I-beam's stays
+  under defined. The member and its volume are the same either way.
+  *(exploring)* `SketchAddConstraints("sgFIXED")` with every segment and point
+  selected added no relation. Fully Define Sketch's helpers switch four
+  settings off (`swUserPreferenceToggle_e` 10, 372, 520 and 100); the tool
+  puts them back when the call ends (switched on before it, they are on after).
+- **Pierce points.** `ISketch.GetSketchPoints2` lists the points the tool
+  adds, with the segments' ends and the arc centres. They come through to the
+  member's profile sketch at the same coordinates: setting one as
+  `IStructuralMemberFeatureData.LocateProfilePoint` (after
+  `AccessSelections`) and calling `IFeature.ModifyDefinition` moved an RHS
+  80x60 member 30 and 40 mm, its box's corner along its line.
+  *(exploring)* `GetConnectionPoints` listed none of them: it belongs to
+  members placed between points.
+- **Custom properties** at file level (`Description`, `Opus code`,
+  `Material`) come through to the member's cut-list item.
+- **A failure kept as an exception keeps the part's dispatches.** The
+  traceback's frames hold them, in a cycle through the frame that kept it,
+  until a garbage collection; collected after the adapter's
+  `CoUninitialize`, they broke the next connection in the process: after a
+  profile SolidWorks refused, every call of the next live test failed with
+  RPC_S_UNKNOWN_IF ("The interface is unknown", 0x800706B5), its parts left
+  open. Keep a failure as its text (a unit test checks the part is let go
+  without a collection); the batch stops on that error, as on a lost
+  SolidWorks.

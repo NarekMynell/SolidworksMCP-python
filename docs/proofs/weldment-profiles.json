@@ -1,0 +1,667 @@
+{
+  "check": "tests/live/test_live_sw_weldment_profiles.py",
+  "tests": {
+    "catalog": {
+      "ran": "2026-11-26T14:13:50+00:00",
+      "solidworks": "33.4.0",
+      "pauses_s": {
+        "after_call": 1.0,
+        "after_document": 2.5
+      },
+      "passed": true,
+      "define": "dimensions",
+      "tolerance_percent": 0.2,
+      "checks": {
+        "11 built": true,
+        "results in spec order": true,
+        "files as asked": true,
+        "areas within 0.2 %": true,
+        "cut lists carry the properties": true,
+        "library reader": true
+      },
+      "seconds_total": 104.68,
+      "library": {
+        "standards": [
+          "Opus"
+        ],
+        "types": {
+          "angles": [
+            "L63x40x5"
+          ],
+          "bars-hex": [
+            "S24"
+          ],
+          "bars-round": [
+            "20"
+          ],
+          "bars-square": [
+            "16"
+          ],
+          "channels": [
+            "[10У"
+          ],
+          "chs-welded": [
+            "57x3.5"
+          ],
+          "flat-bars": [
+            "40x4"
+          ],
+          "i-beams": [
+            "I20"
+          ],
+          "rhs-welded": [
+            "80x60x2.7"
+          ],
+          "tees": [
+            "T25x25x3"
+          ],
+          "tubes-other": [
+            "60x30x1.5"
+          ]
+        }
+      },
+      "profiles": [
+        {
+          "path": "Opus/rhs-welded/80x60x2.7.sldlfp",
+          "status": "built",
+          "seconds": 12.77,
+          "definition": "fully defined",
+          "sha256": "d55f6b88e24ae93b25b8f7c2848eb7487717f623d7e50f822bc1a7d65f7258bd",
+          "spelling_as_asked": true,
+          "file": {
+            "library_feature_holds_the_sketch": true,
+            "lines_and_arcs": [
+              8,
+              8
+            ],
+            "outline_lines_and_arcs": [
+              8,
+              8
+            ],
+            "pierce_points": 9,
+            "pierce_points_missing": [],
+            "properties_as_given": true,
+            "configurations": [
+              "Default"
+            ]
+          },
+          "file_ok": true,
+          "area_mm2": 708.0666,
+          "member_volume_per_mm": 708.0666,
+          "deviation_percent": 0.0,
+          "cut_list_has_the_properties": true
+        },
+        {
+          "path": "Opus/chs-welded/57x3.5.sldlfp",
+          "status": "built",
+          "seconds": 8.6,
+          "definition": "fully defined",
+          "sha256": "38e94c9884ffae92884b34f291a8f3b041f9547d621eceb0a94e70559f4a1746",
+          "spelling_as_asked": true,
+          "file": {
+            "library_feature_holds_the_sketch": true,
+            "lines_and_arcs": [
+              0,
+              4
+            ],
+            "outline_lines_and_arcs": [
+              0,
+              4
+            ],
+            "pierce_points": 9,
+            "pierce_points_missing": [],
+            "properties_as_given": true,
+            "configurations": [
+              "Default"
+            ]
+          },
+          "file_ok": true,
+          "area_mm2": 588.2632,
+          "member_volume_per_mm": 588.2632,
+          "deviation_percent": 0.0,
+          "cut_list_has_the_properties": true
+        },
+        {
+          "path": "Opus/tubes-other/60x30x1.5.sldlfp",
+          "status": "built",
+          "seconds": 9.92,
+          "definition": "fully defined",
+          "sha256": "a8895decca7effbb3646bbb8edbbc09236b7f93cc2e8c7652c3efd4f0e06adfb",
+          "spelling_as_asked": true,
+          "file": {
+            "library_feature_holds_the_sketch": true,
+            "lines_and_arcs": [
+              4,
+              4
+            ],
+            "outline_lines_and_arcs": [
+              4,
+              4
+            ],
+            "pierce_points": 9,
+            "pierce_points_missing": [],
+            "properties_as_given": true,
+            "configurations": [
+              "Default"
+            ]
+          },
+          "file_ok": true,
+          "area_mm2": 224.3031,
+          "member_volume_per_mm": 224.3031,
+          "deviation_percent": -1e-05,
+          "cut_list_has_the_properties": true
+        },
+        {
+          "path": "Opus/angles/L63x40x5.sldlfp",
+          "status": "built",
+          "seconds": 9.14,
+          "definition": "fully defined",
+          "sha256": "5849f0f05d210742775ba1794ab1e65c246af9afa6c4346ce96f9bd181540ae6",
+          "spelling_as_asked": true,
+          "file": {
+            "library_feature_holds_the_sketch": true,
+            "lines_and_arcs": [
+              6,
+              3
+            ],
+            "outline_lines_and_arcs": [
+              6,
+              3
+            ],
+            "pierce_points": 10,
+            "pierce_points_missing": [],
+            "properties_as_given": true,
+            "configurations": [
+              "Default"
+            ]
+          },
+          "file_ok": true,
+          "area_mm2": 498.245,
+          "member_volume_per_mm": 498.245,
+          "deviation_percent": 0.0,
+          "cut_list_has_the_properties": true
+        },
+        {
+          "path": "Opus/channels/[10У.sldlfp",
+          "status": "built",
+          "seconds": 9.55,
+          "definition": "fully defined",
+          "sha256": "2572f4a43ae59daa2b2bae0cbba2b2f6d24ebf466898aff10d224eeb0b61098a",
+          "spelling_as_asked": true,
+          "file": {
+            "library_feature_holds_the_sketch": true,
+            "lines_and_arcs": [
+              8,
+              4
+            ],
+            "outline_lines_and_arcs": [
+              8,
+              4
+            ],
+            "pierce_points": 10,
+            "pierce_points_missing": [],
+            "properties_as_given": true,
+            "configurations": [
+              "Default"
+            ]
+          },
+          "file_ok": true,
+          "area_mm2": 1094.3539,
+          "member_volume_per_mm": 1094.3537,
+          "deviation_percent": -2e-05,
+          "cut_list_has_the_properties": true
+        },
+        {
+          "path": "Opus/i-beams/I20.sldlfp",
+          "status": "built",
+          "seconds": 12.54,
+          "definition": "under defined",
+          "sha256": "e606eb6dd6d09ae0b9c8fbb161d4e33abfae982cdbc061a51abf70ee20e9dc41",
+          "spelling_as_asked": true,
+          "file": {
+            "library_feature_holds_the_sketch": true,
+            "lines_and_arcs": [
+              12,
+              8
+            ],
+            "outline_lines_and_arcs": [
+              12,
+              8
+            ],
+            "pierce_points": 10,
+            "pierce_points_missing": [],
+            "properties_as_given": true,
+            "configurations": [
+              "Default"
+            ]
+          },
+          "file_ok": true,
+          "area_mm2": 2680.6027,
+          "member_volume_per_mm": 2680.6009,
+          "deviation_percent": -7e-05,
+          "cut_list_has_the_properties": true
+        },
+        {
+          "path": "Opus/tees/T25x25x3.sldlfp",
+          "status": "built",
+          "seconds": 8.72,
+          "definition": "fully defined",
+          "sha256": "12e238c1daefdd8c522caa2797105076e958169d384a9d838a5b7b06a7f6d901",
+          "spelling_as_asked": true,
+          "file": {
+            "library_feature_holds_the_sketch": true,
+            "lines_and_arcs": [
+              8,
+              0
+            ],
+            "outline_lines_and_arcs": [
+              8,
+              0
+            ],
+            "pierce_points": 10,
+            "pierce_points_missing": [],
+            "properties_as_given": true,
+            "configurations": [
+              "Default"
+            ]
+          },
+          "file_ok": true,
+          "area_mm2": 141.0,
+          "member_volume_per_mm": 141.0,
+          "deviation_percent": 0.0,
+          "cut_list_has_the_properties": true
+        },
+        {
+          "path": "Opus/flat-bars/40x4.sldlfp",
+          "status": "built",
+          "seconds": 8.35,
+          "definition": "fully defined",
+          "sha256": "73daf78625a3f853986b56a2b59c197e292b400732f861e6acca85f433cb1d8a",
+          "spelling_as_asked": true,
+          "file": {
+            "library_feature_holds_the_sketch": true,
+            "lines_and_arcs": [
+              4,
+              0
+            ],
+            "outline_lines_and_arcs": [
+              4,
+              0
+            ],
+            "pierce_points": 9,
+            "pierce_points_missing": [],
+            "properties_as_given": true,
+            "configurations": [
+              "Default"
+            ]
+          },
+          "file_ok": true,
+          "area_mm2": 160.0,
+          "member_volume_per_mm": 160.0,
+          "deviation_percent": 0.0,
+          "cut_list_has_the_properties": true
+        },
+        {
+          "path": "Opus/bars-round/20.sldlfp",
+          "status": "built",
+          "seconds": 8.29,
+          "definition": "fully defined",
+          "sha256": "b1fcceb9054c20c0258f8fb5e814f0a2d50b501d320ad77389b7dae4c859f661",
+          "spelling_as_asked": true,
+          "file": {
+            "library_feature_holds_the_sketch": true,
+            "lines_and_arcs": [
+              0,
+              2
+            ],
+            "outline_lines_and_arcs": [
+              0,
+              2
+            ],
+            "pierce_points": 9,
+            "pierce_points_missing": [],
+            "properties_as_given": true,
+            "configurations": [
+              "Default"
+            ]
+          },
+          "file_ok": true,
+          "area_mm2": 314.1593,
+          "member_volume_per_mm": 314.1593,
+          "deviation_percent": -1e-05,
+          "cut_list_has_the_properties": true
+        },
+        {
+          "path": "Opus/bars-square/16.sldlfp",
+          "status": "built",
+          "seconds": 8.3,
+          "definition": "fully defined",
+          "sha256": "a6092012d68075d2f2cded49f7d2b8591e6f94758aff01bc3b95025bc19b9dcc",
+          "spelling_as_asked": true,
+          "file": {
+            "library_feature_holds_the_sketch": true,
+            "lines_and_arcs": [
+              4,
+              0
+            ],
+            "outline_lines_and_arcs": [
+              4,
+              0
+            ],
+            "pierce_points": 9,
+            "pierce_points_missing": [],
+            "properties_as_given": true,
+            "configurations": [
+              "Default"
+            ]
+          },
+          "file_ok": true,
+          "area_mm2": 256.0,
+          "member_volume_per_mm": 256.0,
+          "deviation_percent": 0.0,
+          "cut_list_has_the_properties": true
+        },
+        {
+          "path": "Opus/bars-hex/S24.sldlfp",
+          "status": "built",
+          "seconds": 8.5,
+          "definition": "fully defined",
+          "sha256": "dabbc1805f7c56115c104379180481889a90af10b5bc69faaeab068e913a2042",
+          "spelling_as_asked": true,
+          "file": {
+            "library_feature_holds_the_sketch": true,
+            "lines_and_arcs": [
+              6,
+              0
+            ],
+            "outline_lines_and_arcs": [
+              6,
+              0
+            ],
+            "pierce_points": 9,
+            "pierce_points_missing": [],
+            "properties_as_given": true,
+            "configurations": [
+              "Default"
+            ]
+          },
+          "file_ok": true,
+          "area_mm2": 498.8306,
+          "member_volume_per_mm": 498.8304,
+          "deviation_percent": -4e-05,
+          "cut_list_has_the_properties": true
+        }
+      ]
+    },
+    "skip_overwrite_refused": {
+      "ran": "2026-11-26T14:18:48+00:00",
+      "solidworks": "33.4.0",
+      "pauses_s": {
+        "after_call": 1.0,
+        "after_document": 2.5
+      },
+      "passed": true,
+      "checks": {
+        "first builds both": true,
+        "again skips both, files unchanged": true,
+        "overwrite with define none builds it under defined": true,
+        "the crossed outline fails alone": true,
+        "no file for the failed profile": true,
+        "the results file lists all three": true,
+        "no document left open, unsaved ones included": true,
+        "settings put back": true,
+        "default root is the first Weldment Profiles folder": true
+      },
+      "first": [
+        {
+          "path": "Opus/angles/L63x40x5.sldlfp",
+          "status": "built",
+          "seconds": 11.85,
+          "sha256": "dbeebba1248bed45da3e4f1508767d6d61a6636f0119b3922a334e0ccf8c6273",
+          "error": null
+        },
+        {
+          "path": "Opus/flat-bars/40x4.sldlfp",
+          "status": "built",
+          "seconds": 8.33,
+          "sha256": "6a1aff1f2bfef80c2982f1c023874752116949b345cdef0e3eacb38963d1003d",
+          "error": null
+        }
+      ],
+      "again": [
+        {
+          "path": "Opus/angles/L63x40x5.sldlfp",
+          "status": "skipped",
+          "seconds": 0.01,
+          "sha256": "dbeebba1248bed45da3e4f1508767d6d61a6636f0119b3922a334e0ccf8c6273",
+          "error": null
+        },
+        {
+          "path": "Opus/flat-bars/40x4.sldlfp",
+          "status": "skipped",
+          "seconds": 0.0,
+          "sha256": "6a1aff1f2bfef80c2982f1c023874752116949b345cdef0e3eacb38963d1003d",
+          "error": null
+        }
+      ],
+      "overwrite_define_none": [
+        {
+          "path": "Opus/angles/L63x40x5.sldlfp",
+          "status": "built",
+          "seconds": 7.33,
+          "sha256": "9f41fb3daa10a040b7f6df193462be1821c8f9d8622b21c6593e4ae3a10da8ec",
+          "error": null
+        }
+      ],
+      "overwrite_all": [
+        {
+          "path": "Opus/angles/L63x40x5.sldlfp",
+          "status": "built",
+          "seconds": 9.47,
+          "sha256": "e49d58d5e41f09235af825a4455ff8f75627a978d8ea3ad334fe07d06ec73c17",
+          "error": null
+        },
+        {
+          "path": "Opus/flat-bars/40x4.sldlfp",
+          "status": "built",
+          "seconds": 8.28,
+          "sha256": "352b69ae732b0db76b38ddc44f347f72e3f14511d360e3b2a6995f5e3484e0c0",
+          "error": null
+        },
+        {
+          "path": "Opus/angles/crossed.sldlfp",
+          "status": "error",
+          "seconds": 8.28,
+          "sha256": null,
+          "error": "SolidWorks' check of the sketch as a profile found two entities cross, 0 open and 0 closed contour(s) for 1 loop(s)"
+        }
+      ],
+      "warning": "1 profile(s) failed: Opus/angles/crossed.sldlfp: SolidWorks' check of the sketch as a profile found two entities cross, 0 open and 0 closed contour(s) for 1 loop(s). Beta: `define: dimensions` leaves some outlines under defined (an I-beam of the 11 checked live); those profiles work the same.",
+      "open_documents_before": [],
+      "open_documents_after": [],
+      "settings_before": {
+        "10": true,
+        "372": true,
+        "520": true,
+        "100": true
+      },
+      "settings_after": {
+        "10": true,
+        "372": true,
+        "520": true,
+        "100": true
+      },
+      "users_settings_restored": {
+        "10": false,
+        "372": false,
+        "520": false,
+        "100": false
+      }
+    },
+    "define_none": {
+      "ran": "2026-11-26T14:16:24+00:00",
+      "solidworks": "33.4.0",
+      "pauses_s": {
+        "after_call": 1.0,
+        "after_document": 2.5
+      },
+      "passed": true,
+      "define": "none",
+      "checks": {
+        "11 built": true,
+        "all under defined": true
+      },
+      "seconds_total": 80.5,
+      "profiles": [
+        {
+          "path": "Opus/rhs-welded/80x60x2.7.sldlfp",
+          "status": "built",
+          "seconds": 7.57,
+          "definition": "under defined"
+        },
+        {
+          "path": "Opus/chs-welded/57x3.5.sldlfp",
+          "status": "built",
+          "seconds": 7.14,
+          "definition": "under defined"
+        },
+        {
+          "path": "Opus/tubes-other/60x30x1.5.sldlfp",
+          "status": "built",
+          "seconds": 7.29,
+          "definition": "under defined"
+        },
+        {
+          "path": "Opus/angles/L63x40x5.sldlfp",
+          "status": "built",
+          "seconds": 7.31,
+          "definition": "under defined"
+        },
+        {
+          "path": "Opus/channels/[10У.sldlfp",
+          "status": "built",
+          "seconds": 7.49,
+          "definition": "under defined"
+        },
+        {
+          "path": "Opus/i-beams/I20.sldlfp",
+          "status": "built",
+          "seconds": 7.71,
+          "definition": "under defined"
+        },
+        {
+          "path": "Opus/tees/T25x25x3.sldlfp",
+          "status": "built",
+          "seconds": 7.32,
+          "definition": "under defined"
+        },
+        {
+          "path": "Opus/flat-bars/40x4.sldlfp",
+          "status": "built",
+          "seconds": 7.11,
+          "definition": "under defined"
+        },
+        {
+          "path": "Opus/bars-round/20.sldlfp",
+          "status": "built",
+          "seconds": 7.1,
+          "definition": "under defined"
+        },
+        {
+          "path": "Opus/bars-square/16.sldlfp",
+          "status": "built",
+          "seconds": 7.13,
+          "definition": "under defined"
+        },
+        {
+          "path": "Opus/bars-hex/S24.sldlfp",
+          "status": "built",
+          "seconds": 7.33,
+          "definition": "under defined"
+        }
+      ]
+    },
+    "renamed_configuration": {
+      "ran": "2026-11-26T14:19:23+00:00",
+      "solidworks": "33.4.0",
+      "pauses_s": {
+        "after_call": 1.0,
+        "after_document": 2.5
+      },
+      "passed": true,
+      "checks": {
+        "renamed and saved": true,
+        "SolidWorks refuses it under Default": true,
+        "and under its new name": true,
+        "and takes it with none": true,
+        "member area within 0.2 %": true,
+        "cut list carries the properties": true
+      },
+      "configuration_was": "Default",
+      "configurations_now": [
+        "Размер 40×4"
+      ],
+      "member_volume_per_mm": 160.0,
+      "area_mm2": 160.0,
+      "deviation_percent": 0.0
+    },
+    "pierce_point": {
+      "ran": "2026-11-26T14:19:52+00:00",
+      "solidworks": "33.4.0",
+      "pauses_s": {
+        "after_call": 1.0,
+        "after_document": 2.5
+      },
+      "passed": true,
+      "checks": {
+        "modified": true,
+        "same size": true,
+        "moved 30 and 40 mm across the line": true,
+        "the corner runs along the line": true
+      },
+      "pierce_point_mm": [
+        -30.0,
+        -40.0
+      ],
+      "box_before_mm": {
+        "min": [
+          -30.0,
+          -0.0,
+          -40.0
+        ],
+        "max": [
+          30.0,
+          1000.0,
+          40.0
+        ],
+        "size": [
+          60.0,
+          1000.0,
+          80.0
+        ]
+      },
+      "box_after_mm": {
+        "min": [
+          0.0,
+          0.0,
+          -80.0
+        ],
+        "max": [
+          60.0,
+          1000.0,
+          -0.0
+        ],
+        "size": [
+          60.0,
+          1000.0,
+          80.0
+        ]
+      },
+      "centre_moved_mm": [
+        30.0,
+        0.0,
+        -40.0
+      ]
+    }
+  }
+}

@@ -1936,6 +1936,22 @@ class SolidWorksAdapter(ABC):
             error="create_structural_members is not implemented by this adapter",
         )
 
+    async def build_weldment_profiles(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Build weldment profile files from section outlines.
+
+        Args:
+            params (dict[str, Any]): The profiles, the root and the options.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: Each profile's result, or error.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="build_weldment_profiles is not implemented by this adapter",
+        )
+
     async def create_trim_extend(
         self, params: dict[str, Any]
     ) -> AdapterResult[dict[str, Any]]:

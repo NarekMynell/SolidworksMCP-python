@@ -176,6 +176,7 @@ TOOL_HINTS: dict[str, ToolHints] = {
     "set_component_position": _sets("Set Component Position"),
     # weldments
     "list_weldment_profiles": _reads("List Weldment Profiles"),
+    "build_weldment_profiles": _overwrites("Build Weldment Profiles"),
     "create_structural_members": _adds("Create Structural Members"),
     "create_trim_extend": _adds("Create Trim Extend"),
     "check_joints": _reads("Check Joints"),

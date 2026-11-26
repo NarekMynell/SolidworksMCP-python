@@ -100,6 +100,9 @@ python -m venv .venv
 - Default local path: run non-`solidworks_only` tests first.
 - Real integration path: run `dev-test-full` on Windows with SolidWorks available.
 - Harness and generated report artifacts may write under `tests/.generated/` and `.solidworks_mcp/`.
+- A live test that proves a requirement with numbers writes its receipt to
+  `docs/proofs/` itself (`test_live_sw_weldment_profiles.py` writes
+  `weldment-profiles.json`); commit it with the change it proves.
 - Test layout mirrors `src/` (enforced by `tests/integration/test_test_layout.py`):
   - `src/solidworks_mcp/<path>/<module>.py` →
     `tests/solidworks_mcp/<path>/test_<module>[_<topic>].py`

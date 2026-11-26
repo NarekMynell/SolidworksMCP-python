@@ -65,8 +65,10 @@ Worked sequences for parts, assemblies and drawings:
 Build them as a weldment, not as sketched and extruded parts:
 `create_structural_members` puts a library profile (IPE, HEB, SHS, angles;
 `list_weldment_profiles` finds the exact size name) on many centre lines in
-one call, `create_trim_extend` trims members where they meet (joists coped
-to beams, mitred corners), `check_joints` proves no member runs into another
+one call (a section no standard has, such as a catalog's own:
+`build_weldment_profiles` makes profiles from exact outlines first),
+`create_trim_extend` trims members where they meet (joists coped to beams,
+mitred corners), `check_joints` proves no member runs into another
 and lists the open ends `create_end_caps` closes, and `get_cut_list` gives
 the shop's cutting list
 with lengths, angles and masses. A plate's DXF for the cutting table comes

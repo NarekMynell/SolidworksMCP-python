@@ -1,9 +1,9 @@
 {
  "tools": {
-  "total": 173,
+  "total": 174,
   "by_level": {
    "stable": 165,
-   "beta": 0,
+   "beta": 1,
    "experimental": 0,
    "planned": 0,
    "deprecated": 8
@@ -232,6 +232,13 @@
     "level": "stable",
     "reason": "",
     "summary": "Dimension one drawing view with SolidWorks' auto-dimension (baseline or chain)."
+   },
+   {
+    "name": "build_weldment_profiles",
+    "family": "weldments",
+    "level": "beta",
+    "reason": "`define: dimensions` leaves some outlines under defined (an I-beam of the 11 checked live); those profiles work the same.",
+    "summary": "Build weldment profiles (.sldlfp) from exact section outlines, many in one call: a materials catalog as a SolidWorks profile library."
    },
    {
     "name": "calculate_mass_properties",
@@ -1225,11 +1232,11 @@
  "com": {
   "type_library": "83A33D31-27C5-11CE-BFD4-00400513BB57x0x34x0",
   "core": {
-   "covered": 317,
+   "covered": 318,
    "total": 2838
   },
   "api": {
-   "covered": 375,
+   "covered": 376,
    "total": 5985
   },
   "interfaces": [
@@ -1612,6 +1619,7 @@
     "name": "ISketch",
     "covered": [
      "AutoDimension",
+     "CheckFeatureUse",
      "GetConstrainedStatus",
      "GetLineCount",
      "GetSketchContours",

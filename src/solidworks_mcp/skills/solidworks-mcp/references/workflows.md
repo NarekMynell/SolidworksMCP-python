@@ -123,7 +123,11 @@ profiles sketched and extruded one by one.
 2. `list_weldment_profiles` with `query` for each size: `HEB160` finds DIN
    `HE160B` (type `hea`), `IPE240` type `ipe`, `L50x5` the equal angle
    `L50x50x5`, `100x100x5` a hollow section. Use the `standard`, `type`
-   and `size` it returns.
+   and `size` it returns. A section the library doesn't have (a materials
+   catalog's own): `build_weldment_profiles` builds profiles from exact
+   outlines, many in one call, from a JSON spec; then give
+   `create_structural_members` the file as `profile_path` and its file name
+   as `size`.
 3. `create_part`, then `create_structural_members` once per kind of
    member: columns, beams, joists, bracing, each with its own `name`. Give
    all the members of a kind as `segments` in one call; a continuous member
