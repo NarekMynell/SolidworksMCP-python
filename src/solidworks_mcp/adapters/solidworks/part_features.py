@@ -18,6 +18,7 @@ COM argument lists and enum values come from the installed type libraries
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Callable
 from typing import Any, cast
 
@@ -65,6 +66,63 @@ HOLE_END_CONDITIONS: dict[str, int] = {"blind": 0, "through_all": 1}
 
 #: ``swCosmeticThreadType_e``.
 THREAD_END_TYPES: dict[str, int] = {"blind": 0, "up_to_next": 1, "through": 2}
+
+#: ISO 261 coarse pitches (mm) by nominal diameter. SolidWorks' ISO and DIN
+#: thread tables name a coarse thread without its pitch ("M8"); asked for
+#: "M8x1.25", they store the first pitched M8 row, M8x1.0 (#274, fixed in 2.2.0; live on
+#: SW 2026).
+ISO_COARSE_PITCH: dict[float, float] = {
+    1.0: 0.25, 1.2: 0.25, 1.4: 0.3, 1.6: 0.35, 2.0: 0.4, 2.5: 0.45, 3.0: 0.5,
+    3.5: 0.6, 4.0: 0.7, 5.0: 0.8, 6.0: 1.0, 7.0: 1.0, 8.0: 1.25, 10.0: 1.5,
+    12.0: 1.75, 14.0: 2.0, 16.0: 2.0, 18.0: 2.5, 20.0: 2.5, 22.0: 2.5,
+    24.0: 3.0, 27.0: 3.0, 30.0: 3.5, 33.0: 3.5, 36.0: 4.0, 39.0: 4.0,
+    42.0: 4.5, 45.0: 4.5, 48.0: 5.0, 52.0: 5.0, 56.0: 5.5, 60.0: 5.5,
+    64.0: 6.0,
+}  # fmt: skip
+
+#: Standards whose thread tables list coarse threads without a pitch.
+_METRIC_THREAD_STANDARDS = {"iso", "din"}
+
+
+# Added in 2.2.0 (#274).
+def thread_table_size(size: str, standard: str) -> str:
+    """The spelling SolidWorks' thread table has for ``size``.
+
+    ``M8x1.25`` is the ISO coarse M8, which the ISO and DIN tables list as
+    ``M8``; any other size (a fine pitch, an inch size) is kept.
+    """
+    if standard not in _METRIC_THREAD_STANDARDS:
+        return size
+    pitched = re.fullmatch(
+        r"\s*[Mm]\s*(\d+(?:\.\d+)?)\s*[xX]\s*(\d+(?:\.\d+)?)\s*", size
+    )
+    if not pitched:
+        return size
+    diameter, pitch = float(pitched.group(1)), float(pitched.group(2))
+    if ISO_COARSE_PITCH.get(diameter) == pitch:
+        return f"M{pitched.group(1)}"
+    return size
+
+
+# Added in 2.2.0 (#274): what SolidWorks stored, read back.
+def _stored_thread(adapter: Any, feature: Any) -> dict[str, str | None]:
+    """The size and callout SolidWorks stored for a cosmetic thread."""
+    data = adapter._attempt(
+        lambda: sw_type_info.flagged(
+            sw_type_info.flagged(feature, "IFeature").GetDefinition(),
+            "ICosmeticThreadFeatureData",
+        ),
+        default=None,
+    )
+    size = adapter._attempt(lambda: data.Size, default=None) if data else None
+    callout = (
+        adapter._attempt(lambda: data.ThreadCallout, default=None) if data else None
+    )
+    return {
+        "stored_size": str(size) if size else None,
+        "callout": str(callout) if callout else None,
+    }
+
 
 #: Selection marks.
 _MARK_DIR1 = 1
@@ -134,13 +192,19 @@ def _cap_thread_depth(
 def _thread_size(standard: str, size: str) -> tuple[str, str | None]:
     """A thread size as the standard's table spells it, and a warning when it couldn't be checked.
 
+    The Hole Wizard library's own table decides; without the library the ISO
+    coarse spelling (:func:`thread_table_size`) is sent, unchecked.
+
     Raises:
         HoleSizeError: For a size the table doesn't have; names the nearest.
     """
     try:
         library = find_library()
     except HoleLibraryError as exc:
-        return size, f"The thread size wasn't checked: {exc}"
+        return (
+            thread_table_size(size, standard),
+            f"The thread size wasn't checked: {exc}",
+        )
     return library.thread_size(standard, size), None
 
 
@@ -268,6 +332,8 @@ def _place_holes(
     ``positions_mm`` (as clicking on the Hole Wizard's Positions tab does),
     and the sketch closed, which rebuilds the hole at every point. The points
     are read back, so a hole that isn't where it was asked for is an error.
+    With the hole already exactly there and nothing to add, the sketch isn't
+    opened (2.2.0).
 
     Args:
         adapter: The connected adapter.
@@ -284,9 +350,11 @@ def _place_holes(
         ValueError: A point that is off the face's plane.
         RuntimeError: When the sketch didn't take every point exactly.
     """
-    sketch_feature, sketch, first, _gap = _position_sketch(
+    sketch_feature, sketch, first, gap = _position_sketch(
         adapter, feature, [_mm(v) for v in first_mm]
     )
+    if gap <= _PLACED_TOLERANCE_M and not positions_mm:
+        return len(_sketch_points(adapter, sketch))
     targets = [list(first_mm), *(list(p) for p in positions_mm)]
     local = [_to_sketch(adapter, sketch, [_mm(v) for v in p]) for p in targets]
     for point, at in zip(targets[1:], local[1:], strict=True):
@@ -970,15 +1038,8 @@ class SolidWorksPartFeaturesMixin:
                 )
             # What SolidWorks stored, not what was asked: it falls back to the
             # first row of the diameter when it finds no row of the size.
-            stored = adapter._attempt(
-                lambda: sw_type_info.flagged(
-                    sw_type_info.flagged(feature, "IFeature").GetDefinition(),
-                    "ICosmeticThreadFeatureData",
-                ),
-                default=None,
-            )
-            kept = adapter._attempt(lambda: str(stored.Size), default=None)
-            callout = adapter._attempt(lambda: str(stored.ThreadCallout), default=None)
+            stored = _stored_thread(adapter, feature)
+            kept = stored["stored_size"]
             data: dict[str, Any] = {
                 "name": _feature_name(adapter, feature),
                 "size": kept or spelled,
@@ -986,12 +1047,14 @@ class SolidWorksPartFeaturesMixin:
                 "diameter_mm": float(diameter),
                 "end_type": end_type,
                 "depth_mm": depth,
+                **stored,
             }
-            if callout:
-                data["callout"] = callout
-            if kept and kept != spelled:
+            if (
+                kept
+                and kept.replace(" ", "").lower() != spelled.replace(" ", "").lower()
+            ):
                 data["warning"] = (
-                    f"SolidWorks stored the thread as {kept}, not {spelled}: check "
+                    f"SolidWorks stored the thread as {kept}, not {size}: check "
                     "the size against list_hole_sizes (tapped)"
                 )
             elif unread:

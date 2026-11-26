@@ -498,9 +498,7 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             input_dict={"save": save},
         )
 
-    async def save_file(
-        self, file_path: str | None = None, copy: bool = False
-    ) -> AdapterResult[None]:
+    async def save_file(self, file_path: str | None = None) -> AdapterResult[None]:
         """Save model through circuit breaker.
 
         Args:
@@ -511,8 +509,17 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
         """
         return await self._execute_with_circuit_breaker(
             "save_file",
-            lambda: self.adapter.save_file(file_path, copy),
-            input_dict={"file_path": file_path, "copy": copy},
+            lambda: self.adapter.save_file(file_path),
+            input_dict={"file_path": file_path},
+        )
+
+    # Added in 2.2.0 (#276).
+    async def save_copy(self, file_path: str) -> AdapterResult[dict[str, Any]]:
+        """Write a copy and keep the original open, through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "save_copy",
+            lambda: self.adapter.save_copy(file_path),
+            input_dict={"file_path": file_path},
         )
 
     async def create_base_flange(
@@ -1616,6 +1623,18 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             lambda: self.adapter.replace_component(component, file_path, all_instances),
         )
 
+    # Forwarded since 2.2.0 (#267: it raised AttributeError before reaching
+    # SolidWorks).
+    async def pack_and_go_assembly(
+        self, source_path: str, target_dir: str
+    ) -> AdapterResult[dict[str, Any]]:
+        """Copy an assembly and its files into one folder, through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "pack_and_go_assembly",
+            lambda: self.adapter.pack_and_go_assembly(source_path, target_dir),
+            input_dict={"source_path": source_path, "target_dir": target_dir},
+        )
+
     async def set_component_appearance(
         self,
         component: str,
@@ -2090,18 +2109,6 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             "pattern_members",
             lambda: self.adapter.pattern_members(params),
             input_dict={"params": params},
-        )
-
-    async def pack_and_go_assembly(
-        self, source_path: str, target_dir: str
-    ) -> AdapterResult[dict[str, Any]]:
-        """Copy an assembly with every file it uses, through circuit breaker."""
-        return await self._execute_with_circuit_breaker(
-            "pack_and_go_assembly",
-            lambda: self.adapter.pack_and_go_assembly(
-                source_path=source_path, target_dir=target_dir
-            ),
-            input_dict={"source_path": source_path, "target_dir": target_dir},
         )
 
     async def get_cut_list(

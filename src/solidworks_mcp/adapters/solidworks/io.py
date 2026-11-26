@@ -14,7 +14,14 @@ from ...exceptions import InputRefused
 from ...utils.sw_dependencies import dependency_paths
 from .. import sw_type_info as _sw_type_info
 from ..base import AdapterResult, AdapterResultStatus, MassProperties, SolidWorksModel
-from .com_utils import as_list, string_array
+from . import default_entities
+from .com_utils import (
+    SAVE_AS_COPY,
+    SAVE_AS_CURRENT_VERSION,
+    SAVE_AS_SILENT,
+    as_list,
+    string_array,
+)
 from .configurations import (
     SPECIFY_CONFIGURATION,
     THIS_CONFIGURATION,
@@ -47,6 +54,20 @@ _MATE_ALIGNMENTS: dict[str, int] = {
     "aligned": 0,
     "anti_aligned": 1,
     "closest": 2,
+}
+
+#: What each ``swAddMateError_e`` refusal means, and what to try.
+#: Added in 2.2.0 (#264): why SolidWorks refused a mate, by swAddMateError_e.
+_MATE_ERRORS: dict[int, str] = {
+    2: "The two entities can't take this mate type.",
+    3: "The alignment doesn't fit these entities; try alignment 'closest'.",
+    4: "The selection is wrong for this mate: check both entities.",
+    5: (
+        "The mate conflicts with the mates already there (over-defined). A "
+        "concentric mate's 'aligned' compares the cylinders' axis "
+        "directions, which depend on how each feature was built and can flip "
+        "the part against an earlier mate; try alignment 'closest'."
+    ),
 }
 
 
@@ -157,7 +178,9 @@ def _view_names(adapter: Any, drawing: Any) -> list[str]:
     return names
 
 
-def _load_model_for_views(adapter: Any, path: str, shown_as: str) -> str | None:
+def _load_model_for_views(
+    adapter: Any, path: str, shown_as: str
+) -> tuple[Any, str | None]:
     """Load the model a drawing's views show, then give the drawing the focus back.
 
     A view of a model needs it loaded: ``CreateDrawViewFromModelView3``
@@ -172,9 +195,10 @@ def _load_model_for_views(adapter: Any, path: str, shown_as: str) -> str | None:
         shown_as: The path as the caller gave it, for the error.
 
     Returns:
-        str | None: The model's title when this call gave it a window (close
-        it with :func:`_close_loaded_model` once the views are placed), or
-        ``None`` when it had a window of its own already.
+        tuple[Any, str | None]: The model's ``IModelDoc2`` (its own view
+        names are read from it), and its title when this call gave it a
+        window (close it with :func:`_close_loaded_model` once the views are
+        placed), or ``None`` when it had a window of its own already.
 
     Raises:
         Exception: When SolidWorks won't open the model.
@@ -206,11 +230,11 @@ def _load_model_for_views(adapter: Any, path: str, shown_as: str) -> str | None:
         adapter._attempt(lambda: bool(was_open.Visible), default=True)
     )
     if shown:
-        return None
+        return opened, None
     title = adapter._attempt(
         lambda: _sw_type_info.flagged(opened, "IModelDoc2").GetTitle(), default=None
     )
-    return str(title) if title else None
+    return opened, str(title) if title else None
 
 
 def _close_loaded_model(adapter: Any, title: str | None) -> None:
@@ -223,11 +247,9 @@ def _close_loaded_model(adapter: Any, title: str | None) -> None:
         adapter._attempt(lambda: adapter.swApp.CloseDoc(title), default=None)
 
 
-#: ``swSaveAsOptions_e`` (values from the installed constants library): no
-#: dialogs; a copy, the open document keeping its name; the modified documents
-#: it uses saved with it.
-_SAVE_SILENT = 1
-_SAVE_AS_COPY = 2
+#: ``swSaveAsOptions_SaveReferenced`` (value from the installed constants
+#: library): the modified documents a save uses are saved with it. The silent
+#: and copy flags are ``com_utils.SAVE_AS_SILENT`` and ``SAVE_AS_COPY``.
 _SAVE_REFERENCED = 4
 #: Documents that use others: an assembly (2) and a drawing (3).
 _USES_OTHERS = frozenset({2, 3})
@@ -242,7 +264,7 @@ def _save_options(adapter: Any, copy: bool = False) -> int:
     assembly's rebuild marks every component modified, so a save after it hung
     a headless run for 30 minutes (SolidWorks 2025 SP4, seen live).
     """
-    options = _SAVE_SILENT | (_SAVE_AS_COPY if copy else 0)
+    options = SAVE_AS_SILENT | (SAVE_AS_COPY if copy else 0)
     if _doc_type(adapter) in _USES_OTHERS:
         options |= _SAVE_REFERENCED
     return options
@@ -2339,19 +2361,15 @@ class SolidWorksIOMixin:
             adapter._handle_com_operation("set_units", _apply),
         )
 
-    async def save_file(
-        self, file_path: str | None = None, copy: bool = False
-    ) -> AdapterResult[None]:
+    async def save_file(self, file_path: str | None = None) -> AdapterResult[None]:
         """Save the active model to its current path or to a new file path.
 
         A new path is a real Save As: the open document takes the new name,
-        and an open assembly using it follows it. With ``copy`` the file is
-        written as a copy (``swSaveAsOptions_Copy``): the open document, and
-        what references it, keep the old name (#276).
+        and an open assembly using it follows it. :meth:`save_copy` writes a
+        copy instead, the open document keeping its name (#276).
 
         Args:
             file_path: Optional target path for Save As.
-            copy: Write a copy; the open document keeps its name.
 
         Returns:
             AdapterResult[None]: Result of the save operation.
@@ -2406,15 +2424,13 @@ class SolidWorksIOMixin:
 
                 # Deliberately no os.remove here: SaveAs3 overwrites, and
                 # deleting first meant a failed save destroyed the old file too.
-                options = _save_options(adapter, copy)
+                # File > Save As, the open document becomes the new file
+                # (save_copy is the copy); silent, with what it uses.
                 save_as3_result = adapter.currentModel.SaveAs3(
-                    resolved_path, 0, options
+                    resolved_path, SAVE_AS_CURRENT_VERSION, _save_options(adapter)
                 )
                 if not self._is_success(save_as3_result):
-                    # The old SaveAs can't write a copy: with copy it isn't tried.
-                    save_as = (
-                        None if copy else getattr(adapter.currentModel, "SaveAs", None)
-                    )
+                    save_as = getattr(adapter.currentModel, "SaveAs", None)
                     if not callable(save_as) or not self._is_success(
                         save_as(resolved_path)
                     ):
@@ -2453,6 +2469,74 @@ class SolidWorksIOMixin:
         return cast(
             AdapterResult[None],
             adapter._handle_com_operation("save_file", _save),
+        )
+
+    # Added in 2.2.0 (#276).
+    async def save_copy(self, file_path: str) -> AdapterResult[dict[str, Any]]:
+        """Write a copy of the active document and keep working on the original.
+
+        ``IModelDoc2.SaveAs3(path, 0, swSaveAsOptions_Copy)``: File > Save As
+        with "Save as copy and continue" (#276, fixed in 2.2.0). The open document keeps its
+        own path, so an assembly using it still uses it. Silent, and an
+        assembly or a drawing saves the modified documents it uses with it, as
+        :func:`_save_options` gives every save (no dialog waits on an answer).
+
+        Args:
+            file_path: Where to write the copy; not the document's own path.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``file_path``, ``current_path``
+            (the path the open document has afterwards) and
+            ``kept_original`` (whether that is still its own path).
+        """
+        adapter = self._adapter(self)
+        if not adapter.currentModel:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="No active model"
+            )
+        resolved = os.path.abspath(file_path)
+
+        def _path() -> str:
+            return str(
+                adapter._attempt(
+                    lambda: adapter._get_attr_or_call(
+                        adapter.currentModel, "GetPathName"
+                    ),
+                    default="",
+                )
+                or ""
+            )
+
+        def _same(a: str, b: str) -> bool:
+            return os.path.normcase(os.path.abspath(a)) == os.path.normcase(
+                os.path.abspath(b)
+            )
+
+        def _copy() -> dict[str, Any]:
+            before = _path()
+            if before and _same(before, resolved):
+                raise ValueError(
+                    f"{resolved} is the open document's own path; save it with "
+                    "save_file, or give the copy another path."
+                )
+            os.makedirs(os.path.dirname(resolved) or ".", exist_ok=True)
+            returned = adapter.currentModel.SaveAs3(
+                resolved, SAVE_AS_CURRENT_VERSION, _save_options(adapter, copy=True)
+            )
+            if not os.path.exists(resolved):
+                raise Exception(
+                    f"No copy was written at {resolved} (SaveAs3 returned {returned})."
+                )
+            after = _path()
+            return {
+                "file_path": resolved,
+                "current_path": after or None,
+                "kept_original": _same(after, before) if before and after else None,
+            }
+
+        return cast(
+            AdapterResult[dict[str, Any]],
+            adapter._handle_com_operation("save_copy", _copy),
         )
 
     async def rebuild_model(
@@ -3172,8 +3256,13 @@ class SolidWorksIOMixin:
                         adapter, model, wrapped, component_name, point, index > 0
                     )
                     continue
+                # A default plane is found in the component's own tree, in
+                # any language (#262, fixed in 2.2.0).
+                local_name = default_entities.entity_name(
+                    adapter, entity_name, owner=wrapped
+                )
                 feature = adapter._attempt(
-                    lambda w=wrapped, e=entity_name: w.FeatureByName(e), default=None
+                    lambda w=wrapped, e=local_name: w.FeatureByName(e), default=None
                 )
                 if feature is None:
                     raise Exception(
@@ -3225,10 +3314,14 @@ class SolidWorksIOMixin:
             # swAddMateError_e reports 1 for success on this build (measured:
             # a mate that demonstrably moved a component returned 1).
             if mate is None or (error_status not in (None, 1)):
+                reason = (
+                    _MATE_ERRORS.get(error_status)
+                    if isinstance(error_status, int)
+                    else None
+                ) or "Check the two entities can actually satisfy this mate type."
                 raise Exception(
                     f"SolidWorks rejected the {mate_key} mate "
-                    f"(error status {error_status!r}). Check the two entities "
-                    "can actually satisfy this mate type."
+                    f"(error status {error_status!r}). {reason}"
                 )
 
             transforms_after = _component_transforms(adapter, assembly)
@@ -3476,17 +3569,15 @@ class SolidWorksIOMixin:
             y = float(_first(data, "position_y", "y", default=150.0))
 
         # With no orientation, a view_type that names a view ("top",
-        # "isometric") is the orientation; any other ("orthographic") is front
-        # (#256: view_type alone used to leave every view a front view).
-        view_type = str(_first(data, "view_type", default="")).strip().lower()
+        # "isometric", or a model view's own "*Name") is the orientation; any
+        # other ("orthographic") is front (#256: view_type alone used to leave
+        # every view a front view; #262, fixed in 2.2.0: "*Isometrisch" fell back to front).
+        view_type = str(_first(data, "view_type", default="")).strip()
+        names_a_view = view_type.lower() in _NAMED_VIEWS or view_type.startswith("*")
         requested = str(
-            _first(
-                data,
-                "orientation",
-                default=view_type if view_type in _NAMED_VIEWS else "front",
-            )
-        )
-        view_name = _NAMED_VIEWS.get(requested.strip().lower())
+            _first(data, "orientation", default=view_type if names_a_view else "front")
+        ).strip()
+        view_name = _NAMED_VIEWS.get(requested.lower())
         if view_name is None and requested.startswith("*"):
             view_name = requested
         if view_name is None:
@@ -3510,11 +3601,17 @@ class SolidWorksIOMixin:
             drawing = _sw_type_info.flagged(adapter.currentModel, "IDrawingDoc")
             before = _view_names(adapter, drawing)
 
-            loaded = _load_model_for_views(adapter, path, str(model_path))
+            opened, loaded = _load_model_for_views(adapter, path, str(model_path))
             try:
+                # A standard view goes by the model's own name for it, read
+                # from its view list by position, so it is right in any
+                # language (#262, fixed in 2.2.0).
+                local_view = default_entities.standard_view_name(
+                    adapter, opened, view_name
+                )
                 view = adapter._attempt(
                     lambda: drawing.CreateDrawViewFromModelView3(
-                        path, view_name, x / 1000.0, y / 1000.0, 0.0
+                        path, local_view, x / 1000.0, y / 1000.0, 0.0
                     ),
                     default=None,
                 )
@@ -3526,7 +3623,7 @@ class SolidWorksIOMixin:
                 raise Exception(
                     f"View was not created - the sheet still has {len(after)} "
                     f"view(s). Check that '{model_path}' opens on its own and "
-                    f"that '{view_name}' is a valid named view for it."
+                    f"that '{local_view}' is a valid named view for it."
                 )
 
             added = [n for n in after if n not in before]
@@ -3666,7 +3763,7 @@ class SolidWorksIOMixin:
             drawing = _sw_type_info.flagged(adapter.currentModel, "IDrawingDoc")
             before = _view_names(adapter, drawing)
 
-            loaded = _load_model_for_views(adapter, path, str(model_path))
+            _opened, loaded = _load_model_for_views(adapter, path, str(model_path))
             try:
                 created = adapter._attempt(
                     lambda: (
@@ -3825,11 +3922,13 @@ class SolidWorksIOMixin:
                 "text": text,
                 "position": {"x": x, "y": y},
                 "positioned": positioned,
+                "extent_mm": (
+                    None if extent is None else [round(v, 1) for v in extent]
+                ),
                 "font_size_points": font_points or None,
                 "text_height_mm": height_mm,
             }
             if extent is not None:
-                result["extent_mm"] = [round(v, 1) for v in extent]
                 sheet = adapter._attempt(
                     lambda: adapter._sheet_bounds(
                         _sw_type_info.flagged(model, "IDrawingDoc")

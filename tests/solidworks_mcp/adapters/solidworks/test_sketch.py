@@ -236,6 +236,192 @@ def test_create_sketch_reports_plane_selection_failure() -> None:
     assert "Failed to select plane" in (result.error or "")
 
 
+@pytest.mark.parametrize(
+    ("raw", "state", "fully"),
+    [
+        (2, "under_defined", False),
+        (3, "fully_defined", True),
+        (4, "over_defined", False),
+        (1, "unknown", None),
+    ],
+)
+def test_check_sketch_reads_get_constrained_status(raw, state, fully) -> None:
+    """#268: the old probes named members SolidWorks doesn't have."""
+    adapter = _FakeSketchAdapter()
+    adapter.currentModel = SimpleNamespace(GetActiveSketch2=lambda: None)
+    adapter.currentSketch = SimpleNamespace(GetConstrainedStatus=lambda: raw)
+
+    result = sketch._check_sketch_fully_defined_impl(adapter)
+
+    assert result.data["definition_state"] == state
+    assert result.data["is_fully_defined"] is fully
+    assert result.data["source"] == "ISketch.GetConstrainedStatus"
+    assert result.data["raw_status"] == raw
+
+
+def test_check_sketch_by_name_reads_the_features_sketch() -> None:
+    adapter = _FakeSketchAdapter()
+    sketch_obj = SimpleNamespace(GetConstrainedStatus=lambda: 3)
+    feature = SimpleNamespace(GetSpecificFeature2=lambda: sketch_obj)
+    adapter.currentModel = SimpleNamespace(
+        FeatureByName=lambda name: feature if name == "Sketch1" else None
+    )
+
+    result = sketch._check_sketch_fully_defined_impl(adapter, "Sketch1")
+
+    assert result.data["definition_state"] == "fully_defined"
+
+
+@pytest.mark.parametrize("raw", [None, True, 99, "3"])
+def test_an_unreadable_constrained_status_is_unknown(raw) -> None:
+    """#268: a status that isn't a swConstrainedStatus_e value says nothing."""
+    sketch_obj = SimpleNamespace(GetConstrainedStatus=lambda: raw)
+
+    state, fully, _raw = sketch.definition_state(sketch_obj)
+
+    assert (state, fully) == ("unknown", None)
+
+
+def test_no_sketch_object_has_no_constrained_status() -> None:
+    assert sketch.definition_state(None) == ("unknown", None, None)
+
+
+class TestRelationEntities:
+    """#269: the origin and a segment's end points can take a relation."""
+
+    ORIGIN_POINT = object()
+
+    def _adapter(
+        self, points: list[Any] | None = None, origin_sketch: bool = True
+    ) -> _FakeSketchAdapter:
+        adapter = _FakeSketchAdapter()
+        origin_points = [self.ORIGIN_POINT] if points is None else points
+        sketch_obj = SimpleNamespace(GetSketchPoints2=lambda: origin_points)
+        origin = SimpleNamespace(
+            GetTypeName2=lambda: "OriginProfileFeature",
+            GetSpecificFeature2=lambda: sketch_obj if origin_sketch else None,
+            GetNextFeature=lambda: None,
+        )
+        plane = SimpleNamespace(
+            GetTypeName2=lambda: "RefPlane", GetNextFeature=lambda: origin
+        )
+        asked: list[str] = []
+        adapter.currentModel = SimpleNamespace(
+            FirstFeature=lambda: plane,
+            FeatureByName=lambda name: asked.append(name),
+            asked=asked,
+        )
+        start, end = object(), object()
+        adapter._sketch_entities = {
+            "Line_1": SimpleNamespace(
+                GetStartPoint2=lambda: start, GetEndPoint2=lambda: end
+            ),
+            "Arc_2": SimpleNamespace(GetStartPoint2=lambda: None),
+        }
+        adapter.points = (start, end)  # type: ignore[attr-defined]
+        return adapter
+
+    def test_the_origin_by_identity(self) -> None:
+        """The origin feature found by its type: no translated name is asked."""
+        adapter = self._adapter()
+
+        assert sketch._sketch_reference(adapter, " Origin ") == (
+            self.ORIGIN_POINT,
+            True,
+        )
+        assert adapter.currentModel.asked == []
+
+    def test_an_origin_without_a_point(self) -> None:
+        with pytest.raises(LookupError, match="has no point to relate to"):
+            sketch._sketch_reference(self._adapter(points=[]), "origin")
+
+    def test_no_origin_feature(self) -> None:
+        adapter = self._adapter()
+        adapter.currentModel.FirstFeature = lambda: None
+
+        with pytest.raises(LookupError, match="no origin"):
+            sketch._sketch_reference(adapter, "origin")
+
+    def test_an_origin_without_a_sketch(self) -> None:
+        with pytest.raises(LookupError, match="has no point"):
+            sketch._sketch_reference(self._adapter(origin_sketch=False), "origin")
+
+    def test_end_points(self) -> None:
+        adapter = self._adapter()
+        start, end = adapter.points  # type: ignore[attr-defined]
+
+        assert sketch._sketch_reference(adapter, "Line_1.start") == (start, True)
+        assert sketch._sketch_reference(adapter, "Line_1.END") == (end, True)
+        assert sketch._sketch_reference(adapter, "Line_1") == (
+            adapter._sketch_entities["Line_1"],
+            False,
+        )
+
+    def test_a_segment_without_that_point(self) -> None:
+        with pytest.raises(Exception, match="'Arc_2' has no start point"):
+            sketch._sketch_reference(self._adapter(), "Arc_2.start")
+
+    @pytest.mark.parametrize("entity_id", ["Line_9", "Line_9.start", "Line_1.middle"])
+    def test_unknown_ids_name_what_is_accepted(self, entity_id: str) -> None:
+        with pytest.raises(Exception, match=r"'origin'"):
+            sketch._sketch_reference(self._adapter(), entity_id)
+
+
+def _german_part(looked_up: list[str]) -> SimpleNamespace:
+    """A German part's tree; FeatureByName finds only its own names."""
+    names = ("Ebene vorne", "Ebene oben", "Ebene rechts")
+    origin = SimpleNamespace(
+        GetTypeName2=lambda: "OriginProfileFeature",
+        Name="Ursprung",
+        GetNextFeature=lambda: None,
+    )
+    first: Any = origin
+    for name in reversed(names):
+        first = SimpleNamespace(
+            GetTypeName2=lambda: "RefPlane", Name=name, GetNextFeature=lambda n=first: n
+        )
+    tree = first
+
+    def _by_name(name: str) -> Any:
+        looked_up.append(name)
+        return SimpleNamespace(Select2=lambda *_a: True) if name in names else None
+
+    return SimpleNamespace(
+        FirstFeature=lambda: tree,
+        FeatureByName=_by_name,
+        Extension=SimpleNamespace(SelectByID2=lambda *args: False),
+        SketchManager=SimpleNamespace(InsertSketch=lambda *_args: None),
+        GetActiveSketch2=lambda: None,
+    )
+
+
+@pytest.mark.parametrize(
+    ("plane", "opened_on"),
+    [("Top", "Ebene oben"), ("Front Plane", "Ebene vorne"), ("YZ", "Ebene rechts")],
+)
+def test_a_sketch_on_a_german_part_opens_on_its_own_plane(plane, opened_on) -> None:
+    """#262: ``Top`` failed on German SolidWorks ("Typenkonflikt")."""
+    adapter = _FakeSketchAdapter()
+    looked_up: list[str] = []
+    adapter.currentModel = _german_part(looked_up)
+
+    assert sketch._create_sketch_impl(adapter, plane).is_success
+    assert looked_up == [opened_on]
+
+
+def test_a_missing_plane_is_never_swapped_for_a_default() -> None:
+    """Before #262 a plane that wasn't found fell through to Top/Front/Right."""
+    adapter = _FakeSketchAdapter()
+    looked_up: list[str] = []
+    adapter.currentModel = _german_part(looked_up)
+
+    result = sketch._create_sketch_impl(adapter, "Plane7")
+
+    assert result.status == AdapterResultStatus.ERROR
+    assert "Failed to select plane: Plane7: not found" in (result.error or "")
+    assert looked_up == ["Plane7"]
+
+
 def test_basic_entity_functions_require_active_sketch() -> None:
     adapter = _FakeSketchAdapter()
     assert (
@@ -446,6 +632,30 @@ def test_sketch_linear_pattern_angles_stay_within_a_turn(
     angle_x, angle_y = create_pattern.call_args.args[4:6]
     assert math.degrees(angle_x) == pytest.approx(angle_x_deg)
     assert math.degrees(angle_y) == pytest.approx(angle_y_deg)
+
+
+@pytest.mark.parametrize(
+    ("direction", "angle_x", "angle_y"),
+    [
+        ((1, 0), 0.0, 0.5),
+        ((0, -1), 1.5, 0.0),  # #272: -90° was refused
+        ((-1, 0), 1.0, 1.5),
+        ((0, 1), 0.5, 1.0),
+    ],
+)
+def test_sketch_linear_pattern_angles_are_never_negative(
+    direction, angle_x, angle_y
+) -> None:
+    """Angles in turns of π: [0, 2π), whatever the direction's signs."""
+    adapter, create_pattern, *_ = _make_pattern_adapter()
+
+    assert sketch._sketch_linear_pattern_impl(
+        adapter, ["Line_1"], *direction, 8.0, 3
+    ).is_success
+
+    args = create_pattern.call_args.args
+    assert args[4] == pytest.approx(angle_x * math.pi)
+    assert args[5] == pytest.approx(angle_y * math.pi)
 
 
 def test_sketch_linear_pattern_validates_inputs() -> None:
@@ -2230,11 +2440,13 @@ class TestPyWin32AdapterBranches:
             call.args
             for call in extension.SelectByID2.call_args_list
             if len(call.args) >= 9
-            and call.args[0] == "Top Plane"
+            # XY is the Front plane in SolidWorks' Y-up orientation (#262).
+            and call.args[0] == "Front Plane"
             and call.args[1] == "PLANE"
         ]
         assert plane_select_calls, "Expected plane selection call for sketch creation"
-        assert any(call_args[7] in ("", None, 0) for call_args in plane_select_calls)
+        # The callout is a VT_DISPATCH null, never a bare None (runbook #11).
+        assert all(call_args[7] is not None for call_args in plane_select_calls)
         assert feature_manager.FeatureExtrusion3.called
         assert feature_manager.FeatureExtruThin2.called
         assert feature_manager.FeatureRevolve2.called
@@ -2319,25 +2531,10 @@ class TestPyWin32AdapterBranches:
             raising=False,
         )
 
-        class _PlaneFeature:
-            """Test suite for PlaneFeature."""
-
-            def Select2(self, *_args):
-                """Test helper for Select2."""
-                return True
-
-        feature_calls = {"count": 0}
-
-        def _feature_by_name(_name):
-            """Test helper for feature by name."""
-            feature_calls["count"] += 1
-            if feature_calls["count"] == 1:
-                raise RuntimeError("feature lookup failed")
-            return _PlaneFeature()
-
+        # The name lookup raises; SelectByID2 then selects the plane.
         adapter.currentModel = SimpleNamespace(
-            FeatureByName=_feature_by_name,
-            Extension=SimpleNamespace(SelectByID2=Mock(return_value=False)),
+            FeatureByName=Mock(side_effect=RuntimeError("feature lookup failed")),
+            Extension=SimpleNamespace(SelectByID2=Mock(return_value=True)),
             SketchManager=SimpleNamespace(
                 InsertSketch=Mock(side_effect=[_FakeComError("variant"), None])
             ),

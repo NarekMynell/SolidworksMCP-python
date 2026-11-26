@@ -167,6 +167,9 @@ def main_planes(model: Any) -> dict[int, Any]:
 def origin_point(model: Any) -> Any:
     """The part origin's sketch point, to dimension 2D sketches from.
 
+    The origin feature is found by its type, never by its name, which is
+    translated (#262); its own sketch's first point is the origin.
+
     Args:
         model: The part's ``IModelDoc2``.
 
@@ -174,16 +177,17 @@ def origin_point(model: Any) -> Any:
         Any: The origin's ``ISketchPoint``.
 
     Raises:
-        LookupError: When the part has no origin.
+        LookupError: When the part has no origin, or its point can't be read.
     """
     feature = model.FirstFeature()
     while feature is not None:
         feature = _flagged(feature, "IFeature")
         if feature.GetTypeName2() == "OriginProfileFeature":
             sketch = _flagged(feature.GetSpecificFeature2(), "ISketch")
-            points = as_list(sketch.GetSketchPoints2())
-            if points:
-                return _flagged(points[0], "ISketchPoint")
+            points = as_list(sketch.GetSketchPoints2()) if sketch is not None else []
+            if not points:
+                raise LookupError("The part's origin has no point to relate to")
+            return _flagged(points[0], "ISketchPoint")
         feature = feature.GetNextFeature()
     raise LookupError("The part has no origin")
 

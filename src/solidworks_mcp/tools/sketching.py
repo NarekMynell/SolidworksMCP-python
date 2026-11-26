@@ -34,11 +34,13 @@ class CreateSketchInput(CompatInput):
         sketch_name (str | None): The sketch name value.
     """
 
+    # Found by identity in any language, and XY = Front, since 2.2.0 (#262).
     plane: str | None = Field(
         default=None,
         description=(
-            "Sketch plane name (e.g., 'Top', 'Front', 'Right', 'XY', 'XZ', 'YZ', "
-            "or a plane made by create_reference_plane). Give this or face_point"
+            "Sketch plane name: 'Front' (XY), 'Top' (XZ), 'Right' (YZ), found "
+            "in any language, or a plane made by create_reference_plane. Give "
+            "this or face_point"
         ),
     )
     face_point: list[float] | None = Field(
@@ -312,12 +314,18 @@ class AddRelationInput(BaseModel):
         relation_type (str): The relation type value.
     """
 
+    # 'origin' and '<id>.start' / '<id>.end' / '<id>.center' (#269).
     entity1: str = Field(
         description="First reference: an entity id, 'origin' (the part origin), or a point as '<id>.start', '<id>.end' or '<id>.center'"
     )
     entity2: str | None = Field(
         default=None,
-        description="Second reference (if required): an entity id, 'origin' (the part origin), or a point as '<id>.start', '<id>.end' or '<id>.center'",
+        description=(
+            "Second reference (if required): an entity id, 'origin' (the part "
+            "origin), or a point as '<id>.start', '<id>.end' or '<id>.center'; "
+            "e.g. 'Line_1.start' coincident with 'origin' ties a corner to the "
+            "origin"
+        ),
     )
     entity3: str | None = Field(
         default=None,

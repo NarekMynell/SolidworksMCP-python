@@ -522,9 +522,7 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             "close_model", lambda adapter: adapter.close_model(save)
         )
 
-    async def save_file(
-        self, file_path: str | None = None, copy: bool = False
-    ) -> AdapterResult[None]:
+    async def save_file(self, file_path: str | None = None) -> AdapterResult[None]:
         """Save model using pool.
 
         Args:
@@ -534,7 +532,14 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             AdapterResult[None]: The result produced by the operation.
         """
         return await self._execute_with_pool(
-            "save_file", lambda adapter: adapter.save_file(file_path, copy)
+            "save_file", lambda adapter: adapter.save_file(file_path)
+        )
+
+    # Added in 2.2.0 (#276).
+    async def save_copy(self, file_path: str) -> AdapterResult[dict[str, Any]]:
+        """Write a copy and keep the original open, using pool."""
+        return await self._execute_with_pool(
+            "save_copy", lambda adapter: adapter.save_copy(file_path)
         )
 
     async def create_base_flange(
@@ -1468,6 +1473,17 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             ),
         )
 
+    # Forwarded since 2.2.0 (#267: it raised AttributeError before reaching
+    # SolidWorks).
+    async def pack_and_go_assembly(
+        self, source_path: str, target_dir: str
+    ) -> AdapterResult[dict[str, Any]]:
+        """Copy an assembly and its files into one folder, using pool."""
+        return await self._execute_with_pool(
+            "pack_and_go_assembly",
+            lambda adapter: adapter.pack_and_go_assembly(source_path, target_dir),
+        )
+
     async def set_component_appearance(
         self,
         component: str,
@@ -1930,17 +1946,6 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
         """Copy weldment bodies, using pool."""
         return await self._execute_with_pool(
             "pattern_members", lambda adapter: adapter.pattern_members(params)
-        )
-
-    async def pack_and_go_assembly(
-        self, source_path: str, target_dir: str
-    ) -> AdapterResult[dict[str, Any]]:
-        """Copy an assembly with every file it uses, using pool."""
-        return await self._execute_with_pool(
-            "pack_and_go_assembly",
-            lambda adapter: adapter.pack_and_go_assembly(
-                source_path=source_path, target_dir=target_dir
-            ),
         )
 
     async def get_cut_list(

@@ -248,8 +248,9 @@ class RevolveParameters(BaseModel):
         thin_thickness (float | None): The thin thickness value.
         sketch_name (str | None): The sketch to revolve, by its tree name;
             ``None`` for the sketch closed last.
-        axis_entity (str | None): A reference axis to revolve about, by its
-            tree name; ``None`` for the sketch's own centreline.
+        axis_entity (str | None): The axis to revolve about: a sketch line's
+            id (``add_centerline``) or a reference axis by its tree name;
+            ``None`` for the sketch's own centreline.
     """
 
     angle: float
@@ -420,9 +421,7 @@ class SolidWorksAdapter(ABC):
         """
         pass
 
-    async def save_file(
-        self, file_path: str | None = None, copy: bool = False
-    ) -> AdapterResult[Any]:
+    async def save_file(self, file_path: str | None = None) -> AdapterResult[Any]:
         """Save the active model to the existing path or the provided path.
 
         Args:
@@ -434,6 +433,21 @@ class SolidWorksAdapter(ABC):
         return AdapterResult(
             status=AdapterResultStatus.ERROR,
             error="save_file is not implemented by this adapter",
+        )
+
+    # Added in 2.2.0 (#276).
+    async def save_copy(self, file_path: str) -> AdapterResult[dict[str, Any]]:
+        """Write a copy of the active document and keep the original open.
+
+        Args:
+            file_path (str): Where to write the copy.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The result produced by the operation.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="save_copy is not implemented by this adapter",
         )
 
     async def create_base_flange(
@@ -1115,6 +1129,24 @@ class SolidWorksAdapter(ABC):
         return AdapterResult(
             status=AdapterResultStatus.ERROR,
             error="replace_component is not implemented by this adapter",
+        )
+
+    # Forwarded by both wrappers since 2.2.0 (#267).
+    async def pack_and_go_assembly(
+        self, source_path: str, target_dir: str
+    ) -> AdapterResult[dict[str, Any]]:
+        """Copy an assembly and every file it uses into one folder.
+
+        Args:
+            source_path (str): The ``.sldasm`` file.
+            target_dir (str): The folder to copy into.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The result produced by the operation.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="pack_and_go_assembly is not implemented by this adapter",
         )
 
     async def set_component_appearance(
@@ -2046,23 +2078,6 @@ class SolidWorksAdapter(ABC):
         return AdapterResult(
             status=AdapterResultStatus.ERROR,
             error="create_weld_beads is not implemented by this adapter",
-        )
-
-    async def pack_and_go_assembly(
-        self, source_path: str, target_dir: str
-    ) -> AdapterResult[dict[str, Any]]:
-        """Copy an assembly and every file it uses into one folder.
-
-        Args:
-            source_path (str): The ``.sldasm`` file.
-            target_dir (str): The folder to copy into.
-
-        Returns:
-            AdapterResult[dict[str, Any]]: The result, or error.
-        """
-        return AdapterResult(
-            status=AdapterResultStatus.ERROR,
-            error="pack_and_go_assembly is not implemented by this adapter",
         )
 
     async def set_feature_folders(

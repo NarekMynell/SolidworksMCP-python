@@ -35,12 +35,15 @@ from typing import Any, cast
 from ...exceptions import InputRefused
 from .. import sw_type_info
 from ..base import AdapterResult
-from .com_utils import as_list
+from .com_utils import as_list, double_array
 from .documentation import _read_custom_property
 from .drawing_standard import find_sheet_format
 from .features import _null_callout
 from .io import _as_com, _resolve_drawing_view, _view_names
 from .part_features import _to_sketch
+
+#: How close (mm) a new view's centre must come to its ``position``.
+_PLACE_TOLERANCE_MM = 1.0
 
 #: ``swAutodimEntities_e``, ``swAutodimScheme_e`` and placements.
 AUTODIM_ENTITIES_ALL = 1
@@ -292,6 +295,52 @@ class SolidWorksDrawingPackMixin:
             "views_after": len(_view_names(adapter, drawing)),
         }
 
+    # Fixed in 2.2.0 (#273).
+    def _pack_place(self, created: Any, position: list[float]) -> bool | None:
+        """Put a new view's centre at ``position`` (sheet mm).
+
+        A section view stays aligned with its parent, so SolidWorks keeps it
+        on the parent's x whatever position it was given (#273, fixed in 2.2.0; live on SW
+        2024 and 2026). When it isn't where it was asked for, its alignment
+        is removed and it is moved: ``IView.Position`` with an explicit
+        array (pitfall 31), then once more by what its outline still misses,
+        since a view's position point need not be its outline's centre.
+
+        Returns:
+            bool | None: Whether the view's centre ends within 1 mm of
+            ``position``; ``None`` when its outline can't be read.
+        """
+        adapter: Any = self
+        view = _as_com(adapter, created, "IView")
+
+        def miss() -> tuple[float, float] | None:
+            box = self._pack_outline(view)
+            if box is None:
+                return None
+            return (
+                position[0] - (box[0] + box[2]) / 2,
+                position[1] - (box[1] + box[3]) / 2,
+            )
+
+        def close(d: tuple[float, float]) -> bool:
+            return abs(d[0]) <= _PLACE_TOLERANCE_MM and abs(d[1]) <= _PLACE_TOLERANCE_MM
+
+        missed = miss()
+        if missed is None or close(missed):
+            return None if missed is None else True
+        adapter._attempt(lambda: view.RemoveAlignment(), default=None)
+        target = [position[0] / 1000.0, position[1] / 1000.0]
+        for _ in range(2):
+            adapter._attempt(
+                lambda t=list(target): setattr(view, "Position", double_array(t)),
+                default=None,
+            )
+            missed = miss()
+            if missed is None or close(missed):
+                break
+            target = [target[0] + missed[0] / 1000.0, target[1] + missed[1] / 1000.0]
+        return missed is not None and close(missed)
+
     def _pack_discard(self, entity: Any) -> None:
         """Delete a sketch line or circle left over from a failed view."""
         adapter: Any = self
@@ -299,31 +348,6 @@ class SolidWorksDrawingPackMixin:
         adapter._attempt(lambda: model.ClearSelection2(True), default=None)
         if adapter._select_sketch_entity(entity, append=False):
             adapter._attempt(lambda: model.EditDelete(), default=None)
-
-    def _pack_place(self, created: Any, position: list[float]) -> bool:
-        """Put a new view's centre at ``position`` (sheet mm); whether it stayed aligned.
-
-        SolidWorks keeps a section view in line with its parent: asked for a
-        place beside it, it put the view on top of the parent and said
-        nothing (#273). A place off that line breaks the alignment, as a
-        drafter moving a labelled section does; one on it keeps it.
-
-        Raises:
-            RuntimeError: When the view won't move there.
-        """
-        adapter: Any = self
-        view = _as_com(adapter, created, "IView")
-        x, y = position[0] / 1000.0, position[1] / 1000.0
-        now = as_list(adapter._attempt(lambda: view.Position, default=None))
-        if len(now) >= 2 and math.dist((float(now[0]), float(now[1])), (x, y)) < 5e-4:
-            return True
-        adapter._attempt(lambda: view.RemoveAlignment())
-        if not adapter._set_view_position(view, x, y):
-            raise RuntimeError(
-                f"The new view wouldn't move to {list(position)} mm; it stays in "
-                "line with its parent."
-            )
-        return False
 
     def _pack_report(
         self, drawing: Any, head: dict[str, Any], made: dict[str, Any]
@@ -410,10 +434,10 @@ class SolidWorksDrawingPackMixin:
                 raise RuntimeError(
                     f"CreateSectionViewAt5 made no section view of '{view}'."
                 )
-            aligned = self._pack_place(created, position)
+            at_position = self._pack_place(created, position)
             return self._pack_report(
                 drawing,
-                {"label": letter, "parent": view, "aligned": aligned},
+                {"label": letter, "parent": view, "at_position": at_position},
                 self._pack_new_view(created, before),
             )
 

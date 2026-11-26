@@ -97,7 +97,6 @@ class FakeAdapter(SolidWorksDrawingPackMixin):
         self.currentModel = MagicMock()
         self.selected: list[tuple[Any, bool]] = []
         self.dimension_counts = dict.fromkeys(views, 0)
-        self.moved: list[tuple[float, float]] = []
 
     def _require_drawing(self) -> AdapterResult[Any] | None:
         if self.is_drawing:
@@ -131,19 +130,6 @@ class FakeAdapter(SolidWorksDrawingPackMixin):
 
     def _pictorial(self, view: Any) -> bool:
         return view.name == "Iso"
-
-    def _set_view_position(self, view: Any, x: float, y: float) -> bool:
-        """Moves the fake view: its outline follows its centre."""
-        self.moved.append((x, y))
-        width, height = getattr(view, "size", (0.1, 0.08))
-        view.Position = (x, y)
-        view.GetOutline = lambda: (
-            x - width / 2,
-            y - height / 2,
-            x + width / 2,
-            y + height / 2,
-        )
-        return getattr(view, "movable", True)
 
 
 @pytest.fixture
@@ -216,16 +202,95 @@ async def test_a_section_view_is_cut_along_the_line(adapter: FakeAdapter) -> Non
         0.25, 0.19, 0.0, "A", 0, None, 0.0
     )
     assert adapter.selected == [(line, False)]
-    assert adapter.moved == []
     assert result.data == {
         "label": "A",
         "parent": "Front",
-        "aligned": True,
+        "at_position": True,
         "name": "Section View A-A",
         "outline_mm": (200.0, 150.0, 300.0, 230.0),
         "views_before": 1,
         "views_after": 2,
     }
+
+
+class _AlignedSection:
+    """A section view 100 x 80 mm, kept on its parent's x until freed (#273).
+
+    ``offset`` is how far its position point sits from its outline's centre.
+    """
+
+    def __init__(self, x: float, y: float, offset: float = 0.0, moves: bool = True):
+        self.centre = (x, y)
+        self.offset = offset
+        self.moves = moves
+        self.aligned = True
+
+    def GetName2(self) -> str:  # noqa: N802
+        return "Section View A-A"
+
+    def GetOutline(self) -> tuple[float, ...]:  # noqa: N802
+        x, y = self.centre
+        return (x - 0.05, y - 0.04, x + 0.05, y + 0.04)
+
+    def RemoveAlignment(self) -> bool:  # noqa: N802
+        self.aligned = False
+        return True
+
+    @property
+    def Position(self) -> tuple[float, float]:  # noqa: N802
+        return (self.centre[0] + self.offset, self.centre[1])
+
+    @Position.setter
+    def Position(self, raw: Any) -> None:  # noqa: N802
+        x, y = tuple(getattr(raw, "value", raw))[:2]  # a VARIANT on Windows
+        if self.moves and not self.aligned:
+            self.centre = (x - self.offset, y)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("offset", [0.0, 0.006])
+async def test_a_section_view_is_freed_from_its_parent_and_moved(
+    adapter: FakeAdapter, offset: float
+) -> None:
+    section = _AlignedSection(0.07, 0.19, offset)  # on the parent's x
+    adapter.currentModel.CreateSectionViewAt5.return_value = section
+
+    result = await adapter.create_section_view(
+        "Front", [10, 190], [130, 190], [250, 190]
+    )
+
+    assert section.aligned is False
+    assert result.data["at_position"] is True
+    assert result.data["outline_mm"] == pytest.approx((200.0, 150.0, 300.0, 230.0))
+
+
+@pytest.mark.asyncio
+async def test_a_section_view_that_wont_move_says_so(adapter: FakeAdapter) -> None:
+    adapter.currentModel.CreateSectionViewAt5.return_value = _AlignedSection(
+        0.07, 0.19, moves=False
+    )
+
+    result = await adapter.create_section_view(
+        "Front", [10, 190], [130, 190], [250, 190]
+    )
+
+    assert result.data["at_position"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_section_view_whose_outline_is_lost_after_moving(
+    adapter: FakeAdapter,
+) -> None:
+    section = _AlignedSection(0.07, 0.19)
+    outlines = iter([section.GetOutline()])
+    section.GetOutline = lambda: next(outlines, None)  # type: ignore[method-assign]
+    adapter.currentModel.CreateSectionViewAt5.return_value = section
+
+    result = await adapter.create_section_view(
+        "Front", [10, 190], [130, 190], [250, 190]
+    )
+
+    assert result.data["at_position"] is False
 
 
 @pytest.mark.asyncio
@@ -235,13 +300,7 @@ async def test_a_section_asked_off_its_line_is_moved_there(
     """SolidWorks kept it in line, on top of its parent; it goes where asked (#273)."""
     drawing = adapter.currentModel
     drawing.SketchManager.CreateLine.return_value = object()
-    section = FakeView(
-        name="Section View A-A",
-        GetName2=lambda: "Section View A-A",
-        Position=(0.07, 0.19),
-        GetOutline=lambda: (0.02, 0.15, 0.12, 0.23),
-        RemoveAlignment=MagicMock(),
-    )
+    section = _AlignedSection(0.07, 0.19)  # on top of its parent
 
     def make_section(*args: Any) -> Any:
         adapter.views["Section View A-A"] = section
@@ -253,26 +312,35 @@ async def test_a_section_asked_off_its_line_is_moved_there(
         "Front", [10, 190], [130, 190], [300, 80]
     )
 
-    section.RemoveAlignment.assert_called_once()
-    assert adapter.moved == [(0.3, 0.08)]
-    assert result.data["aligned"] is False
-    assert result.data["outline_mm"] == (250.0, 40.0, 350.0, 120.0)
+    assert section.aligned is False
+    assert result.data["at_position"] is True
+    assert result.data["outline_mm"] == pytest.approx((250.0, 40.0, 350.0, 120.0))
     assert "warning" not in result.data
 
 
 @pytest.mark.asyncio
-async def test_a_section_that_wont_move_is_an_error(adapter: FakeAdapter) -> None:
+async def test_a_section_that_wont_move_says_it_lands_on_its_parent(
+    adapter: FakeAdapter,
+) -> None:
+    """Left on its parent's line, the section is reported and warned, not refused."""
     drawing = adapter.currentModel
     drawing.SketchManager.CreateLine.return_value = object()
-    drawing.CreateSectionViewAt5.return_value = FakeView(
-        name="S", GetName2=lambda: "S", Position=(0.07, 0.19), movable=False
-    )
+    section = _AlignedSection(0.07, 0.19, moves=False)
+
+    def make_section(*args: Any) -> Any:
+        adapter.views["Section View A-A"] = section
+        return section
+
+    drawing.CreateSectionViewAt5.side_effect = make_section
 
     result = await adapter.create_section_view(
         "Front", [10, 190], [130, 190], [300, 80]
     )
 
-    assert "wouldn't move to [300, 80] mm" in (result.error or "")
+    assert result.is_success, result.error
+    assert result.data["at_position"] is False
+    assert result.data["overlaps"] == ["Front"]
+    assert "lands on Front" in result.data["warning"]
 
 
 @pytest.mark.asyncio

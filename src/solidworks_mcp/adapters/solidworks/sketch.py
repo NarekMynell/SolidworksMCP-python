@@ -10,6 +10,7 @@ from typing import Any, cast
 from .. import sw_type_info as _sw_type_info
 from ..base import AdapterResult, AdapterResultStatus
 from .com_utils import as_list, double_array
+from .default_entities import entity_name
 from .features import _null_callout
 from .sketch_define import define_sketch, origin_in_sketch, origin_point
 
@@ -346,99 +347,55 @@ class SolidWorksSketchMixin:
 def _select_sketch_plane(adapter: Any, plane: str) -> None:
     """Select the reference plane a new sketch opens on.
 
-    Tries the plane's locale aliases by name (``FeatureByName`` then
-    ``Select2``), then ``Extension.SelectByID2`` with type ``"PLANE"``.
+    A default plane (``Top``, ``Front Plane``, ``XY``...) is found by its
+    place in the tree, so it works in every language and template (#262, fixed in 2.2.0);
+    any other name is used as given. The plane is selected by name
+    (``FeatureByName`` then ``Select2``), then ``Extension.SelectByID2``
+    with type ``"PLANE"``. A plane that isn't found is never swapped for
+    another one.
 
     Args:
         adapter: A connected adapter with a part open.
         plane: The plane's short or full name.
 
     Raises:
-        Exception: If no plane candidate could be selected.
+        LookupError: A default plane the document doesn't have.
+        Exception: If the plane could not be selected.
     """
-    plane_name_map = {
-        "Top": "Top Plane",
-        "Front": "Front Plane",
-        "Right": "Right Plane",
-        "XY": "Top Plane",
-        "XZ": "Front Plane",
-        "YZ": "Right Plane",
-    }
-
-    semantic_plane_aliases = {
-        "Top": ["Top Plane", "Planta", "上视基准面", "上視基準面"],
-        "Front": ["Front Plane", "Alzado", "前视基准面", "前視基準面"],
-        "Right": ["Right Plane", "Vista lateral", "右视基准面", "右視基準面"],
-        "XY": ["Top Plane", "Planta", "上视基准面"],
-        "XZ": ["Front Plane", "Alzado", "前视基准面"],
-        "YZ": ["Right Plane", "Vista lateral", "右视基准面"],
-    }
-
-    actual_plane = plane_name_map.get(plane, plane)
+    actual_plane = entity_name(adapter, plane) if plane else plane
     selected = False
     selection_error = None
 
-    plane_candidates = [
-        *semantic_plane_aliases.get(plane, []),
-        actual_plane,
-        plane,
-        "Top Plane",
-        "Front Plane",
-        "Right Plane",
-        "Planta",
-        "Alzado",
-        "Vista lateral",
-        "上视基准面",
-        "前视基准面",
-        "右视基准面",
-        "上視基準面",
-        "前視基準面",
-        "右視基準面",
-    ]
-    for candidate in plane_candidates:
-        if not candidate:
-            continue
-        plane_feature, selection_error_candidate = adapter._attempt_with_error(
-            lambda c=candidate: adapter.currentModel.FeatureByName(c)
+    if actual_plane:
+        plane_feature, selection_error = adapter._attempt_with_error(
+            lambda: adapter.currentModel.FeatureByName(actual_plane)
         )
-        if selection_error_candidate:
-            selection_error = selection_error_candidate
-            continue
         selected = bool(
             plane_feature
-            and adapter._attempt(
-                lambda pf=plane_feature: pf.Select2(False, 0), default=False
-            )
+            and adapter._attempt(lambda: plane_feature.Select2(False, 0), default=False)
         )
-        if selected:
-            break
 
     if not selected:
-        # SW 2022: callout must be None (empty string causes type mismatch)
+        # The callout must be a VT_DISPATCH null: a bare None is a type
+        # mismatch (runbook #11; "Typenkonflikt" on German, #262, fixed in 2.2.0).
         selected, selection_error_candidate = adapter._attempt_with_error(
             lambda: adapter.currentModel.Extension.SelectByID2(
-                actual_plane,
-                "PLANE",
-                0,
-                0,
-                0,
-                False,
-                0,
-                None,
-                0,
+                actual_plane, "PLANE", 0, 0, 0, False, 0, _null_callout(), 0
             )
         )
         if selection_error_candidate:
             selection_error = selection_error_candidate
-        elif selected:
-            pass
 
     if not selected:
         if selection_error:
             raise Exception(
                 f"Failed to select plane: {actual_plane} ({selection_error})"
             )
-        raise Exception(f"Failed to select plane: {actual_plane}")
+        raise LookupError(
+            f"Failed to select plane: {actual_plane}: not found in the "
+            "document. Use Front, Top, Right, or a plane's name from "
+            "list_features."
+        )
 
 
 def _select_sketch_face(adapter: Any, face_point: tuple[float, float, float]) -> None:
@@ -484,12 +441,11 @@ def _create_sketch_impl(
     With ``face_point``, the flat face of the active part at that point is
     selected (see :func:`_select_sketch_face`) in place of a plane.
 
-    The function resolves English short-hand names (``"Top"``, ``"Front"``,
-    ``"Right"``, ``"XY"``, ``"XZ"``, ``"YZ"``) to their full SolidWorks plane
-    names and also tries Spanish locale aliases (``"Planta"``, ``"Alzado"``,
-    ``"Vista lateral"``).  If named lookup fails, ``Extension.SelectByID2``
-    with entity type ``"PLANE"`` is attempted with three different callout
-    variants.
+    A default plane (``"Top"``, ``"Front"``, ``"Right"``, ``"XY"`` = Front,
+    ``"XZ"`` = Top, ``"YZ"`` = Right, or a full English name) is found by its
+    place in the feature tree, so it works in every language and template.
+    If named lookup fails, ``Extension.SelectByID2`` with entity type
+    ``"PLANE"`` is tried.
 
     When the sketch is successfully opened, ``adapter.currentSketchManager``,
     ``adapter.currentSketch``, ``adapter._sketch_count``, and
@@ -2332,9 +2288,8 @@ def _sketch_linear_pattern_impl(
         try:
             _select_sketch_entities(adapter, entities, mark=0)
 
-            # SolidWorks takes the angles in [0, 2 pi) only: a direction with
-            # a negative component gave atan2's negative angle and the call
-            # returned False (#272), so (0, -1) is 270 degrees, not -90.
+            # Angles in [0, 2π): atan2 gives -π/2 for (0, -1), which
+            # SolidWorks refuses (#272, fixed in 2.2.0); the same direction as 3π/2 works.
             angle_x = math.atan2(direction_y, direction_x) % math.tau
             # Direction 2 (Y) goes 90° from direction 1; NumY=1 keeps it
             # single-row so the second-axis spacing/angle aren't actually
@@ -2900,6 +2855,13 @@ def _exit_sketch_impl(
         sketch_manager.InsertSketch(True)
         adapter.currentSketch = None
         adapter.currentSketchManager = None
+        # The closed sketch's ids stay readable for a feature made from it
+        # next (create_revolve's axis_entity); a new sketch reuses the ids.
+        # Since 2.2.0, for create_revolve's axis_entity.
+        adapter._closed_sketch = (
+            getattr(adapter, "_last_sketch_name", None),
+            dict(adapter._sketch_entities),
+        )
         adapter._reset_sketch_entity_registry()
         return {"exited": True, "defined": defined}
 
@@ -2955,9 +2917,11 @@ def definition_state(sketch: Any) -> tuple[str, bool | None, int | None]:
     """
     try:
         _sw_type_info.flag_members(sketch, "GetConstrainedStatus")
-        raw = int(sketch.GetConstrainedStatus())
+        raw = sketch.GetConstrainedStatus()
     except Exception:  # an unreadable status is reported as unknown
         return "unknown", None, None
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        return "unknown", None, None  # not a swConstrainedStatus_e value
     state, flag = DEFINITION_STATES.get(raw, ("unknown", None))
     return state, flag, raw
 

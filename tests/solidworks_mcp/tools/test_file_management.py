@@ -422,6 +422,32 @@ class TestFileManagementTools:
         assert "save blocked" in error_result["message"]
 
     @pytest.mark.asyncio
+    async def test_save_as_a_copy_keeps_the_original_open(
+        self, mcp_server, mock_adapter, mock_config
+    ):
+        """#276: as_copy writes a copy; the original stays the open document."""
+        await register_file_management_tools(mcp_server, mock_adapter, mock_config)
+        await mock_adapter.create_part("Original", "mm")
+        save_as_tool = next(
+            t.fn for t in await mcp_server.list_tools() if t.name == "save_as"
+        )
+        mock_adapter.save_file = AsyncMock()
+
+        result = await save_as_tool(
+            input_data=SaveAsInput(
+                file_path="C:/tmp/variant.sldprt", as_copy=True, overwrite=True
+            )
+        )
+
+        assert result["status"] == "success"
+        assert result["message"] == (
+            "Copy saved as: C:/tmp/variant.sldprt; the open document keeps its name"
+        )
+        assert result["kept_original"] is True
+        assert result["copy"] is True
+        mock_adapter.save_file.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_save_as_export_error_and_fallback_without_methods(
         self, mcp_server, mock_adapter, mock_config
     ):
@@ -1978,7 +2004,7 @@ async def test_save_as_keeps_an_existing_file_unless_overwrite(
     assert "left untouched" in kept["message"] and "overwrite" in kept["message"]
     assert target.read_bytes() == b"original"
     assert replaced["status"] == "success"
-    mock_adapter.save_file.assert_awaited_once_with(str(target), False)
+    mock_adapter.save_file.assert_awaited_once_with(str(target))
 
 
 @pytest.mark.asyncio
@@ -2204,13 +2230,27 @@ async def test_save_as_a_copy_keeps_the_open_document(
 ) -> None:
     """#276: File > Save As renames the open document; a copy leaves it."""
     save_as = await _tool(mcp_server, mock_adapter, mock_config, "save_as")
-    mock_adapter.save_file = AsyncMock(
-        return_value=Mock(is_success=True, data=None, execution_time=0.1)
+    saved = Mock(is_success=True, data=None, execution_time=0.1)
+    mock_adapter.save_file = AsyncMock(return_value=saved)
+    mock_adapter.save_copy = AsyncMock(
+        side_effect=lambda path: Mock(
+            is_success=True,
+            data={"file_path": path, "kept_original": path.endswith("A.SLDPRT")},
+            execution_time=0.1,
+        )
     )
     target = tmp_path / "rev-A.SLDPRT"
 
-    reply = await save_as({"file_path": str(target), "as_copy": True})
+    copy = await save_as({"file_path": str(target), "as_copy": True})
+    unsure = await save_as(
+        {"file_path": str(tmp_path / "rev-B.SLDPRT"), "as_copy": True}
+    )
+    renamed = await save_as({"file_path": str(tmp_path / "part.SLDPRT")})
 
-    mock_adapter.save_file.assert_awaited_once_with(str(target), True)
-    assert reply["copy"] is True
-    assert "keeps its name" in reply["message"]
+    mock_adapter.save_copy.assert_any_await(str(target))
+    mock_adapter.save_file.assert_awaited_once_with(str(tmp_path / "part.SLDPRT"))
+    assert copy["copy"] is True
+    assert "keeps its name" in copy["message"]
+    assert "keeps its name" not in unsure["message"]  # not confirmed: not claimed
+    assert renamed["copy"] is False
+    assert renamed["message"] == f"File saved as: {tmp_path / 'part.SLDPRT'}"
