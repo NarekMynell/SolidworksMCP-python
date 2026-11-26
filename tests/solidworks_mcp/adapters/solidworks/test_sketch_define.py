@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from solidworks_mcp.adapters.solidworks import sketch_define as define
+from solidworks_mcp.adapters.solidworks.user_settings import UserSettings
 
 
 class _Point:
@@ -198,16 +200,28 @@ def test_definition_names_the_status() -> None:
     assert define.definition(_Sketch([], [], 99)) == "unknown"
 
 
-def test_quiet_solving_switches_off_then_back_on() -> None:
+def test_quiet_solving_switches_off_then_back_on(tmp_path: Path) -> None:
     adapter = _Adapter()
+    # The user has every option on; the call (as PyWin32Adapter runs one) owes them back.
+    adapter.swApp.GetUserPreferenceToggle = lambda t: adapter.toggles.get(t, True)
+    adapter._user_settings = UserSettings(tmp_path)
     manager = SimpleNamespace(AutoSolve=True)
     adapter.swApp.CommandInProgress = False
-    with define.quiet_solving(adapter, manager):
-        assert manager.AutoSolve is False
-        assert adapter.swApp.CommandInProgress is True
-    assert manager.AutoSolve is True
-    assert adapter.swApp.CommandInProgress is False
-    assert adapter.toggles == {10: False, 372: False, 520: False, 100: False}
+    with adapter._user_settings.automation(adapter.swApp):
+        with define.quiet_solving(adapter, manager):
+            assert manager.AutoSolve is False
+            assert adapter.swApp.CommandInProgress is True
+            assert [adapter.toggles[t] for t in (10, 372, 520, 100)] == [False] * 4
+        assert manager.AutoSolve is True
+        assert adapter.swApp.CommandInProgress is False
+    assert [adapter.toggles[t] for t in (10, 372, 520, 100)] == [True] * 4
+
+
+def test_outside_a_call_the_helpers_switch_no_option() -> None:
+    adapter = _Adapter()
+    with define.quiet_solving(adapter, SimpleNamespace(AutoSolve=True)):
+        pass
+    assert adapter.toggles == {}
 
 
 def test_quiet_solving_turns_solving_on_even_when_it_was_off() -> None:

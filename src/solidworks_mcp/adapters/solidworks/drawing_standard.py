@@ -101,7 +101,6 @@ OVERALL_TOLERANCE = 0.0005
 _VIEW_VERTICES = 2
 
 # swUserPreferenceToggle_e / IntegerValue_e / StringValue_e (swconst.tlb, SW 2025)
-_SW_SHOW_SHEET_FORMAT_DIALOG = 353
 _SW_DETAILING_DIM_TRAILING_ZERO = 15
 _SW_DIM_REMOVE_TRAILING_ZEROES = 2
 _SW_PREF_SHEET_FORMAT_FOLDER = 7
@@ -2473,34 +2472,6 @@ class SolidWorksDrawingStandardMixin:
 
     # -- the generator ----------------------------------------------------
 
-    def _new_drawing_without_dialog(self) -> bool | None:
-        """Read and turn off the Sheet Format/Size prompt (pitfall #32).
-
-        Returns:
-            bool | None: The toggle's previous value, ``None`` when unreadable.
-        """
-        app = self.swApp
-        previous = self._attempt(
-            lambda: app.GetUserPreferenceToggle(_SW_SHOW_SHEET_FORMAT_DIALOG),
-            default=None,
-        )
-        self._attempt(
-            lambda: app.SetUserPreferenceToggle(_SW_SHOW_SHEET_FORMAT_DIALOG, False),
-            default=None,
-        )
-        return None if previous is None else bool(previous)
-
-    def _restore_dialog(self, previous: bool | None) -> None:
-        """Put the Sheet Format/Size prompt back as it was."""
-        if previous is not None:
-            app = self.swApp
-            self._attempt(
-                lambda: app.SetUserPreferenceToggle(
-                    _SW_SHOW_SHEET_FORMAT_DIALOG, previous
-                ),
-                default=None,
-            )
-
     async def create_standard_drawing(
         self,
         model_path: str,
@@ -2637,18 +2608,9 @@ class SolidWorksDrawingStandardMixin:
                 "Sheet format 'a3 - iso.slddrt' not found in SolidWorks' sheet "
                 "format folders or under C:\\ProgramData\\SOLIDWORKS"
             )
-        prompt = self._handle_com_operation(
-            "standard_drawing_dialog", self._new_drawing_without_dialog
-        )
-        try:
-            created = await self.create_drawing()
-        finally:
-            self._handle_com_operation(
-                "standard_drawing_dialog",
-                lambda: self._restore_dialog(
-                    prompt.data if prompt.is_success else None
-                ),
-            )
+        # The prompt (pitfall #32) is off inside every adapter operation,
+        # create_drawing's included, and back after it (user_settings).
+        created = await self.create_drawing()
         if not created.is_success:
             return failed(f"Could not create drawing: {created.error}")
         _step(steps, "drawing_units_mm", await self.set_units("mm"))

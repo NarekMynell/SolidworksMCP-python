@@ -606,7 +606,7 @@ Add a driving dimension to sketch entities: linear, angular, radial or diameter.
 **Why this is implemented this way:**
 
 - SolidWorks may treat sketch dimension creation like an interactive Smart Dimension workflow unless the sketch-input preferences are suppressed.
-- For each operation the adapter switches off `swInputDimValOnCreate`, `swSketchAcceptNumericInput`, `swSketchCreateDimensionOnlyWhenEntered`, `swScaleSketchOnFirstDimension` and `swSketchOverdefiningDimsPromptToSetState` (those that are on), so the tool does not wait for a manual approve click, and puts them back as the user had them when it ends. A server killed mid-call leaves a note in `~/.solidworks_mcp/user-settings/`; the next connect puts those options back.
+- For each operation the adapter switches off `swInputDimValOnCreate`, `swSketchAcceptNumericInput`, `swSketchCreateDimensionOnlyWhenEntered`, `swScaleSketchOnFirstDimension`, `swSketchOverdefiningDimsPromptToSetState` and `swDrawingShowSheetFormatDialog` (those that are on), so the tool does not wait for a manual approve click, and puts them back as the user had them once no server of that Windows user is in a call. A server killed mid-call is cleaned up by the next call or connect of any server (COM pitfall 49).
 - Radial and diameter dimensions use the dedicated `IModelDoc2` APIs instead of the generic extension call because that path is more reliable for circles and arcs in live COM sessions.
 
 ---

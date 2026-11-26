@@ -335,7 +335,7 @@ class _Drawing:
 class _App:
     def __init__(self) -> None:
         self.prefs: dict[int, Any] = {}
-        self.toggles: dict[int, Any] = {std._SW_SHOW_SHEET_FORMAT_DIALOG: True}
+        self.toggles: dict[int, Any] = {353: True}  # the sheet format prompt
         self.open_docs: dict[str, Any] = {}
         self.activated: list[str] = []
 

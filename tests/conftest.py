@@ -1,7 +1,9 @@
 """Pytest configuration and fixtures for SolidWorks MCP Server tests."""
 
 import asyncio
+import atexit
 import os
+import shutil
 import tempfile
 from collections.abc import AsyncGenerator, Generator
 from pathlib import Path
@@ -35,11 +37,14 @@ _REAL_INTEGRATION = os.getenv(
 if not _REAL_INTEGRATION:
     os.environ.setdefault("SOLIDWORKS_MCP_COM_SETTLE_SECONDS", "0")
     os.environ.setdefault("SOLIDWORKS_MCP_DOC_SETTLE_SECONDS", "0")
-    # Notes of the user's switched-off options (user_settings): a fake-COM
-    # test must never read or remove a real server's note.
-    os.environ.setdefault(
-        "SOLIDWORKS_MCP_USER_SETTINGS_DIR", tempfile.mkdtemp(prefix="sw-settings-")
-    )
+
+# The ledger of the user's switched-off options (user_settings): a fake-COM
+# test must never read or change a real server's, in a live run too
+# (tests/live/conftest.py gives live tests the real folder back). One folder
+# per process: xdist workers inherit the controller's environment.
+_SETTINGS_DIR = Path(tempfile.gettempdir()) / f"sw-settings-{os.getpid()}"
+os.environ["SOLIDWORKS_MCP_USER_SETTINGS_DIR"] = str(_SETTINGS_DIR)
+atexit.register(shutil.rmtree, _SETTINGS_DIR, True)
 
 # A non-live run must never start SolidWorks. Creating SldWorks.Application
 # from a process outside the desktop session (an SSH shell, CI) starts a hidden

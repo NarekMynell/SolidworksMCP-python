@@ -4,7 +4,8 @@ The sheet maths, BOM and scale methods are in ``test_drawing_standard.py``.
 
 The generator runs against a fake SolidWorks: ``Create3rdAngleViews2`` adds
 a front, plan and side view, notes report a box from where they sit, and the
-app keeps the Sheet Format/Size prompt toggle so the test can see it restored.
+app keeps the Sheet Format/Size prompt toggle so the test can see the
+generator leave it alone (every adapter operation switches it: user_settings).
 The adapter methods the generator borrows from other mixins (open, material,
 properties, save, export, dimensions, layout) are recorded stand-ins; they
 have their own tests.
@@ -530,8 +531,6 @@ async def test_a_part_becomes_a_complete_a3_drawing(files) -> None:
     # Each build step is its own COM operation, so each gets a settle pause.
     assert [op for op in adapter.operations if op.startswith("standard_drawing_")] == [
         "standard_drawing_format",
-        "standard_drawing_dialog",
-        "standard_drawing_dialog",
         "standard_drawing_sheet",
         "standard_drawing_views",
         "standard_drawing_layout",
@@ -659,12 +658,18 @@ def test_field_room_stops_at_the_next_field_in_the_row() -> None:
 
 
 @pytest.mark.asyncio
-async def test_the_sheet_format_prompt_is_off_while_drawing_and_restored(files) -> None:
+async def test_the_generator_leaves_the_sheet_format_prompt_to_each_operation(
+    files,
+) -> None:
+    """The prompt is one of the options every operation switches (user_settings)."""
     adapter = _adapter(files)
 
     await adapter.create_standard_drawing(files.part)
 
-    assert ("create_drawing", False) in adapter.calls
+    assert (
+        "create_drawing",
+        True,
+    ) in adapter.calls  # the generator itself never sets it
     assert adapter.swApp.prompt is True
 
 
@@ -1275,17 +1280,6 @@ def test_an_unmeasurable_note_is_estimated_from_its_text(files) -> None:
     box = adapter._note_box(_Annotation("AB"), "AB", 0.1, 0.2, 0.003)
 
     assert box == pytest.approx((0.1, 0.197, 0.1 + 0.62 * 0.003 * 2, 0.2))
-
-
-def test_an_unreadable_prompt_toggle_is_left_alone(files) -> None:
-    app = _App(files.formats)
-    app.GetUserPreferenceToggle = lambda _p: (_ for _ in ()).throw(RuntimeError())
-    adapter = _Harness(app, _Drawing())
-
-    assert adapter._new_drawing_without_dialog() is None
-    app.prompt = "unchanged"
-    adapter._restore_dialog(None)
-    assert app.prompt == "unchanged"
 
 
 # ---- every linked title-block field (title-block-fit-every-field) ---------------

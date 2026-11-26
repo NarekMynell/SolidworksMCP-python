@@ -305,8 +305,8 @@ class _ComSessionCoordinator:
     This collaborator is responsible for the low-level mechanics of connecting
     to the SolidWorks COM server: initialising the COM apartment, acquiring the
     ``SldWorks.Application`` object (with retries), waiting for the server to
-    become ready, toggling automation preferences, and tearing everything down
-    cleanly on disconnect.
+    become ready, putting back options a stopped server left off, and tearing
+    everything down cleanly on disconnect.
 
     It is instantiated once inside ``PyWin32Adapter.__init__`` and accessed
     via ``self._com_coordinator``.
@@ -469,7 +469,10 @@ class _ComSessionCoordinator:
             )
             await self.wait_for_server_ready(app)
             app.Visible = not _headless_requested()
-            self._adapter._attempt(lambda: self._adapter._user_settings.recover(app))
+            try:
+                self._adapter._user_settings.recover(app)
+            except Exception as error:  # a repair, never a reason not to connect
+                logger.warning("Putting back SolidWorks options failed: {}", error)
         except Exception as exc:
             self._adapter.swApp = None
             self.uninitialize_com_apartment()
@@ -500,6 +503,7 @@ class _ComSessionCoordinator:
             # after CoUninitialize broke the next connections (RPC 0x800706b5).
             self._adapter._last_sketch_model = None
             self._adapter._reset_sketch_entity_registry()
+            self._adapter._user_settings.forget()
             self._adapter.swApp = None
         finally:
             self.uninitialize_com_apartment()
@@ -2083,16 +2087,34 @@ class PyWin32Adapter(
         *operation_args: Any,
         **operation_kwargs: Any,
     ) -> AdapterResult[T]:
-        """Run one COM operation, timed, its failures turned into an error result.
+        """Run one COM operation with the user's options off, then settle, then put them back.
 
-        The options that would hold a call on a dialog are off while it runs
-        and back as the user had them after (outermost operation only).
+        The outermost operation joins the holders of the options ledger
+        (``user_settings.UserSettings``): the options go back only when no
+        server of this user is in a call any more.
         """
+        with self._user_settings.automation(self.swApp):
+            try:
+                return self._timed_operation(
+                    operation_name, operation_func, *operation_args, **operation_kwargs
+                )
+            finally:
+                # Before the options go back: SolidWorks finishes the call's
+                # idle-time work first (pitfall #26).
+                _settle_after(operation_name)
+
+    def _timed_operation(
+        self,
+        operation_name: str,
+        operation_func: Callable[..., T],
+        *operation_args: Any,
+        **operation_kwargs: Any,
+    ) -> AdapterResult[T]:
+        """Run one COM operation, timed, its failures turned into an error result."""
         start_time = time.time()
 
         try:
-            with self._user_settings.automation(self.swApp):
-                result = operation_func(*operation_args, **operation_kwargs)
+            result = operation_func(*operation_args, **operation_kwargs)
             execution_time = time.time() - start_time
             self.update_metrics(execution_time, True)
             return AdapterResult(
@@ -2129,9 +2151,6 @@ class PyWin32Adapter(
                 error=f"Error in {operation_name}: {e}",
                 execution_time=execution_time,
             )
-        finally:
-            # After the timing above, so execution_time stays the call itself.
-            _settle_after(operation_name)
 
     def _attempt(
         self, operation: Callable[..., T], default: T | None = None

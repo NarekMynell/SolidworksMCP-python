@@ -1416,8 +1416,8 @@ test repeats them.
   under defined. The member and its volume are the same either way.
   *(exploring)* `SketchAddConstraints("sgFIXED")` with every segment and point
   selected added no relation. Fully Define Sketch's helpers switch four
-  settings off (`swUserPreferenceToggle_e` 10, 372, 520 and 100); the tool
-  puts them back when the call ends (switched on before it, they are on after).
+  options off (`swUserPreferenceToggle_e` 10, 372, 520 and 100); every
+  operation puts them back as the user had them (49).
 - **Pierce points.** `ISketch.GetSketchPoints2` lists the points the tool
   adds, with the segments' ends and the arc centres. They come through to the
   member's profile sketch at the same coordinates: setting one as
@@ -1428,6 +1428,13 @@ test repeats them.
   members placed between points.
 - **Custom properties** at file level (`Description`, `Opus code`,
   `Material`) come through to the member's cut-list item.
+- **A long run wears SolidWorks out.** Building a whole catalog (634
+  profiles, one part each, saved and closed) in one SolidWorks 2025 SP4
+  session: it slowed from 6 to 8 s per profile, its memory grew to 11 GB, and
+  the 596th, an ordinary 70x70x2.5 tube, never returned: the solver spun on
+  two cores for 28 minutes under an "over defined" balloon. Restarted, it
+  built the last 54 at 7.3 s each. Build a long spec in parts of about 300
+  (`only`), restarting SolidWorks between them.
 - **A failure kept as an exception keeps the part's dispatches.** The
   traceback's frames hold them, in a cycle through the frame that kept it,
   until a garbage collection; collected after the adapter's
@@ -1438,7 +1445,7 @@ test repeats them.
   without a collection); the batch stops on that error, as on a lost
   SolidWorks.
 
-## 49. Preference toggles are the user's own: switch them per call, by name
+## 49. Preference toggles are the user's own: off only during calls, by name
 
 `ISldWorks.SetUserPreferenceToggle` changes a system option in the user's
 Windows profile: it outlives the call, the connection and SolidWorks itself.
@@ -1446,22 +1453,55 @@ The server switched five off on every connect (`swUserPreferenceToggle_e` 10,
 372, 520, 642, and 100 in the Fully Define helpers) and never put them back,
 so a designer's own sketching lost the Modify box on new dimensions for as
 long as any session had run; read on SolidWorks 2025 SP4, all five were off.
-It also set 149 and 150 on every connect, "to suppress popup dialogs": those
-are `swBOMControlIdFromAssembly` and `swBOMControlMissingRows`, BOM options.
+The drawing generator switched 353 (the sheet format prompt, #32) off in one
+call and back in a third. Connect also set 149 and 150, "to suppress popup
+dialogs": those are `swBOMControlIdFromAssembly` and `swBOMControlMissingRows`.
 
 - Look a toggle up by name (`get_api_enum`), never by a number from memory.
-- Each outermost adapter operation now switches off the options that are on
-  and puts exactly those back after (`user_settings.UserSettings`, around
-  `_run_operation`). Disconnect still makes no preference call (RPC teardown
-  failures there).
-- Before switching, it writes `~/.solidworks_mcp/user-settings/<pid>.json`.
-  A server killed mid-call leaves it, and the next connect puts those back
-  once that process has ended.
-- Only a real `True` counts as on. A fake app's `Mock` answer is truthy, and
-  `SOLIDWORKS_MCP_USER_SETTINGS_DIR` points unit tests at a temporary folder,
-  so a test never writes, or consumes, a real server's note.
-- Cost, measured live (`tests/live/test_live_sw_user_settings.py`, receipt
-  `docs/proofs/user-settings.json`): a call that does nothing takes 16 ms
-  (median of 20) with the five off (five reads) and 47 ms with all five on
-  (five reads, ten writes, the note), beside the 250 ms pause every call
-  already takes.
+- `user_settings.UserSettings`, around `_run_operation`: `AUTOMATION_OFF`
+  (10, 100, 353, 372, 520, 642) are off from each outermost operation's start
+  to its end, the put back after the settle pause. Only a real `True` counts
+  as on (a fake app's `Mock` answer is truthy); an option that can't be read
+  is left as it is, and helpers inside a call (`keep_off`) switch only options
+  the call read. Disconnect makes no preference call (RPC teardown failures
+  there).
+- **Several servers on one SolidWorks** (several Claude sessions) share
+  `~/.solidworks_mcp/user-settings/ledger-<major>.json`: `owed`, the user's
+  values of the options switched off, and `holders`, the adapters inside a
+  call (process id, start time, a random id). The first call in switches off
+  and notes the user's values; the last one out puts them back. A named mutex
+  (`Local\solidworks-mcp-<hash of the folder>`) guards only this bookkeeping,
+  a few COM calls: one server's long call, or a dialog left open, never holds
+  up another's (an earlier design held a mutex for the whole call: a call on
+  a dialog froze every other session for minutes). The lock is given back on
+  every path; a process that dies holding it leaves it abandoned, and the
+  next waiter gets it at once.
+- **A killed server** stays a holder until its process has ended (a holder
+  whose id now belongs to another process, by start time, counts as ended).
+  Then the next call or connect of any server drops it and, with no holder
+  left, puts the options back. Closing Claude Code mid-call leaves them off
+  until then. Notes of the first release (`<pid>.json`) are merged the same
+  way; a broken or foreign ledger is ignored with a warning, never a failed
+  call.
+- **Tests:** every unit-test process uses its own folder (and so its own
+  mutex): `SOLIDWORKS_MCP_USER_SETTINGS_DIR`, set per process because xdist
+  workers inherit the controller's environment. `tests/live/conftest.py`
+  gives live tests the real folder, and live tests set the user's options
+  only under the lock with no holder in a call.
+- **Proof:** `tests/live/test_live_sw_user_settings.py` (receipt
+  `docs/proofs/user-settings.json`): a server killed while its call held the
+  options off was dropped by the next call, which put them back; two servers'
+  overlapping calls never saw an option on. Per call (median of 20, settle
+  pause 0): 11 ms with the options off and 28 ms with all six on on a fresh
+  SolidWorks; 21 and 55 ms after 64 other live tests (the receipt's run).
+  Left on as a control, 642 rescaled nothing when the server added a
+  dimension; it stays in the list, as upstream had it.
+- **Hold no COM object.** `UserSettings` first cached the app with its
+  release; the app then outlived `CoUninitialize`, and in a run of the
+  regression and weldment live tests every later connection in the process
+  failed (`RPC_S_UNKNOWN_IF`, "Property Visible can not be set"). It keeps
+  the app's `id` now, forgotten on disconnect; a unit test checks the app is
+  collectable after a call.
+- **What a server can't repair:** the options an older server switched off.
+  It kept no record of the user's values, so the user switches them back on
+  (`CHANGELOG.md`, Upgrading).

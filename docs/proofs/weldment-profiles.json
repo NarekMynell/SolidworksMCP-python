@@ -2,7 +2,7 @@
   "check": "tests/live/test_live_sw_weldment_profiles.py",
   "tests": {
     "catalog": {
-      "ran": "2026-11-26T14:13:50+00:00",
+      "ran": "2026-11-26T17:58:17+00:00",
       "solidworks": "33.4.0",
       "pauses_s": {
         "after_call": 1.0,
@@ -19,7 +19,7 @@
         "cut lists carry the properties": true,
         "library reader": true
       },
-      "seconds_total": 104.68,
+      "seconds_total": 112.89,
       "library": {
         "standards": [
           "Opus"
@@ -64,9 +64,9 @@
         {
           "path": "Opus/rhs-welded/80x60x2.7.sldlfp",
           "status": "built",
-          "seconds": 12.77,
+          "seconds": 12.06,
           "definition": "fully defined",
-          "sha256": "d55f6b88e24ae93b25b8f7c2848eb7487717f623d7e50f822bc1a7d65f7258bd",
+          "sha256": "45e99cc4cae31172e28f5ce69e4a911443e1b5a42c320798b086835a565150d6",
           "spelling_as_asked": true,
           "file": {
             "library_feature_holds_the_sketch": true,
@@ -94,9 +94,9 @@
         {
           "path": "Opus/chs-welded/57x3.5.sldlfp",
           "status": "built",
-          "seconds": 8.6,
+          "seconds": 9.35,
           "definition": "fully defined",
-          "sha256": "38e94c9884ffae92884b34f291a8f3b041f9547d621eceb0a94e70559f4a1746",
+          "sha256": "4a66e5feec0144dcc6fa15ea193ac0d883849b130d0c3bbca1391a1af3b34a05",
           "spelling_as_asked": true,
           "file": {
             "library_feature_holds_the_sketch": true,
@@ -124,9 +124,9 @@
         {
           "path": "Opus/tubes-other/60x30x1.5.sldlfp",
           "status": "built",
-          "seconds": 9.92,
+          "seconds": 10.29,
           "definition": "fully defined",
-          "sha256": "a8895decca7effbb3646bbb8edbbc09236b7f93cc2e8c7652c3efd4f0e06adfb",
+          "sha256": "d4f6de3eae1e0b972441ec7f48d7be630ba83e4892300858cda3546c7bfd339f",
           "spelling_as_asked": true,
           "file": {
             "library_feature_holds_the_sketch": true,
@@ -154,9 +154,9 @@
         {
           "path": "Opus/angles/L63x40x5.sldlfp",
           "status": "built",
-          "seconds": 9.14,
+          "seconds": 10.33,
           "definition": "fully defined",
-          "sha256": "5849f0f05d210742775ba1794ab1e65c246af9afa6c4346ce96f9bd181540ae6",
+          "sha256": "49d26e7782d992c94c980e853b18aaaf44c1583f77f0fb1b90d3a492ad5f4ca9",
           "spelling_as_asked": true,
           "file": {
             "library_feature_holds_the_sketch": true,
@@ -184,9 +184,9 @@
         {
           "path": "Opus/channels/[10У.sldlfp",
           "status": "built",
-          "seconds": 9.55,
+          "seconds": 10.62,
           "definition": "fully defined",
-          "sha256": "2572f4a43ae59daa2b2bae0cbba2b2f6d24ebf466898aff10d224eeb0b61098a",
+          "sha256": "c13febd3a2f5fcc3588c215e3b7bf22ce56488c6cf14ba1d29f608c3c1d8f98a",
           "spelling_as_asked": true,
           "file": {
             "library_feature_holds_the_sketch": true,
@@ -214,9 +214,9 @@
         {
           "path": "Opus/i-beams/I20.sldlfp",
           "status": "built",
-          "seconds": 12.54,
+          "seconds": 13.63,
           "definition": "under defined",
-          "sha256": "e606eb6dd6d09ae0b9c8fbb161d4e33abfae982cdbc061a51abf70ee20e9dc41",
+          "sha256": "d617fd0b144d23333420dda1a49e9225ce05e652954c0bcf8f17fb2b4a2c617d",
           "spelling_as_asked": true,
           "file": {
             "library_feature_holds_the_sketch": true,
@@ -244,9 +244,9 @@
         {
           "path": "Opus/tees/T25x25x3.sldlfp",
           "status": "built",
-          "seconds": 8.72,
+          "seconds": 9.74,
           "definition": "fully defined",
-          "sha256": "12e238c1daefdd8c522caa2797105076e958169d384a9d838a5b7b06a7f6d901",
+          "sha256": "7769cbb0153c5900651ae310b4e93a109b3ec03ac5fc78eaf629853e8ffee1d2",
           "spelling_as_asked": true,
           "file": {
             "library_feature_holds_the_sketch": true,
@@ -274,9 +274,9 @@
         {
           "path": "Opus/flat-bars/40x4.sldlfp",
           "status": "built",
-          "seconds": 8.35,
+          "seconds": 9.22,
           "definition": "fully defined",
-          "sha256": "73daf78625a3f853986b56a2b59c197e292b400732f861e6acca85f433cb1d8a",
+          "sha256": "214c22887f310fee901cef3c94a69684939dc938a6e5e458039bd7609bc8fdd6",
           "spelling_as_asked": true,
           "file": {
             "library_feature_holds_the_sketch": true,
@@ -304,9 +304,9 @@
         {
           "path": "Opus/bars-round/20.sldlfp",
           "status": "built",
-          "seconds": 8.29,
+          "seconds": 9.02,
           "definition": "fully defined",
-          "sha256": "b1fcceb9054c20c0258f8fb5e814f0a2d50b501d320ad77389b7dae4c859f661",
+          "sha256": "051e4d56076bb68c55cf74ddf721d3aba8d0f2b9f2042c05d33e5e1f49d52a6b",
           "spelling_as_asked": true,
           "file": {
             "library_feature_holds_the_sketch": true,
@@ -334,9 +334,9 @@
         {
           "path": "Opus/bars-square/16.sldlfp",
           "status": "built",
-          "seconds": 8.3,
+          "seconds": 9.23,
           "definition": "fully defined",
-          "sha256": "a6092012d68075d2f2cded49f7d2b8591e6f94758aff01bc3b95025bc19b9dcc",
+          "sha256": "b794f4b15afff39b33fe5d4a0962d06feca780acc4ca033a69066f3ede28a07d",
           "spelling_as_asked": true,
           "file": {
             "library_feature_holds_the_sketch": true,
@@ -364,9 +364,9 @@
         {
           "path": "Opus/bars-hex/S24.sldlfp",
           "status": "built",
-          "seconds": 8.5,
+          "seconds": 9.4,
           "definition": "fully defined",
-          "sha256": "dabbc1805f7c56115c104379180481889a90af10b5bc69faaeab068e913a2042",
+          "sha256": "8d6ba8e845831554b036cd4935a513d75268517fe17fa6fa718c60a48cacd90e",
           "spelling_as_asked": true,
           "file": {
             "library_feature_holds_the_sketch": true,
@@ -394,7 +394,7 @@
       ]
     },
     "skip_overwrite_refused": {
-      "ran": "2026-11-26T14:18:48+00:00",
+      "ran": "2026-11-26T17:59:27+00:00",
       "solidworks": "33.4.0",
       "pauses_s": {
         "after_call": 1.0,
@@ -416,15 +416,15 @@
         {
           "path": "Opus/angles/L63x40x5.sldlfp",
           "status": "built",
-          "seconds": 11.85,
-          "sha256": "dbeebba1248bed45da3e4f1508767d6d61a6636f0119b3922a334e0ccf8c6273",
+          "seconds": 10.23,
+          "sha256": "05210318d3dce37a8c71f33df5199b5efdc5c50e64073cd14bc7fa3a4d9764f0",
           "error": null
         },
         {
           "path": "Opus/flat-bars/40x4.sldlfp",
           "status": "built",
-          "seconds": 8.33,
-          "sha256": "6a1aff1f2bfef80c2982f1c023874752116949b345cdef0e3eacb38963d1003d",
+          "seconds": 9.38,
+          "sha256": "c70f05238c5c2e2d7d01a6f12f9d23daf787dc262d615a1618dbc603c61d9080",
           "error": null
         }
       ],
@@ -433,14 +433,14 @@
           "path": "Opus/angles/L63x40x5.sldlfp",
           "status": "skipped",
           "seconds": 0.01,
-          "sha256": "dbeebba1248bed45da3e4f1508767d6d61a6636f0119b3922a334e0ccf8c6273",
+          "sha256": "05210318d3dce37a8c71f33df5199b5efdc5c50e64073cd14bc7fa3a4d9764f0",
           "error": null
         },
         {
           "path": "Opus/flat-bars/40x4.sldlfp",
           "status": "skipped",
           "seconds": 0.0,
-          "sha256": "6a1aff1f2bfef80c2982f1c023874752116949b345cdef0e3eacb38963d1003d",
+          "sha256": "c70f05238c5c2e2d7d01a6f12f9d23daf787dc262d615a1618dbc603c61d9080",
           "error": null
         }
       ],
@@ -448,8 +448,8 @@
         {
           "path": "Opus/angles/L63x40x5.sldlfp",
           "status": "built",
-          "seconds": 7.33,
-          "sha256": "9f41fb3daa10a040b7f6df193462be1821c8f9d8622b21c6593e4ae3a10da8ec",
+          "seconds": 8.15,
+          "sha256": "ad52f0c9f634fba2f61eae703a0a2ca663feef68aa78d2c45c109a21457f1847",
           "error": null
         }
       ],
@@ -457,21 +457,21 @@
         {
           "path": "Opus/angles/L63x40x5.sldlfp",
           "status": "built",
-          "seconds": 9.47,
-          "sha256": "e49d58d5e41f09235af825a4455ff8f75627a978d8ea3ad334fe07d06ec73c17",
+          "seconds": 10.29,
+          "sha256": "a3a05e516cc036111dd8e44226c683514f99508be3f4eef9eaf12ff69d9feacb",
           "error": null
         },
         {
           "path": "Opus/flat-bars/40x4.sldlfp",
           "status": "built",
-          "seconds": 8.28,
-          "sha256": "352b69ae732b0db76b38ddc44f347f72e3f14511d360e3b2a6995f5e3484e0c0",
+          "seconds": 9.46,
+          "sha256": "f4fa78bea613c4556674d468ceb9ef7cc1eec1716f08f301071df04671e596a9",
           "error": null
         },
         {
           "path": "Opus/angles/crossed.sldlfp",
           "status": "error",
-          "seconds": 8.28,
+          "seconds": 9.6,
           "sha256": null,
           "error": "SolidWorks' check of the sketch as a profile found two entities cross, 0 open and 0 closed contour(s) for 1 loop(s)"
         }
@@ -481,25 +481,31 @@
       "open_documents_after": [],
       "settings_before": {
         "10": true,
+        "100": true,
+        "353": true,
         "372": true,
         "520": true,
-        "100": true
+        "642": true
       },
       "settings_after": {
         "10": true,
+        "100": true,
+        "353": true,
         "372": true,
         "520": true,
-        "100": true
+        "642": true
       },
       "users_settings_restored": {
         "10": false,
+        "100": false,
+        "353": false,
         "372": false,
         "520": false,
-        "100": false
+        "642": false
       }
     },
     "define_none": {
-      "ran": "2026-11-26T14:16:24+00:00",
+      "ran": "2026-11-26T18:01:07+00:00",
       "solidworks": "33.4.0",
       "pauses_s": {
         "after_call": 1.0,
@@ -511,78 +517,78 @@
         "11 built": true,
         "all under defined": true
       },
-      "seconds_total": 80.5,
+      "seconds_total": 90.51,
       "profiles": [
         {
           "path": "Opus/rhs-welded/80x60x2.7.sldlfp",
           "status": "built",
-          "seconds": 7.57,
+          "seconds": 8.53,
           "definition": "under defined"
         },
         {
           "path": "Opus/chs-welded/57x3.5.sldlfp",
           "status": "built",
-          "seconds": 7.14,
+          "seconds": 8.12,
           "definition": "under defined"
         },
         {
           "path": "Opus/tubes-other/60x30x1.5.sldlfp",
           "status": "built",
-          "seconds": 7.29,
+          "seconds": 8.48,
           "definition": "under defined"
         },
         {
           "path": "Opus/angles/L63x40x5.sldlfp",
           "status": "built",
-          "seconds": 7.31,
+          "seconds": 8.38,
           "definition": "under defined"
         },
         {
           "path": "Opus/channels/[10У.sldlfp",
           "status": "built",
-          "seconds": 7.49,
+          "seconds": 8.34,
           "definition": "under defined"
         },
         {
           "path": "Opus/i-beams/I20.sldlfp",
           "status": "built",
-          "seconds": 7.71,
+          "seconds": 8.58,
           "definition": "under defined"
         },
         {
           "path": "Opus/tees/T25x25x3.sldlfp",
           "status": "built",
-          "seconds": 7.32,
+          "seconds": 8.2,
           "definition": "under defined"
         },
         {
           "path": "Opus/flat-bars/40x4.sldlfp",
           "status": "built",
-          "seconds": 7.11,
+          "seconds": 7.9,
           "definition": "under defined"
         },
         {
           "path": "Opus/bars-round/20.sldlfp",
           "status": "built",
-          "seconds": 7.1,
+          "seconds": 7.91,
           "definition": "under defined"
         },
         {
           "path": "Opus/bars-square/16.sldlfp",
           "status": "built",
-          "seconds": 7.13,
+          "seconds": 7.98,
           "definition": "under defined"
         },
         {
           "path": "Opus/bars-hex/S24.sldlfp",
           "status": "built",
-          "seconds": 7.33,
+          "seconds": 8.09,
           "definition": "under defined"
         }
       ]
     },
     "renamed_configuration": {
-      "ran": "2026-11-26T14:19:23+00:00",
+      "ran": "2026-11-26T18:01:47+00:00",
       "solidworks": "33.4.0",
       "pauses_s": {
         "after_call": 1.0,
@@ -606,7 +612,7 @@
       "deviation_percent": 0.0
     },
     "pierce_point": {
-      "ran": "2026-11-26T14:19:52+00:00",
+      "ran": "2026-11-26T18:02:19+00:00",
       "solidworks": "33.4.0",
       "pauses_s": {
         "after_call": 1.0,

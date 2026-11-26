@@ -12,30 +12,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- **The user's SolidWorks options come back.** Connecting used to switch off
-  four sketch options for good (Input dimension value, on-screen numeric
-  input, Create dimension only when value is entered, Scale sketch on first
-  dimension creation) and the Fully Define helpers a fifth (Prompt to set
-  driven state); nothing put them back, so the user's own sketching lost
-  them for as long as any session had run. Now each outermost operation
-  switches off the ones that are on and puts exactly those back when it
-  ends (`user_settings.UserSettings`); a server killed mid-call leaves a
-  note in `~/.solidworks_mcp/user-settings/` that the next connect applies.
-  Connecting also no longer sets toggles 149 and 150: they are BOM options
-  (`swBOMControlIdFromAssembly`, `swBOMControlMissingRows`), not the dialog
-  switches the code took them for. Proven live on SolidWorks 2025 SP4
-  (`docs/proofs/user-settings.json`): off inside each call, on after it, a
-  dimension with no Modify box; 16 ms per call with the options off, 47 ms
-  with all five on.
-- **`build_weldment_profiles` takes a catalog's spec as written.** A spec
-  entry refused every field it didn't define, so the spec the Opus catalog
-  script writes (each item's id beside its profile, for the upload step)
-  failed in full. An entry may now carry `meta`, the caller's own data,
-  written back to its row of the results file; any other unknown field is
-  still refused.
-
 ### Changed
 
 - **Upstream 2.2.0 merged** (andrewbartels1/SolidworksMCP-python, 27 commits
@@ -217,6 +193,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The user's SolidWorks options come back after every call.** Connecting
+  switched four sketch options off for good (Input dimension value,
+  on-screen numeric input, Create dimension only when value is entered,
+  Scale sketch on first dimension creation) and the Fully Define helpers a
+  fifth (Prompt to set driven state); nothing put them back. They, and the
+  sheet format prompt (which the drawing generator switched across calls),
+  are now off only while some server's call runs (`user_settings`): the
+  servers of one Windows user share a ledger per SolidWorks release (the
+  user's values of the options switched off, and the adapters inside a
+  call), the first call in switches them off and the last one out puts them
+  back, after its settle pause. A named mutex guards only that bookkeeping,
+  so one session's long call or open dialog never holds up another's. A
+  server killed mid-call stays a holder until its process has ended; then
+  the next call or connect of any server puts the options back. Connecting
+  no longer sets toggles 149 and 150: they are BOM options
+  (`swBOMControlIdFromAssembly`, `swBOMControlMissingRows`), not the dialog
+  switches the code took them for. **Upgrading:** what older servers
+  switched off stays off, because they kept no record of the user's values.
+  Switch the options back on as the user had them, under Tools > Options >
+  System Options: General > Input dimension value; Sketch > Prompt to set
+  driven state, Enable on screen numeric input on entity creation, Create
+  dimension only when value is entered, Scale sketch on first dimension
+  creation. Proven live on SolidWorks 2025 SP4
+  (`docs/proofs/user-settings.json`): a killed server's options put back by
+  the next call, two servers' overlapping calls never saw an option on;
+  11 to 21 ms per call with the options off, 28 to 55 ms with all six on.
+- **`build_weldment_profiles` takes a catalog's spec as written.** A spec
+  entry refused every field it didn't define, so the spec the Opus catalog
+  script writes (each item's id beside its profile, for the upload step)
+  failed in full. An entry may now carry `meta`, the caller's own data,
+  written back to its row of the results file; any other unknown field is
+  still refused.
 - **`create_structural_members` with `profile_path` refused a file of one
   size.** It passed the size as the configuration, and SolidWorks 2025
   refuses a profile of one configuration under that configuration's name

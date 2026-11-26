@@ -19,6 +19,7 @@ import pytest
 from solidworks_mcp.adapters.base import AdapterResult, AdapterResultStatus
 from solidworks_mcp.adapters.solidworks import weldment_profiles as wp
 from solidworks_mcp.adapters.solidworks.dialog_watch import DialogSeen
+from solidworks_mcp.adapters.solidworks.user_settings import UserSettings, notes_folder
 from solidworks_mcp.adapters.solidworks.weldment_profiles import (
     Segment,
     SolidWorksWeldmentProfilesMixin,
@@ -544,6 +545,8 @@ class _Adapter(SolidWorksWeldmentProfilesMixin):
         self._watch_pid: int | None = None
         self.connected = True
         self.operations: list[str] = []
+        # As PyWin32Adapter: each operation switches the user's options off.
+        self._user_settings = UserSettings(notes_folder())
 
     def is_connected(self) -> bool:
         return self.connected
@@ -559,12 +562,13 @@ class _Adapter(SolidWorksWeldmentProfilesMixin):
 
     def _handle_com_operation(self, name: str, fn: Any) -> AdapterResult[Any]:
         self.operations.append(name)
-        try:
-            return AdapterResult(status=AdapterResultStatus.SUCCESS, data=fn())
-        except Exception as exc:
-            return AdapterResult(
-                status=AdapterResultStatus.ERROR, error=f"Error in {name}: {exc}"
-            )
+        with self._user_settings.automation(self.swApp):
+            try:
+                return AdapterResult(status=AdapterResultStatus.SUCCESS, data=fn())
+            except Exception as exc:
+                return AdapterResult(
+                    status=AdapterResultStatus.ERROR, error=f"Error in {name}: {exc}"
+                )
 
 
 @pytest.fixture(autouse=True)
@@ -642,7 +646,7 @@ async def test_a_profile_is_drawn_checked_saved_closed_and_moved_in(
     assert app.docs == []
     assert adapter.currentModel == "the user's part"
     assert adapter.operations == ["build_weldment_profiles", wp.OPERATION]
-    assert app.toggles[100] is True  # put back after Fully Define Sketch
+    assert app.toggles[100] is True  # put back after each operation (user_settings)
     assert len(_defined) == 1
 
 

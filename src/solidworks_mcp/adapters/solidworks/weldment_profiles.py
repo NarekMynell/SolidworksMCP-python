@@ -61,7 +61,7 @@ from .com_utils import (
 from .dialog_watch import DialogWatch, refused_message
 from .features import _null_callout
 from .io import _byref_int
-from .sketch_define import _QUIET_TOGGLES, define_sketch, main_planes, solve_on
+from .sketch_define import define_sketch, main_planes, solve_on
 from .sketch_define import definition as sketch_definition
 
 #: A point of an outline, mm.
@@ -1060,26 +1060,6 @@ def _one(
     return item
 
 
-def _read_toggles(adapter: Any) -> dict[int, bool]:
-    """The user's settings Fully Define Sketch's helpers switch off, to put back."""
-    found = {}
-    for toggle in _QUIET_TOGGLES:
-        value = adapter._attempt(
-            lambda t=toggle: adapter.swApp.GetUserPreferenceToggle(t), default=None
-        )
-        if value is not None:
-            found[toggle] = bool(value)
-    return found
-
-
-def _restore_toggles(adapter: Any, toggles: dict[int, bool]) -> None:
-    """Put the settings :func:`_read_toggles` read back as they were."""
-    for toggle, value in toggles.items():
-        adapter._attempt(
-            lambda t=toggle, v=value: adapter.swApp.SetUserPreferenceToggle(t, v)
-        )
-
-
 class SolidWorksWeldmentProfilesMixin:
     """Weldment profile files built from section outlines."""
 
@@ -1098,8 +1078,9 @@ class SolidWorksWeldmentProfilesMixin:
         checked: a profile that fails leaves the library as it was. Between
         profiles the call gives way to the event loop, so a cancelled call
         stops there, never inside a profile. A SolidWorks that stops
-        answering, or a connection that broke, stops the batch. The settings
-        Fully Define Sketch switches off are put back after it.
+        answering, or a connection that broke, stops the batch. Each
+        profile's operation switches the user's options off and puts them back
+        (``user_settings``).
 
         Args:
             params: ``profiles`` (each ``path`` under the root, ``outline``
@@ -1133,7 +1114,6 @@ class SolidWorksWeldmentProfilesMixin:
         root = str(found.data)
         started = time.perf_counter()
         before = adapter.currentModel
-        toggles = _read_toggles(adapter)
         items: list[dict[str, Any]] = []
         lost: str | None = None
         try:
@@ -1150,7 +1130,6 @@ class SolidWorksWeldmentProfilesMixin:
                 # The event loop runs here, so a cancel stops between profiles.
                 await asyncio.sleep(0)
         finally:
-            _restore_toggles(adapter, toggles)
             adapter.currentModel = before
         return AdapterResult(
             status=AdapterResultStatus.SUCCESS,

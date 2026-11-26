@@ -13,6 +13,7 @@ from .com_utils import as_list, double_array
 from .default_entities import entity_name
 from .features import _null_callout
 from .sketch_define import define_sketch, origin_in_sketch, origin_point
+from .user_settings import keep_off
 
 # swConstraintType_e values per the official SolidWorks API enum docs
 # (SolidWorks.Interop.swconst). The legacy IModelDoc2.SketchAddConstraints
@@ -1628,15 +1629,12 @@ def _add_sketch_dimension_impl(
         """
         import math as _math_dim
 
-        # Again here: SolidWorks resets swInputDimValOnCreate (10) when
-        # entering a new sketch, so the operation's switch-off may be undone.
-        # Off, no Modify dialog blocks the call; the operation's UserSettings
-        # puts the user's values back when it ends.
-        _sw = getattr(adapter, "swApp", None)
-        if _sw:
-            adapter._attempt(lambda: _sw.SetUserPreferenceToggle(10, False))
-            adapter._attempt(lambda: _sw.SetUserPreferenceToggle(372, False))
-            adapter._attempt(lambda: _sw.SetUserPreferenceToggle(520, False))
+        # Again here, as upstream did: its note says SolidWorks resets
+        # swInputDimValOnCreate (10) on entering a new sketch (not checked
+        # here). Three COM writes keep the Modify dialog away; only options
+        # this call read are switched, and the call's UserSettings puts back
+        # the user's values.
+        keep_off(adapter, (10, 372, 520))
 
         def _radial_dimension_placement() -> tuple[float, float, float, int]:
             """Compute a deterministic placement for radial/diameter dimensions.

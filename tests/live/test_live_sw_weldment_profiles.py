@@ -69,6 +69,25 @@ async def _tools(adapter: Any) -> dict[str, Any]:
     return {t.name: t.fn for t in await mcp.list_tools()}
 
 
+def _read_toggles(adapter: Any) -> dict[int, bool]:
+    """The user's options each operation switches off (user_settings), as they are."""
+    from solidworks_mcp.adapters.solidworks.user_settings import AUTOMATION_OFF
+
+    return {t: bool(adapter.swApp.GetUserPreferenceToggle(t)) for t in AUTOMATION_OFF}
+
+
+def _restore_toggles(adapter: Any, toggles: dict[int, bool]) -> None:
+    """Set the user's options as a person would: under the options lock, no server in a call."""
+    from solidworks_mcp.adapters.solidworks import user_settings
+
+    lock = user_settings.lock_for(user_settings.notes_folder())
+    with lock.held(30) as taken:
+        if not taken:
+            pytest.skip("another server holds the options lock")
+        for toggle, value in toggles.items():
+            adapter.swApp.SetUserPreferenceToggle(toggle, value)
+
+
 def _ok(reply: dict[str, Any]) -> dict[str, Any]:
     assert reply["status"] == "success", reply
     return reply
@@ -383,19 +402,16 @@ async def test_skip_overwrite_and_a_profile_solidworks_refuses(
 ) -> None:
     from solidworks_mcp.adapters.solidworks.weldment_profiles import (
         _open_documents,
-        _read_toggles,
-        _restore_toggles,
         profiles_root,
     )
 
     adapter = scratch.adapter
     tools = await _tools(adapter)
     open_before = sorted(_open_documents(adapter))
-    # Fully Define Sketch switches these settings off: on first, so putting
-    # them back shows; the user's own values come back at the end.
+    # Each operation switches these options off: on first, so putting them
+    # back shows; the user's own values come back at the end.
     users = _read_toggles(adapter)
-    for toggle in users:
-        adapter.swApp.SetUserPreferenceToggle(toggle, True)
+    _restore_toggles(adapter, dict.fromkeys(users, True))
     toggles_before = _read_toggles(adapter)
     catalog = {p["shape"]: p for p in _catalog()}
     root = tmp_path / "Weldment Profiles"

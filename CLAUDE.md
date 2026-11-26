@@ -255,6 +255,19 @@ updated 2026-04-24.
 - **Fix:** Call `model.ForceRebuild3(True)` once before the first `SelectByID2` in a
   feature operation.
 
+### 14. The user's sketch options are off after a session
+
+- **Signature:** the Modify box no longer opens when the designer dimensions by
+  hand (Tools > Options > System Options > General > Input dimension value is
+  off), or another option of `user_settings.AUTOMATION_OFF` stays off.
+- **Cause:** a server was killed mid-call (Claude Code closed during a tool
+  call): it stays a holder in `~/.solidworks_mcp/user-settings/ledger-<major>.json`
+  until its process has ended. Or the options were switched off by a server
+  older than the ledger, which kept no record of the user's values.
+- **Fix:** any server's next call or connect puts them back once the killed
+  process has ended (restart Claude Code). Options an older server switched off
+  are switched back on by hand. COM pitfall 49.
+
 > **Full COM pitfall catalogue for LLM agents:** `docs/agents/com-api-pitfalls.md`
 
 ### Decision order when starting a debug session
@@ -304,7 +317,9 @@ open/create/close (``SOLIDWORKS_MCP_COM_SETTLE_SECONDS`` /
 ``SOLIDWORKS_MCP_DOC_SETTLE_SECONDS``). Driving SolidWorks 2026 back-to-back
 crashed it in its idle-time UI refresh (COM pitfall #26). Route new COM work
 through ``_handle_com_operation`` so it gets the pause; unit tests set both
-values to 0 in ``tests/conftest.py``.
+values to 0 in ``tests/conftest.py``. The user's options an outermost
+operation switched off go back after its pause (``user_settings``, pitfall 49);
+those few toggle writes have no pause of their own.
 
 ### 3. Late binding is forced, always
 

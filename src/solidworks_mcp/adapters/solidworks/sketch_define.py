@@ -34,6 +34,7 @@ from typing import Any
 from .. import sw_type_info as _sw_type_info
 from .com_utils import as_list, attempt, double_array
 from .features import _null_callout
+from .user_settings import keep_off
 
 #: ``swConstrainedStatus_e`` names.
 DEFINITION = {
@@ -111,8 +112,7 @@ def quiet_solving(adapter: Any, manager: Any) -> Iterator[None]:
         None: While the settings are on.
     """
     app = adapter.swApp
-    for toggle in _QUIET_TOGGLES:
-        attempt(adapter, lambda t=toggle: app.SetUserPreferenceToggle(t, False))
+    keep_off(adapter, _QUIET_TOGGLES)
     busy = attempt(adapter, lambda: bool(app.CommandInProgress), False)
     attempt(adapter, lambda: setattr(app, "CommandInProgress", True))
     attempt(adapter, lambda: setattr(manager, "AutoSolve", False))
@@ -580,9 +580,7 @@ def _anchor_to_origin(adapter: Any, model: Any, sketch: Any) -> str | None:
     point = min(points, key=lambda p: (float(p.X) - ox) ** 2 + (float(p.Y) - oy) ** 2)
     x, y, _z = _xyz(point)
     dx, dy = x - ox, y - oy
-    app = adapter.swApp
-    for toggle in _QUIET_TOGGLES:  # no "make it driven?" box on a redundant one
-        attempt(adapter, lambda t=toggle: app.SetUserPreferenceToggle(t, False))
+    keep_off(adapter, _QUIET_TOGGLES)  # no "make it driven?" box on a redundant one
     with_origin = lambda: origin.Select4(True, _null_callout())  # noqa: E731
     if abs(dx) <= ON_PLANE_M and abs(dy) <= ON_PLANE_M:
         _relate(model, "sgCOINCIDENT", point, with_origin)

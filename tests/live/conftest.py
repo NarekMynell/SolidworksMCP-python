@@ -292,6 +292,16 @@ def _close_all_documents() -> None:
 
 
 @pytest.fixture(autouse=True)
+def _real_user_settings_notes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Live adapters note the real user's options in the real folder.
+
+    The root conftest points every test at a temporary notes folder; a live
+    test killed mid-call must leave its note where the next real server looks.
+    """
+    monkeypatch.delenv("SOLIDWORKS_MCP_USER_SETTINGS_DIR", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _pace_live_tests() -> Iterator[None]:
     """After each live test: drain every open document, then idle.
 
