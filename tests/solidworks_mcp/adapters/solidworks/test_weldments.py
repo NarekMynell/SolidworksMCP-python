@@ -435,6 +435,38 @@ async def test_member_inputs_are_checked_before_anything_is_drawn(
     assert "needs an open part" in drawing.error
 
 
+@pytest.mark.asyncio
+async def test_a_one_size_profile_file_goes_in_with_no_configuration(
+    root: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A file of one size (``Default``) is inserted with an empty configuration.
+
+    ``InsertStructuralWeldment5`` refused such a file under ``Default`` and
+    took it with ``""`` (seen live on SolidWorks 2025 SP4).
+    """
+    adapter = _Adapter(root)
+    own = tmp_path / "80x60x2.7.sldlfp"
+    own.write_bytes(b"")
+    monkeypatch.setattr(adapter.swApp, "GetConfigurationNames", lambda _p: ("Default",))
+    line = {"segments": _TRUSS["segments"][:1], "define": "none"}
+
+    by_name = await adapter.create_structural_members(
+        {"profile_path": str(own), "size": "80×60×2.7", **line}
+    )
+    by_configuration = await adapter.create_structural_members(
+        {"profile_path": str(own), "size": "Default", **line}
+    )
+    wrong = await adapter.create_structural_members(
+        {"profile_path": str(own), "size": "IPE300", **line}
+    )
+
+    assert by_name.is_success, by_name.error
+    assert by_configuration.is_success, by_configuration.error
+    assert [i[1] for i in adapter.currentModel.inserted] == ["", ""]
+    assert by_name.data["profile"]["size"] == "80x60x2.7"
+    assert "is one size, 80x60x2.7; give size '80x60x2.7'" in wrong.error
+
+
 def _cut_list_part(adapter: _Adapter, material: str = "Plain Carbon Steel") -> None:
     """Two cut-list items under Solid Bodies: 4 columns and 1 beam."""
 

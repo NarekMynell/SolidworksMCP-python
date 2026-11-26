@@ -168,6 +168,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`create_structural_members` with `profile_path` refused a file of one
+  size.** It passed the size as the configuration, and SolidWorks 2025
+  refuses a profile of one configuration under that configuration's name
+  (`Default`, or the name a template in another language gives): it takes it
+  with none, as a library with one file per size is read. A file of one
+  configuration now goes in with none, its `size` its file name.
 - **`export_plate_dxfs` cut mirrored members as plates and left stale DXFs.**
   A body mirrored or patterned from a member has no member feature, so two
   mirrored web angles, alone in their cut-list items, came out as plate DXFs.

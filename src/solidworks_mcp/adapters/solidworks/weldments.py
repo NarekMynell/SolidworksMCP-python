@@ -45,7 +45,7 @@ from .io import (
     _byref_variant,
     _doc_type,
 )
-from .weldment_library import Point, Profile, ProfileLibrary, chains
+from .weldment_library import Point, Profile, ProfileLibrary, chains, normalise
 
 #: ``swUserPreferenceStringValue_e.swFileLocationsWeldmentProfiles``.
 _SW_WELDMENT_PROFILES = 29
@@ -763,7 +763,15 @@ class SolidWorksWeldmentsMixin:
         )
 
     def _resolve_profile(self, params: dict[str, Any]) -> Profile:
-        """The profile ``params`` name: a library entry, or a file and size."""
+        """The profile ``params`` name: a library entry, or a file and size.
+
+        A file with one configuration is one size, as each file of a library
+        with a file per size is: ``size`` is its file name (or that
+        configuration's), and it goes in with no configuration. ``InsertStructuralWeldment5`` refused such a
+        file under its configuration's name, ``Default`` or another, and took
+        it with an empty one (seen live on 2025 SP4). A file whose
+        configurations can't be read goes in with ``size`` as before.
+        """
         size = str(params.get("size") or "")
         path = params.get("profile_path")
         if path:
@@ -777,12 +785,21 @@ class SolidWorksWeldmentsMixin:
                     adapter._attempt(lambda: adapter.swApp.GetConfigurationNames(path))
                 )
             ]
+            stem = os.path.splitext(os.path.basename(path))[0]
+            if len(sizes) == 1:
+                if size and normalise(size) not in {
+                    normalise(n) for n in (stem, *sizes)
+                }:
+                    raise ValueError(
+                        f"{os.path.basename(path)} is one size, {stem}; give size "
+                        f"{stem!r}"
+                    )
+                return Profile("custom", stem, stem, path, "")
             if size and sizes and size not in sizes:
                 raise ValueError(
                     f"{os.path.basename(path)} has no size {size!r}; it has "
                     f"{', '.join(sizes)}"
                 )
-            stem = os.path.splitext(os.path.basename(path))[0]
             return Profile("custom", stem, size or stem, path, size)
         return self._profile_library().resolve(
             str(params.get("standard") or ""),

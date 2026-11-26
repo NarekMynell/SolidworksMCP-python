@@ -158,7 +158,9 @@ class CreateStructuralMembersInput(CompatInput):
     )
     profile_path: str | None = Field(
         default=None,
-        description="A .sldlfp profile of your own instead of standard and profile_type",
+        description="A .sldlfp profile of your own instead of standard and "
+        "profile_type; for a file of one size (a library with a file per size), "
+        "size is its file name",
     )
     segments: list[Segment] | None = Field(
         default=None,
