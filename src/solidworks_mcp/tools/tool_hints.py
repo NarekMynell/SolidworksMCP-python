@@ -183,6 +183,7 @@ TOOL_HINTS: dict[str, ToolHints] = {
     "create_plates": _adds("Create Plates"),
     "create_cuts": _adds("Create Cuts"),
     "pattern_members": _adds("Pattern Members"),
+    "create_weld_beads": _adds("Create Weld Beads"),
     "create_vent_holes": _adds("Create Vent Holes"),
     "export_plate_dxfs": _overwrites("Export Plate DXFs"),
     "set_feature_folders": _sets("Set Feature Folders"),

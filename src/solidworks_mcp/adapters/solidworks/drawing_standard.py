@@ -95,6 +95,8 @@ NOTE_CHARS = 80
 #: An overall size measured between vertices may differ this much (m) from
 #: the bodies' box along that axis; more means the outside isn't a vertex.
 OVERALL_TOLERANCE = 0.0005
+#: ``swViewEntityType_e.swViewEntityType_Vertex``.
+_VIEW_VERTICES = 2
 
 # swUserPreferenceToggle_e / IntegerValue_e / StringValue_e (swconst.tlb, SW 2025)
 _SW_SHOW_SHEET_FORMAT_DIALOG = 353
@@ -704,7 +706,7 @@ class SolidWorksDrawingStandardMixin:
         ) -> AdapterResult[Any]: ...
 
         async def save_file(
-            self, file_path: str | None = None
+            self, file_path: str | None = None, copy: bool = False
         ) -> AdapterResult[Any]: ...
 
         async def create_drawing(
@@ -1853,7 +1855,18 @@ class SolidWorksDrawingStandardMixin:
                 result["layout"] = self._arrange_layout(None, obstacles, WORK_AREA)
             return result
         if s.weldment_parts:
-            return {"dimensions_added": 0, "note": WELDMENT_ASSEMBLY_DIMENSIONS}
+            overall = self._overall_dimensions(s)
+            assembly: dict[str, Any] = {
+                "dimensions_added": overall["added"],
+                "note": WELDMENT_ASSEMBLY_DIMENSIONS,
+                "overall": overall,
+            }
+            if overall["added"]:
+                obstacles = self._obstacles(s)
+                if s.bom_box is not None:
+                    obstacles["bom"] = s.bom_box
+                assembly["layout"] = self._arrange_layout(None, obstacles, WORK_AREA)
+            return assembly
         dims = self._import_dimensions(None, True, only_views=list(s.ortho))
         dims["layout"] = self._arrange_layout(None, self._obstacles(s), WORK_AREA)
         return dims
@@ -1893,8 +1906,11 @@ class SolidWorksDrawingStandardMixin:
         A weldment's model dimensions are its profiles' sketch sizes, so its
         own size is measured: the two vertices farthest apart along a view's
         sheet x (or y) are selected in the view (``IView.SelectEntity``) and
-        dimensioned. A size the vertices miss (a round tube's outside has no
-        vertex) is left out and named, never guessed.
+        dimensioned. For a part they are its bodies' vertices; for an
+        assembly, the vertices the view shows of the components at that
+        extreme (:meth:`_assembly_vertices`). A size the vertices miss (a
+        round tube's outside has no vertex) is left out and named, never
+        guessed.
         """
         roles = {r: n for n, r in s.role.items()}
         front = roles.get("front")
@@ -1904,30 +1920,15 @@ class SolidWorksDrawingStandardMixin:
         doc = self._attempt(lambda: first.ReferencedDocument, default=None)
         if doc is None:
             return {"added": 0, "sizes": {}, "note": "the view's model can't be read"}
-        part = _sw_type_info.flagged(doc, "IPartDoc")
-        vertices: list[tuple[Any, tuple[float, float, float]]] = []
-        lo = [float("inf")] * 3
-        hi = [float("-inf")] * 3
-        for raw in as_list(
-            self._attempt(lambda: part.GetBodies2(0, True), default=None)
-        ):
-            body = _sw_type_info.flagged(raw, "IBody2")
-            box = as_list(self._attempt(lambda b=body: b.GetBodyBox(), default=None))
-            if len(box) == 6:
-                lo = [min(lo[k], float(box[k])) for k in range(3)]
-                hi = [max(hi[k], float(box[k + 3])) for k in range(3)]
-            for v in as_list(
-                self._attempt(lambda b=body: b.GetVertices(), default=None)
-            ):
-                vertex = _sw_type_info.flagged(v, "IVertex")
-                point = as_list(
-                    self._attempt(lambda x=vertex: x.GetPoint(), default=None)
-                )
-                if len(point) >= 3:
-                    vertices.append(
-                        (vertex, (float(point[0]), float(point[1]), float(point[2])))
-                    )
-        if not vertices:
+        assembly = (
+            self._attempt(
+                lambda: int(_sw_type_info.flagged(doc, "IModelDoc2").GetType()),
+                default=1,
+            )
+            == 2
+        )
+        part_points = None if assembly else self._part_vertices(doc)
+        if part_points is not None and not part_points[0]:
             return {"added": 0, "sizes": {}, "note": "the bodies have no vertices"}
         drawing = _sw_type_info.flagged(self.currentModel, "IDrawingDoc")
         depth = roles.get("side") or roles.get("plan")
@@ -1939,6 +1940,14 @@ class SolidWorksDrawingStandardMixin:
         for name, sheet_axis, label in wanted:
             view = _as_com(self, s.views[name], "IView")
             along = self._sheet_axes_in_model(view)[sheet_axis]
+            vertices, lo, hi = (
+                part_points
+                if part_points is not None
+                else self._assembly_vertices(view, doc, along)
+            )
+            if not vertices:
+                missed.append(label)
+                continue
             ranked = sorted(
                 vertices,
                 key=lambda item: sum(
@@ -1998,6 +2007,128 @@ class SolidWorksDrawingStandardMixin:
         if missed:
             result["missed"] = missed
         return result
+
+    def _part_vertices(
+        self, doc: Any
+    ) -> tuple[list[tuple[Any, tuple[float, float, float]]], list[float], list[float]]:
+        """A part's vertices (model metres) and its bodies' box."""
+        part = _sw_type_info.flagged(doc, "IPartDoc")
+        vertices: list[tuple[Any, tuple[float, float, float]]] = []
+        lo = [float("inf")] * 3
+        hi = [float("-inf")] * 3
+        for raw in as_list(
+            self._attempt(lambda: part.GetBodies2(0, True), default=None)
+        ):
+            body = _sw_type_info.flagged(raw, "IBody2")
+            box = as_list(self._attempt(lambda b=body: b.GetBodyBox(), default=None))
+            if len(box) == 6:
+                lo = [min(lo[k], float(box[k])) for k in range(3)]
+                hi = [max(hi[k], float(box[k + 3])) for k in range(3)]
+            for v in as_list(
+                self._attempt(lambda b=body: b.GetVertices(), default=None)
+            ):
+                vertex = _sw_type_info.flagged(v, "IVertex")
+                point = as_list(
+                    self._attempt(lambda x=vertex: x.GetPoint(), default=None)
+                )
+                if len(point) >= 3:
+                    vertices.append(
+                        (vertex, (float(point[0]), float(point[1]), float(point[2])))
+                    )
+        return vertices, lo, hi
+
+    def _assembly_vertices(
+        self, view: Any, doc: Any, along: tuple[float, ...]
+    ) -> tuple[list[tuple[Any, tuple[float, float, float]]], list[float], list[float]]:
+        """The vertices a view shows of an assembly's components at its two extremes along ``along``.
+
+        The assembly's extent is the union of its components' boxes
+        (``IComponent2.GetBox``): ``IAssemblyDoc.GetBox`` gave a pavilion 160
+        mm taller than its steel (seen live). Only the components reaching
+        an extreme are read (``IView.GetVisibleEntities2``, vertices): all 26
+        of a front view took 5.7 s. Each vertex is put into assembly space
+        by its component's transform, so it compares with the boxes.
+        """
+        assembly = _sw_type_info.flagged(doc, "IAssemblyDoc")
+        main = max(range(3), key=lambda k: abs(along[k]))
+        boxes: dict[str, tuple[Any, list[float]]] = {}
+        for raw in as_list(
+            self._attempt(lambda: assembly.GetComponents(False), default=None)
+        ):
+            component = _sw_type_info.flagged(raw, "IComponent2")
+            box = as_list(
+                self._attempt(lambda c=component: c.GetBox(False, False), default=None)
+            )
+            name = self._attempt(lambda c=component: str(c.Name2), default=None)
+            if name and len(box) == 6:
+                boxes[name] = (component, [float(v) for v in box])
+        if not boxes:
+            return [], [0.0] * 3, [0.0] * 3
+        lo = [min(b[k] for _c, b in boxes.values()) for k in range(3)]
+        hi = [max(b[k + 3] for _c, b in boxes.values()) for k in range(3)]
+        reach = {
+            name
+            for name, (_c, b) in boxes.items()
+            if b[main] - lo[main] < OVERALL_TOLERANCE
+            or hi[main] - b[main + 3] < OVERALL_TOLERANCE
+        }
+        vertices: list[tuple[Any, tuple[float, float, float]]] = []
+        for raw in as_list(
+            self._attempt(lambda: view.GetVisibleComponents(), default=None)
+        ):
+            shown = _sw_type_info.flagged(raw, "IComponent2")
+            name = str(self._attempt(lambda c=shown: c.Name2, default="") or "")
+            own = name.rsplit("/", 1)[-1]
+            if own not in reach:
+                continue
+            component, _box = boxes[own]
+            moved = self._component_mapper(component)
+            for v in as_list(
+                self._attempt(
+                    lambda c=shown: view.GetVisibleEntities2(c, _VIEW_VERTICES),
+                    default=None,
+                )
+            ):
+                vertex = _sw_type_info.flagged(v, "IVertex")
+                point = as_list(
+                    self._attempt(lambda x=vertex: x.GetPoint(), default=None)
+                )
+                if len(point) >= 3:
+                    vertices.append((vertex, moved([float(c) for c in point[:3]])))
+        return vertices, lo, hi
+
+    def _component_mapper(
+        self, component: Any
+    ) -> Callable[[list[float]], tuple[float, float, float]]:
+        """A component's part-space point put into assembly space (``Transform2``)."""
+        transform = self._attempt(lambda: component.Transform2, default=None)
+        data = (
+            [
+                float(v)
+                for v in as_list(
+                    self._attempt(
+                        lambda: (
+                            _sw_type_info.flagged(transform, "IMathTransform").ArrayData
+                        ),
+                        default=None,
+                    )
+                )
+            ]
+            if transform is not None
+            else []
+        )
+        if len(data) < 13:
+            return lambda p: (p[0], p[1], p[2])
+        r, d, s = data[:9], data[9:12], data[12]
+
+        def move(p: list[float]) -> tuple[float, float, float]:
+            return (
+                (p[0] * r[0] + p[1] * r[3] + p[2] * r[6]) * s + d[0],
+                (p[0] * r[1] + p[1] * r[4] + p[2] * r[7]) * s + d[1],
+                (p[0] * r[2] + p[1] * r[5] + p[2] * r[8]) * s + d[2],
+            )
+
+        return move
 
     def _annotate(self, s: _Sheet) -> dict[str, Any]:
         """Add a bold caption under each view and the NOTES block.

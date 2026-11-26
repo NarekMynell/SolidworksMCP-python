@@ -14,7 +14,6 @@ mitred); an end that meets nothing and isn't capped is open.
 
 from __future__ import annotations
 
-import csv
 import math
 import os
 import re
@@ -23,7 +22,13 @@ from typing import TYPE_CHECKING, Any
 from .base import AdapterResult, AdapterResultStatus
 from .solidworks.weldment_cuts import check_cut
 from .solidworks.weldment_library import chains, normalise
-from .solidworks.weldment_plates import check_plate, description, main_axis, plate_frame
+from .solidworks.weldment_plates import (
+    check_plate,
+    description,
+    main_axis,
+    plate_frame,
+    write_listing,
+)
 
 #: ``{standard: {type: {size: kg per metre}}}``, nominal masses.
 SAMPLE_PROFILES: dict[str, dict[str, dict[str, float]]] = {
@@ -489,6 +494,29 @@ class MockWeldmentsMixin:
             },
         )
 
+    async def create_weld_beads(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock welds: one 400 mm bead where each member meets the next."""
+        if error := self._part_error("create_weld_beads"):
+            return error
+        bodies = [b[3] for b in self._weld_state()["bodies"]]
+        throat = float(params["throat_mm"])
+        welds = [
+            {"from": a, "to": b, "length_mm": 400.0}
+            for a, b in zip(bodies, bodies[1:], strict=False)
+        ]
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "beads": len(welds),
+                "throat_mm": throat,
+                "leg_mm": round(throat * 2**0.5, 1),
+                "total_length_mm": 400.0 * len(welds),
+                "welds": welds,
+            },
+        )
+
     async def pattern_members(
         self, params: dict[str, Any]
     ) -> AdapterResult[dict[str, Any]]:
@@ -652,25 +680,10 @@ class MockWeldmentsMixin:
                     "area_mm2": round(plates[0]["area_mm2"], 1),
                 }
             )
-        listing = os.path.join(out_dir, f"{prefix}plates.csv")
-        with open(listing, "w", newline="", encoding="utf-8") as handle:
-            writer = csv.DictWriter(
-                handle,
-                fieldnames=[
-                    "file",
-                    "mark",
-                    "description",
-                    "thickness_mm",
-                    "quantity",
-                    "area_mm2",
-                ],
-            )
-            writer.writeheader()
-            for row in files:
-                writer.writerow({**row, "file": os.path.basename(row["file"])})
+        listed = write_listing(out_dir, prefix, os.path.basename(path), files)
         return AdapterResult(
             status=AdapterResultStatus.SUCCESS,
-            data={"files": files, "csv": listing, "skipped": []},
+            data={"files": files, "skipped": [], **listed},
         )
 
     def _trim_bodies(self, names: list[str]) -> list[int] | str:

@@ -15,7 +15,21 @@ line's ends dimensioned to the main planes like a skeleton's nodes.
 
 ``export_plate_dxfs`` writes each distinct plate's flat face as a DXF for the
 cutting table (holes included), named by mark, thickness and quantity, and a
-CSV list of them.
+CSV list of them. Checked live on SolidWorks 2025 SP4 (the TR-01 truss):
+
+- A body mirrored or patterned from a member has no member feature (its
+  ``GetFeatures`` is the ``MirrorSolid`` alone), so two mirrored web angles,
+  alone in their cut-list items, were cut as plates. SolidWorks' own
+  classification, ``IBodyFolder::GetCutListType``, gives every member item
+  ``swWeldmentCutlist``, mirrored ones too, and the plates' items
+  ``swSolidBodyCutList``.
+- A DXF is written only for a flat plate: as deep across its largest flat
+  face as its volume over that face's area (the angle: 51 mm across, 11.7 mm
+  on average).
+- A re-export after a plate's quantity changed left ``PL-1_t6.35_x2.dxf``
+  beside ``PL-1_t6.35_x4.dxf``: the shop would have cut six. The DXFs the
+  last export of the same part listed in plates.csv and this one didn't
+  write are removed.
 """
 
 from __future__ import annotations
@@ -33,7 +47,7 @@ from ..base import AdapterResult
 from .com_utils import as_list
 from .feature_tree import move_into_folder
 from .features import _REF_PLANE_DISTANCE, _null_callout, _offset_plane_distance
-from .io import _as_com
+from .io import _as_com, _byref_double
 from .part_features import _to_sketch
 from .sketch_define import (
     main_planes,
@@ -62,6 +76,23 @@ _ALIGNED = 1e-9
 _EDGE_MIN_MM = 1.0
 #: ``swExportToDWG_e.swExportToDWG_ExportSelectedFacesOrLoops``.
 _EXPORT_FACES = 2
+#: ``swCutListType_e.swWeldmentCutlist``: a member's cut-list item (a plate's
+#: is ``swSolidBodyCutList`` 1, a sheet metal body's ``swSheetmetalCutlist`` 2).
+_MEMBER_CUT_LIST = 3
+#: A flat plate is as deep across its largest flat face as its volume over the
+#: face's area, within this share or this much (m): a bevel or a countersink
+#: takes a little.
+_FLAT_SHARE, _FLAT_SLACK_M = 0.05, 1e-4
+#: plates.csv's columns: ``part`` is the part file each row's DXF came from.
+_LISTING_FIELDS = [
+    "file",
+    "mark",
+    "description",
+    "thickness_mm",
+    "quantity",
+    "area_mm2",
+    "part",
+]
 _AXES = "XYZ"
 
 
@@ -405,15 +436,17 @@ class SolidWorksWeldmentPlatesMixin:
     async def export_plate_dxfs(
         self, params: dict[str, Any]
     ) -> AdapterResult[dict[str, Any]]:
-        """Write a DXF of each distinct plate (any flat body that isn't a member), and a CSV list.
+        """Write a DXF of each distinct flat plate (no member, mirrored ones included), and a CSV list.
 
         Args:
             params: ``output_dir`` and optionally ``prefix``.
 
         Returns:
             AdapterResult[dict[str, Any]]: ``files`` (each ``file``, ``mark``,
-            ``description``, ``thickness_mm``, ``quantity``, ``area_mm2``) and
-            ``csv``.
+            ``description``, ``thickness_mm``, ``quantity``, ``area_mm2``),
+            ``csv``, ``skipped`` (each ``item`` and ``reason``) and
+            ``removed``; ``kept_stale`` and ``listing_was`` when they apply
+            (see :func:`write_listing`).
         """
         adapter = self._adapter(self)
         if wrong := _need_part(adapter, "export_plate_dxfs"):
@@ -433,74 +466,61 @@ class SolidWorksWeldmentPlatesMixin:
             os.makedirs(out_dir, exist_ok=True)
             part = _flagged(model, "IPartDoc")
             files: list[dict[str, Any]] = []
-            skipped: list[str] = []
+            skipped: list[dict[str, str]] = []
             for folder in _cut_list_folders(adapter, model, update=True):
-                bodies = as_list(
-                    adapter._attempt(
-                        lambda f=folder: _flagged(
-                            f.GetSpecificFeature2(), "IBodyFolder"
-                        ).GetBodies()
-                    )
+                item = str(folder.Name)
+                body_folder = adapter._attempt(
+                    lambda f=folder: _flagged(f.GetSpecificFeature2(), "IBodyFolder")
                 )
-                if not bodies:
+                bodies = as_list(adapter._attempt(lambda b=body_folder: b.GetBodies()))
+                if not bodies or _member_item(adapter, body_folder, bodies):
                     continue
                 body = _flagged(bodies[0], "IBody2")
-                if _is_member(adapter, body):
-                    continue
                 face = adapter._largest_flat_face(body)
                 volume = _volume(adapter, body)
                 if face is None or volume is None or face[0] <= 0:
-                    skipped.append(str(folder.Name))
+                    skipped.append({"item": item, "reason": "no flat face"})
                     continue
-                thickness = volume / face[0] * 1000.0
+                thickness, not_flat = _flat_thickness(adapter, body, face, volume)
+                if not_flat:
+                    skipped.append({"item": item, "reason": not_flat})
+                    continue
+                thickness_mm = thickness * 1000.0
                 properties = _flagged(
                     folder.CustomPropertyManager, "ICustomPropertyManager"
                 )
                 mark = _text(adapter, properties, "MARK")
-                text = _text(adapter, properties, "Description") or str(folder.Name)
+                text = _text(adapter, properties, "Description") or item
                 quantity = len(bodies)
-                stem = _slug(f"{prefix}{mark or text}_t{thickness:g}_x{quantity}")
+                stem = _slug(f"{prefix}{mark or text}_t{thickness_mm:g}_x{quantity}")
                 path = os.path.join(out_dir, f"{stem}.dxf")
                 model.ClearSelection2(True)
                 if not _as_com(adapter, face[1], "IEntity").Select4(
                     False, _null_callout()
                 ):
-                    skipped.append(str(folder.Name))
+                    skipped.append(
+                        {"item": item, "reason": "its face can't be selected"}
+                    )
                     continue
                 ok = part.ExportToDWG2(
                     path, model_path, _EXPORT_FACES, True, None, False, False, 0, None
                 )
                 model.ClearSelection2(True)
                 if not ok or not os.path.exists(path):
-                    skipped.append(str(folder.Name))
+                    skipped.append({"item": item, "reason": "SolidWorks wrote no DXF"})
                     continue
                 files.append(
                     {
                         "file": path,
                         "mark": mark,
                         "description": text,
-                        "thickness_mm": round(thickness, 2),
+                        "thickness_mm": round(thickness_mm, 2),
                         "quantity": quantity,
                         "area_mm2": round(face[0] * 1e6, 1),
                     }
                 )
-            listing = os.path.join(out_dir, f"{prefix}plates.csv")
-            with open(listing, "w", newline="", encoding="utf-8") as handle:
-                writer = csv.DictWriter(
-                    handle,
-                    fieldnames=[
-                        "file",
-                        "mark",
-                        "description",
-                        "thickness_mm",
-                        "quantity",
-                        "area_mm2",
-                    ],
-                )
-                writer.writeheader()
-                for row in files:
-                    writer.writerow({**row, "file": os.path.basename(row["file"])})
-            return {"files": files, "csv": listing, "skipped": skipped}
+            listed = write_listing(out_dir, prefix, os.path.basename(model_path), files)
+            return {"files": files, "skipped": skipped, **listed}
 
         return cast(
             AdapterResult[dict[str, Any]],
@@ -823,12 +843,156 @@ def _describe(
             )
 
 
+def _member_item(adapter: Any, body_folder: Any, bodies: list[Any]) -> bool:
+    """Whether a cut-list item is a structural member's, mirrored or patterned ones too.
+
+    SolidWorks' own word, ``GetCutListType``; where it can't be read, whether a
+    member feature made any of its bodies.
+    """
+    kind = adapter._attempt(lambda: int(body_folder.GetCutListType()), default=None)
+    if kind is not None:
+        return bool(kind == _MEMBER_CUT_LIST)
+    return any(_is_member(adapter, _flagged(body, "IBody2")) for body in bodies)
+
+
 def _is_member(adapter: Any, body: Any) -> bool:
     """Whether a structural member feature made ``body``."""
     for feature in as_list(adapter._attempt(lambda: body.GetFeatures(), default=None)):
         if str(_flagged(feature, "IFeature").GetTypeName2()) == "WeldMemberFeat":
             return True
     return False
+
+
+def _flat_thickness(
+    adapter: Any, body: Any, face: tuple[float, Any], volume: float
+) -> tuple[float, str]:
+    """A plate's thickness (m), or why the body is no flat plate.
+
+    A flat plate is as deep across its largest flat face as its volume over
+    that face's area. Where the depth can't be read, the average is taken.
+
+    Returns:
+        tuple[float, str]: The thickness, and ``""`` or the reason.
+    """
+    area, entity = face
+    mean = volume / area
+    normal = _normal(adapter, entity)
+    depth = _depth(adapter, body, normal) if normal is not None else None
+    if depth is None:
+        return mean, ""
+    if abs(depth - mean) > max(_FLAT_SHARE * depth, _FLAT_SLACK_M):
+        return mean, (
+            f"not a flat plate: {depth * 1000.0:.1f} mm deep across its largest "
+            f"flat face, {mean * 1000.0:.1f} mm on average"
+        )
+    return depth, ""
+
+
+def _normal(adapter: Any, face: Any) -> Vector | None:
+    """A planar face's unit normal (``IFace2::Normal``), or ``None``."""
+    values = as_list(adapter._attempt(lambda: face.Normal, default=None))
+    if len(values) != 3:
+        return None
+    try:
+        return _unit((float(values[0]), float(values[1]), float(values[2])), "normal")
+    except (TypeError, ValueError):
+        return None
+
+
+def _depth(adapter: Any, body: Any, direction: Vector) -> float | None:
+    """How deep a body is along a unit direction (m): its extreme points both ways."""
+    ends: list[Vector] = []
+    for sign in (1.0, -1.0):
+        outs = [_byref_double() for _ in range(3)]
+        ok = adapter._attempt(
+            lambda s=sign, o=outs: body.GetExtremePoint(
+                s * direction[0], s * direction[1], s * direction[2], *o
+            ),
+            default=False,
+        )
+        if not ok:
+            return None
+        values = [float(getattr(out, "value", out)) for out in outs]
+        ends.append((values[0], values[1], values[2]))
+    return abs(_dot(_sub(ends[0], ends[1]), direction))
+
+
+def write_listing(
+    out_dir: str, prefix: str, part: str, files: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Write plates.csv for ``part``'s DXFs, and remove the DXFs its last export left.
+
+    A DXF the last export of the same part listed and this one didn't write
+    (its plate deleted, or its quantity changed) is removed, so nobody cuts
+    it. Only names the list gave, plain file names ending ``.dxf`` in
+    ``out_dir``, are touched; a list another part wrote is replaced and its
+    DXFs left.
+
+    Args:
+        out_dir: The DXFs' folder.
+        prefix: Put before the list's name, as before the DXFs'.
+        part: The part file the DXFs came from.
+        files: The DXFs written (each ``file`` and its list columns).
+
+    Returns:
+        dict[str, Any]: ``csv`` and ``removed``; ``kept_stale`` (a DXF that
+        couldn't be removed, open elsewhere) and ``listing_was`` (the other
+        part whose list was replaced) when they apply.
+    """
+    listing = os.path.join(out_dir, f"{prefix}plates.csv")
+    owner, listed = _read_listing(listing)
+    with open(listing, "w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=_LISTING_FIELDS)
+        writer.writeheader()
+        for row in files:
+            writer.writerow(
+                {**row, "file": os.path.basename(row["file"]), "part": part}
+            )
+    data: dict[str, Any] = {"csv": listing, "removed": []}
+    if owner is None:
+        return data
+    if owner.casefold() != part.casefold():
+        data["listing_was"] = owner
+        return data
+    written = {os.path.basename(row["file"]).casefold() for row in files}
+    kept: list[str] = []
+    for name in listed:
+        if (
+            name.casefold() in written
+            or os.path.basename(name) != name
+            or not name.casefold().endswith(".dxf")
+        ):
+            continue
+        path = os.path.join(out_dir, name)
+        if not os.path.isfile(path):
+            continue
+        try:
+            os.remove(path)
+        except OSError:
+            kept.append(path)
+        else:
+            data["removed"].append(path)
+    if kept:
+        data["kept_stale"] = kept
+    return data
+
+
+def _read_listing(path: str) -> tuple[str | None, list[str]]:
+    """The part a plates.csv was written for and the DXFs it lists.
+
+    ``None`` for no list, an unreadable one, one from before the ``part``
+    column, or one naming more than one part.
+    """
+    try:
+        with open(path, newline="", encoding="utf-8-sig") as handle:
+            rows = list(csv.DictReader(handle))
+    except (OSError, UnicodeDecodeError, csv.Error):
+        return None, []
+    owners = {(row.get("part") or "").strip() for row in rows}
+    names = [(row.get("file") or "").strip() for row in rows]
+    if len(owners) != 1 or "" in owners:
+        return None, []
+    return owners.pop(), [name for name in names if name]
 
 
 def _volume(adapter: Any, body: Any) -> float | None:

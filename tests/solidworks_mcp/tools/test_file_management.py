@@ -1978,7 +1978,7 @@ async def test_save_as_keeps_an_existing_file_unless_overwrite(
     assert "left untouched" in kept["message"] and "overwrite" in kept["message"]
     assert target.read_bytes() == b"original"
     assert replaced["status"] == "success"
-    mock_adapter.save_file.assert_awaited_once_with(str(target))
+    mock_adapter.save_file.assert_awaited_once_with(str(target), False)
 
 
 @pytest.mark.asyncio
@@ -2196,3 +2196,21 @@ async def test_get_model_info_on_the_mock_adapter_has_no_file(
 
     assert info["path"].startswith("Mock://")
     assert info["size_bytes"] is None
+
+
+@pytest.mark.asyncio
+async def test_save_as_a_copy_keeps_the_open_document(
+    mcp_server, mock_adapter, mock_config, tmp_path
+) -> None:
+    """#276: File > Save As renames the open document; a copy leaves it."""
+    save_as = await _tool(mcp_server, mock_adapter, mock_config, "save_as")
+    mock_adapter.save_file = AsyncMock(
+        return_value=Mock(is_success=True, data=None, execution_time=0.1)
+    )
+    target = tmp_path / "rev-A.SLDPRT"
+
+    reply = await save_as({"file_path": str(target), "as_copy": True})
+
+    mock_adapter.save_file.assert_awaited_once_with(str(target), True)
+    assert reply["copy"] is True
+    assert "keeps its name" in reply["message"]

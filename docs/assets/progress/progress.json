@@ -1,8 +1,8 @@
 {
  "tools": {
-  "total": 172,
+  "total": 173,
   "by_level": {
-   "stable": 164,
+   "stable": 165,
    "beta": 0,
    "experimental": 0,
    "planned": 0,
@@ -175,7 +175,7 @@
     "family": "sketching",
     "level": "stable",
     "reason": "",
-    "summary": "Add a geometric relation between sketch entities: horizontal, vertical, parallel, perpendicular, tangent, coincident, concentric, equal, symmetric, collinear or fix."
+    "summary": "Add a geometric relation between sketch entities: horizontal, vertical, parallel, perpendicular, tangent, coincident, concentric, equal, symmetric, collinear, midpoint or fix."
    },
    {
     "name": "add_sketch_dimension",
@@ -507,6 +507,13 @@
     "summary": "Cut the vent and drain holes hot-dip galvanizing needs in closed hollow members (RHS, SHS)."
    },
    {
+    "name": "create_weld_beads",
+    "family": "weldments",
+    "level": "stable",
+    "reason": "",
+    "summary": "Put a cosmetic fillet weld on every shop joint of a weldment, and measure the weld length."
+   },
+   {
     "name": "delete_configuration",
     "family": "file_management",
     "level": "stable",
@@ -546,7 +553,7 @@
     "family": "sketching",
     "level": "stable",
     "reason": "",
-    "summary": "Close the open sketch so a feature can use it."
+    "summary": "Close the open sketch so a feature can use it, fully defined."
    },
    {
     "name": "export_dwg",
@@ -1218,11 +1225,11 @@
  "com": {
   "type_library": "83A33D31-27C5-11CE-BFD4-00400513BB57x0x34x0",
   "core": {
-   "covered": 309,
+   "covered": 317,
    "total": 2838
   },
   "api": {
-   "covered": 358,
+   "covered": 375,
    "total": 5985
   },
   "interfaces": [
@@ -1246,6 +1253,7 @@
      "GetUserPreferenceIntegerValue",
      "GetUserPreferenceStringValue",
      "GetUserPreferenceToggle",
+     "IsSame",
      "NewAssembly",
      "NewDocument",
      "NewDrawing2",
@@ -1299,12 +1307,14 @@
      "ForceRebuild3",
      "GetActiveConfiguration",
      "GetActiveSketch2",
+     "GetConfigurationByName",
      "GetConfigurationNames",
      "GetDependencies2",
      "GetEquationMgr",
      "GetFeatureCount",
      "GetLineCount",
      "GetMassProperties",
+     "GetModelViewNames",
      "GetNext",
      "GetPathName",
      "GetSaveFlag",
@@ -1448,7 +1458,8 @@
      "GetFirstView",
      "GetViews",
      "InsertModelAnnotations3",
-     "SetupSheet5"
+     "SetupSheet5",
+     "Sheet"
     ],
     "total": 272
    },
@@ -1474,6 +1485,8 @@
      "GetFlatPatternFolder",
      "HoleWizard5",
      "InsertCosmeticThread3",
+     "InsertCosmeticWeldBead",
+     "InsertCosmeticWeldBead2",
      "InsertDeleteBody2",
      "InsertEndCapFeature3",
      "InsertFeatureChamfer",
@@ -1513,6 +1526,7 @@
      "CreateSketchSlot",
      "CreateSpline2",
      "CreateTangentArc",
+     "FullyDefineSketch",
      "Insert3DSketch",
      "InsertSketch",
      "SketchExtend",
@@ -1548,6 +1562,7 @@
      "GetConstrainedStatus",
      "GetID",
      "GetModelDoc2",
+     "GetParent",
      "GetPathName",
      "GetSuppression2",
      "GetTessNorms",

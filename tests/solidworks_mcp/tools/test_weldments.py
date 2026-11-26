@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -582,6 +583,54 @@ async def test_plates_with_holes_then_their_dxfs(
         "J1_plates.csv",
     ]
     assert dxfs["message"] == "Wrote 3 plate DXF(s), 4 plate(s) to cut"
+    assert "warning" not in dxfs
+
+    # One more base plate: the re-export takes away the DXF it replaced.
+    await tools["create_plates"]({"plates": [_PLATE]})
+    again = await tools["export_plate_dxfs"](
+        {"output_dir": str(tmp_path / "dxf"), "prefix": "J1_"}
+    )
+    assert again["message"] == (
+        "Wrote 3 plate DXF(s), 5 plate(s) to cut; removed 1 DXF(s) the last export left"
+    )
+    assert [Path(p).name for p in again["dxfs"]["removed"]] == ["J1_BP-1_t15_x2.dxf"]
+    assert sorted(p.name for p in (tmp_path / "dxf").iterdir()) == [
+        "J1_BP-1_t15_x3.dxf",
+        "J1_CP-1_t15_x1.dxf",
+        "J1_GP-1_t10_x1.dxf",
+        "J1_plates.csv",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_plate_export_warns_of_what_it_left(
+    mcp_server, mock_adapter, monkeypatch
+) -> None:
+    tools = await _tools(mcp_server, mock_adapter)
+
+    async def leftovers(_params: dict[str, Any]) -> AdapterResult[dict[str, Any]]:
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "files": [],
+                "skipped": [{"item": "Cut-List-Item9", "reason": "not a flat plate"}],
+                "csv": "C:/dxf/plates.csv",
+                "removed": [],
+                "kept_stale": ["C:/dxf/PL-1_t6.35_x2.dxf"],
+                "listing_was": "frame.SLDPRT",
+            },
+        )
+
+    monkeypatch.setattr(mock_adapter, "export_plate_dxfs", leftovers)
+    reply = await tools["export_plate_dxfs"]({"output_dir": "C:/dxf"})
+    assert reply["status"] == "success", reply
+    assert reply["message"] == "Wrote 0 plate DXF(s), 0 plate(s) to cut"
+    assert reply["warning"] == (
+        "1 cut-list item(s) not exported; see skipped for why; "
+        "1 DXF(s) of the last export could not be removed (open in another "
+        "program?); see kept_stale; the list named frame.SLDPRT's plates and now "
+        "names this part's; their DXFs are left: give each part its own prefix"
+    )
 
 
 @pytest.mark.asyncio
@@ -998,3 +1047,36 @@ async def test_patterns_around_and_mirrored_and_unknown_names(
     )
     assert missing["status"] == "error"
     assert "Nothing" in missing["message"]
+
+
+@pytest.mark.asyncio
+async def test_welds_on_every_joint_with_their_length(mcp_server, mock_adapter) -> None:
+    tools = await _tools(mcp_server, mock_adapter)
+    await mock_adapter.create_part()
+    await tools["create_structural_members"](
+        {
+            "standard": "BSI",
+            "profile_type": "shs",
+            "size": "RHS60x60x4",
+            "segments": [[0, 0, 0, 0, 1000, 0], [0, 1000, 0, 1000, 1000, 0]],
+            "name": "Frame",
+            "grouping": "each",
+        }
+    )
+
+    made = await tools["create_weld_beads"]({"throat_mm": 4})
+
+    assert made["status"] == "success", made
+    assert made["welds"]["beads"] == 1
+    assert made["welds"]["leg_mm"] == 5.7
+    assert made["message"] == "1 weld bead(s), throat a4, 400 mm; 400.0 mm in the part"
+    assert "warning" not in made
+
+
+@pytest.mark.asyncio
+async def test_welds_need_a_throat(mcp_server, mock_adapter) -> None:
+    tools = await _tools(mcp_server, mock_adapter)
+
+    refused = await tools["create_weld_beads"]({"throat_mm": 0})
+
+    assert refused["status"] == "error"

@@ -17,6 +17,7 @@ import pytest
 
 from solidworks_mcp.adapters.base import AdapterResult, AdapterResultStatus
 from solidworks_mcp.adapters.solidworks import part_features as pf
+from solidworks_mcp.adapters.solidworks.hole_library import SqliteHoleLibrary
 from solidworks_mcp.adapters.solidworks.part_features import (
     SolidWorksPartFeaturesMixin,
 )
@@ -327,16 +328,60 @@ async def test_hole_with_no_face_or_no_feature(picks: list[Any]) -> None:
 
 
 @pytest.mark.asyncio
-async def test_cosmetic_thread_keeps_the_volume(picks: list[Any]) -> None:
+async def test_cosmetic_thread_keeps_the_volume(
+    picks: list[Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    from .test_hole_library import _library_file
+
+    library = SqliteHoleLibrary(_library_file(tmp_path / "swbrowser.sldedb"))
+    monkeypatch.setattr(pf, "find_library", lambda: library)
     adapter = FakeAdapter([1000.0, 1000.0])
 
-    result = await adapter.add_cosmetic_thread([5, 0, 20], "M10x1.5", 10, "blind", 15)
+    result = await adapter.add_cosmetic_thread([5, 0, 20], "M8x1.25", 8, "blind", 15)
 
+    # ISO lists the coarse M8 without its pitch: M8x1.25 is the row "M8" (#274).
     adapter.manager.InsertCosmeticThread3.assert_called_once_with(
-        8, "Machine Threads", "M10x1.5", 0.01, 0, 0.015, "M10x1.5"
+        8, "Machine Threads", "M8", 0.008, 0, 0.015, "M8"
     )
     assert result.data["volume_change"] == 0.0
+    assert result.data["asked"] == "M8x1.25"
     assert picks[0][3:] == (False, 0, "EDGE")
+
+
+@pytest.mark.asyncio
+async def test_a_thread_solidworks_stored_otherwise_is_reported(
+    picks: list[Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def missing() -> Any:
+        raise pf.HoleLibraryError("No Hole Wizard library found.")
+
+    monkeypatch.setattr(pf, "find_library", missing)
+    adapter = FakeAdapter([1000.0, 1000.0])
+    stored = SimpleNamespace(Size="M8x1.0", ThreadCallout="M8x1.0")
+    adapter.manager.InsertCosmeticThread3.return_value.GetDefinition = lambda: stored
+    unread = FakeAdapter([1000.0, 1000.0])
+
+    result = await adapter.add_cosmetic_thread([5, 0, 20], "M8x1.25", 8, depth=10)
+    unchecked = await unread.add_cosmetic_thread([5, 0, 20], "M8x1.25", 8, depth=10)
+
+    assert result.data["size"] == "M8x1.0"
+    assert result.data["callout"] == "M8x1.0"
+    assert "stored the thread as M8x1.0, not M8x1.25" in result.data["warning"]
+    assert "wasn't checked" in unchecked.data["warning"]
+
+
+@pytest.mark.asyncio
+async def test_a_thread_size_the_table_lacks_is_refused(
+    picks: list[Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    from .test_hole_library import _library_file
+
+    library = SqliteHoleLibrary(_library_file(tmp_path / "swbrowser.sldedb"))
+    monkeypatch.setattr(pf, "find_library", lambda: library)
+    adapter = FakeAdapter([1000.0, 1000.0])
+
+    with pytest.raises(pf.HoleSizeError, match="nearest"):
+        await adapter.add_cosmetic_thread([5, 0, 20], "M7x0.9", 7, depth=10)
 
 
 @pytest.mark.asyncio

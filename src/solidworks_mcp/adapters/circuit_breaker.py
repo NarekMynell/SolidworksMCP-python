@@ -498,7 +498,9 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             input_dict={"save": save},
         )
 
-    async def save_file(self, file_path: str | None = None) -> AdapterResult[None]:
+    async def save_file(
+        self, file_path: str | None = None, copy: bool = False
+    ) -> AdapterResult[None]:
         """Save model through circuit breaker.
 
         Args:
@@ -509,8 +511,8 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
         """
         return await self._execute_with_circuit_breaker(
             "save_file",
-            lambda: self.adapter.save_file(file_path),
-            input_dict={"file_path": file_path},
+            lambda: self.adapter.save_file(file_path, copy),
+            input_dict={"file_path": file_path, "copy": copy},
         )
 
     async def create_base_flange(
@@ -1759,16 +1761,21 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             input_dict={"sketch_name": sketch_name},
         )
 
-    async def exit_sketch(self) -> AdapterResult[None]:
+    async def exit_sketch(
+        self, define: bool = False
+    ) -> AdapterResult[dict[str, Any] | None]:
         """Exit sketch through circuit breaker.
 
+        Args:
+            define: Fully define the sketch before it closes.
+
         Returns:
-            AdapterResult[None]: The result produced by the operation.
+            AdapterResult[dict[str, Any] | None]: The result produced by the operation.
         """
         return await self._execute_with_circuit_breaker(
             "exit_sketch",
-            lambda: self.adapter.exit_sketch(),
-            input_dict={},
+            lambda: self.adapter.exit_sketch(define),
+            input_dict={"define": define},
         )
 
     # Analysis operations
@@ -2062,6 +2069,16 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
         return await self._execute_with_circuit_breaker(
             "create_cuts",
             lambda: self.adapter.create_cuts(params),
+            input_dict={"params": params},
+        )
+
+    async def create_weld_beads(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Weld a weldment's joints, through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "create_weld_beads",
+            lambda: self.adapter.create_weld_beads(params),
             input_dict={"params": params},
         )
 

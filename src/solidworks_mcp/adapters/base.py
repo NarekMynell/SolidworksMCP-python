@@ -420,7 +420,9 @@ class SolidWorksAdapter(ABC):
         """
         pass
 
-    async def save_file(self, file_path: str | None = None) -> AdapterResult[Any]:
+    async def save_file(
+        self, file_path: str | None = None, copy: bool = False
+    ) -> AdapterResult[Any]:
         """Save the active model to the existing path or the provided path.
 
         Args:
@@ -2030,6 +2032,22 @@ class SolidWorksAdapter(ABC):
             error="pattern_members is not implemented by this adapter",
         )
 
+    async def create_weld_beads(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Put cosmetic fillet welds on a weldment's joints.
+
+        Args:
+            params (dict[str, Any]): ``throat_mm`` and optionally ``members``.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The result, or error.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="create_weld_beads is not implemented by this adapter",
+        )
+
     async def pack_and_go_assembly(
         self, source_path: str, target_dir: str
     ) -> AdapterResult[dict[str, Any]]:
@@ -2658,11 +2676,17 @@ class SolidWorksAdapter(ABC):
         )
 
     @abstractmethod
-    async def exit_sketch(self) -> AdapterResult[None]:
+    async def exit_sketch(
+        self, define: bool = False
+    ) -> AdapterResult[dict[str, Any] | None]:
         """Exit sketch editing mode.
 
+        Args:
+            define: Fully define the sketch before it closes.
+
         Returns:
-            AdapterResult[None]: The result produced by the operation.
+            AdapterResult[dict[str, Any] | None]: With ``define``, how defined
+            the sketch closed (``definition``...).
         """
         pass
 

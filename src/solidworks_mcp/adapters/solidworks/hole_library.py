@@ -304,6 +304,21 @@ class HoleLibrary(ABC):
         )
         return {"size": spelled, **row["dimensions"]}
 
+    def thread_size(self, standard: str, size: str) -> str:
+        """A thread size as the standard's thread table writes it.
+
+        Cosmetic threads read the tapped-hole table (the ``Machine Threads``
+        type's ``DATA_HW_TappedHole``). Its ISO rows name coarse threads
+        without their pitch: ``M8x1.25`` is the row ``M8``, while ``M8x1.0``
+        is a fine thread of its own. Given ``M8x1.25``, SolidWorks matched no
+        row and made the first M8, the fine ``M8x1.0`` (#274).
+
+        Raises:
+            HoleSizeError: For a size the table doesn't have; names the nearest.
+        """
+        name = default_fastener(standard, "tapped", size)[0]
+        return self.match_size(standard, self.find_type(standard, "tapped", name), size)
+
     def resolve(
         self, standard: str, hole_type: str, size: str, fastener: str | None
     ) -> ResolvedHole:

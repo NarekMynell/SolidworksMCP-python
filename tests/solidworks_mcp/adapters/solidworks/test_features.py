@@ -13,6 +13,7 @@ from solidworks_mcp.adapters.base import (
     AdapterResult,
     AdapterResultStatus,
     ExtrusionParameters,
+    RevolveParameters,
 )
 from solidworks_mcp.adapters.mock_adapter import MockSolidWorksAdapter
 from solidworks_mcp.adapters.pywin32_adapter import PyWin32Adapter
@@ -3807,3 +3808,77 @@ class TestScopedSuppression:
         assert "SetSuppression2 refused to unsuppress Fillet1 in Default, Long" in (
             result.error or ""
         )
+
+
+class TestFeatureSketch:
+    """Extrude and revolve find their sketch the way a cut does (#270)."""
+
+    @staticmethod
+    def _adapter(
+        *,
+        open_sketch: object = None,
+        last: str | None = "SK_Base",
+        tree: str = "SK_Base",
+    ) -> tuple[_FakeFeatureAdapter, list[str]]:
+        adapter = _FakeFeatureAdapter()
+        selected: list[str] = []
+        adapter.currentModel = SimpleNamespace(
+            GetActiveSketch2=lambda: open_sketch,
+            FirstFeature=_fake_sketch_feature(tree),
+            ClearSelection2=lambda *_args: True,
+            Extension=SimpleNamespace(
+                SelectByID2=lambda name, *_args: selected.append(name) or True
+            ),
+        )
+        adapter._last_sketch_name = last
+        return adapter, selected
+
+    def test_a_named_sketch_is_selected(self) -> None:
+        adapter, selected = self._adapter(last=None)
+
+        assert (
+            features._feature_sketch(adapter, "sk_base", purpose="extrude") == "SK_Base"
+        )
+        assert selected == ["SK_Base"]
+
+    def test_the_last_closed_sketch_is_selected_by_name(self) -> None:
+        adapter, selected = self._adapter()
+
+        assert features._feature_sketch(adapter, None, purpose="extrude") == "SK_Base"
+        assert selected == ["SK_Base"]
+
+    @pytest.mark.parametrize(
+        ("open_sketch", "last", "tree"),
+        [
+            (object(), "SK_Base", "SK_Base"),  # an open sketch: SolidWorks uses it
+            (None, None, "SK_Base"),  # nothing tracked
+            (None, "Sketch7", "SK_Base"),  # tracked but not in the tree
+        ],
+    )
+    def test_otherwise_selection_is_left_to_solidworks(
+        self, open_sketch: object, last: str | None, tree: str
+    ) -> None:
+        adapter, selected = self._adapter(open_sketch=open_sketch, last=last, tree=tree)
+
+        assert features._feature_sketch(adapter, None, purpose="extrude") is None
+        assert selected == []
+
+    def test_a_revolve_without_an_axis_uses_the_last_sketch(self) -> None:
+        adapter, selected = self._adapter()
+
+        used = features._select_revolve_inputs(adapter, RevolveParameters(angle=360.0))
+
+        assert used == "SK_Base"
+        assert selected == ["SK_Base"]
+
+
+def test_a_sketch_closed_in_another_document_is_not_used() -> None:
+    """In another part a "Sketch1" is a different sketch: SolidWorks' selection decides."""
+    adapter, selected = TestFeatureSketch._adapter()
+    adapter._last_sketch_model = SimpleNamespace(_oleobj_="other part")
+    adapter.currentModel._oleobj_ = "this part"
+
+    assert features._feature_sketch(adapter, None, purpose="extrude") is None
+    assert selected == []
+    adapter._last_sketch_model = adapter.currentModel
+    assert features._feature_sketch(adapter, None, purpose="extrude") == "SK_Base"

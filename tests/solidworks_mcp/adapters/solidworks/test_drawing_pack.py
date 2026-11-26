@@ -97,6 +97,7 @@ class FakeAdapter(SolidWorksDrawingPackMixin):
         self.currentModel = MagicMock()
         self.selected: list[tuple[Any, bool]] = []
         self.dimension_counts = dict.fromkeys(views, 0)
+        self.moved: list[tuple[float, float]] = []
 
     def _require_drawing(self) -> AdapterResult[Any] | None:
         if self.is_drawing:
@@ -130,6 +131,19 @@ class FakeAdapter(SolidWorksDrawingPackMixin):
 
     def _pictorial(self, view: Any) -> bool:
         return view.name == "Iso"
+
+    def _set_view_position(self, view: Any, x: float, y: float) -> bool:
+        """Moves the fake view: its outline follows its centre."""
+        self.moved.append((x, y))
+        width, height = getattr(view, "size", (0.1, 0.08))
+        view.Position = (x, y)
+        view.GetOutline = lambda: (
+            x - width / 2,
+            y - height / 2,
+            x + width / 2,
+            y + height / 2,
+        )
+        return getattr(view, "movable", True)
 
 
 @pytest.fixture
@@ -173,9 +187,11 @@ async def test_a_section_view_is_cut_along_the_line(adapter: FakeAdapter) -> Non
     drawing.SketchManager.CreateLine.return_value = line
 
     def make_section(*args: Any) -> Any:
+        # SolidWorks put it where asked: in line with its parent.
         adapter.views["Section View A-A"] = FakeView(
             name="Section View A-A",
             GetName2=lambda: "Section View A-A",
+            Position=(0.25, 0.19),
             GetOutline=lambda: (0.2, 0.15, 0.3, 0.23),
         )
         return adapter.views["Section View A-A"]
@@ -200,14 +216,85 @@ async def test_a_section_view_is_cut_along_the_line(adapter: FakeAdapter) -> Non
         0.25, 0.19, 0.0, "A", 0, None, 0.0
     )
     assert adapter.selected == [(line, False)]
+    assert adapter.moved == []
     assert result.data == {
         "label": "A",
         "parent": "Front",
+        "aligned": True,
         "name": "Section View A-A",
         "outline_mm": (200.0, 150.0, 300.0, 230.0),
         "views_before": 1,
         "views_after": 2,
     }
+
+
+@pytest.mark.asyncio
+async def test_a_section_asked_off_its_line_is_moved_there(
+    adapter: FakeAdapter,
+) -> None:
+    """SolidWorks kept it in line, on top of its parent; it goes where asked (#273)."""
+    drawing = adapter.currentModel
+    drawing.SketchManager.CreateLine.return_value = object()
+    section = FakeView(
+        name="Section View A-A",
+        GetName2=lambda: "Section View A-A",
+        Position=(0.07, 0.19),
+        GetOutline=lambda: (0.02, 0.15, 0.12, 0.23),
+        RemoveAlignment=MagicMock(),
+    )
+
+    def make_section(*args: Any) -> Any:
+        adapter.views["Section View A-A"] = section
+        return section
+
+    drawing.CreateSectionViewAt5.side_effect = make_section
+
+    result = await adapter.create_section_view(
+        "Front", [10, 190], [130, 190], [300, 80]
+    )
+
+    section.RemoveAlignment.assert_called_once()
+    assert adapter.moved == [(0.3, 0.08)]
+    assert result.data["aligned"] is False
+    assert result.data["outline_mm"] == (250.0, 40.0, 350.0, 120.0)
+    assert "warning" not in result.data
+
+
+@pytest.mark.asyncio
+async def test_a_section_that_wont_move_is_an_error(adapter: FakeAdapter) -> None:
+    drawing = adapter.currentModel
+    drawing.SketchManager.CreateLine.return_value = object()
+    drawing.CreateSectionViewAt5.return_value = FakeView(
+        name="S", GetName2=lambda: "S", Position=(0.07, 0.19), movable=False
+    )
+
+    result = await adapter.create_section_view(
+        "Front", [10, 190], [130, 190], [300, 80]
+    )
+
+    assert "wouldn't move to [300, 80] mm" in (result.error or "")
+
+
+@pytest.mark.asyncio
+async def test_a_view_landing_on_another_warns(adapter: FakeAdapter) -> None:
+    drawing = adapter.currentModel
+    drawing.SketchManager.CreateCircleByRadius.return_value = "circle"
+    detail = FakeView(
+        name="Detail View A",
+        GetName2=lambda: "Detail View A",
+        GetOutline=lambda: (0.05, 0.16, 0.15, 0.26),
+    )
+
+    def make_detail(*args: Any) -> Any:
+        adapter.views["Detail View A"] = detail
+        return detail
+
+    drawing.CreateDetailViewAt4.side_effect = make_detail
+
+    result = await adapter.create_detail_view("Front", [30, 160], 5, [100, 210])
+
+    assert result.data["overlaps"] == ["Front"]
+    assert "lands on Front" in result.data["warning"]
 
 
 @pytest.mark.asyncio
@@ -605,3 +692,27 @@ async def test_a_report_with_no_model_or_manager(
         "revision": None,
     }
     assert (result.data["model_type"], result.data["bom"]) == (None, False)
+
+
+@pytest.mark.asyncio
+async def test_a_view_on_another_sheet_is_not_an_overlap(adapter: FakeAdapter) -> None:
+    drawing = adapter.currentModel
+    drawing.SketchManager.CreateCircleByRadius.return_value = "circle"
+    sheet = lambda name: SimpleNamespace(GetName=lambda: name)  # noqa: E731
+    adapter.views["Front"].Sheet = sheet("Sheet2")
+    detail = FakeView(
+        name="Detail View A",
+        GetName2=lambda: "Detail View A",
+        GetOutline=lambda: (0.05, 0.16, 0.15, 0.26),
+        Sheet=sheet("Sheet1"),
+    )
+
+    def make_detail(*args: Any) -> Any:
+        adapter.views["Detail View A"] = detail
+        return detail
+
+    drawing.CreateDetailViewAt4.side_effect = make_detail
+
+    result = await adapter.create_detail_view("Front", [30, 160], 5, [100, 210])
+
+    assert "overlaps" not in result.data

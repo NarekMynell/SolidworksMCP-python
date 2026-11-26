@@ -520,3 +520,173 @@ def tie_points_to_origin(
         "definition": definition(sketch),
         "seconds": round(time.perf_counter() - started, 2),
     }
+
+
+#: ``ISketchManager.FullyDefineSketch`` relations, among those that already
+#: hold: horizontal, vertical, coincident, concentric and tangent
+#: (``swSketchFullyDefineRelationType_e``). Equal, parallel, perpendicular,
+#: collinear and midpoint are left out: in a sketch drawn from coordinates
+#: they are often chance, and the relation would tie sizes meant apart.
+DEFINE_RELATIONS = 2 | 4 | 512 | 64 | 8
+#: ``swAutodimScheme_e.swAutodimSchemeBaseline``, and the placements:
+#: horizontal dimensions above, vertical ones to the left.
+_BASELINE, _ABOVE, _LEFT = 1, 1, -1
+#: ``swAutodimStatus_e``: success, and the states a sketch can't be sized in
+#: (3D sketch, empty, over defined).
+_AUTODIM_SUCCESS = 0
+_AUTODIM_SKIPPED = {5: "3D sketch", 6: "empty sketch", 7: "over defined"}
+#: How far (m) an anchoring dimension's text sits beside the point.
+_ANCHOR_TEXT_M = 0.01
+#: ``swDimensionDrivenState_e.swDimensionDriven``: a reference dimension
+#: (``swDimensionDriving`` is 2).
+_DRIVEN = 1
+
+
+def _points_and_centres(sketch: Any) -> list[Any]:
+    """The sketch's points and its arcs' and circles' centres."""
+    points = [_flagged(p, "ISketchPoint") for p in as_list(sketch.GetSketchPoints2())]
+    seen = {_key(p) for p in points}
+    for segment in as_list(sketch.GetSketchSegments()):
+        if int(_flagged(segment, "ISketchSegment").GetType()) != _ARC:
+            continue
+        centre = _flagged(
+            _flagged(segment, "ISketchArc").GetCenterPoint2(), "ISketchPoint"
+        )
+        if _key(centre) not in seen:
+            seen.add(_key(centre))
+            points.append(centre)
+    return points
+
+
+def _anchor_to_origin(adapter: Any, model: Any, sketch: Any) -> str | None:
+    """Tie the sketch's point nearest the part origin to it; how, or None without points.
+
+    On the origin: a coincident relation. Otherwise one axis at a time: a
+    horizontal or vertical relation when the point is on the origin's axis,
+    else a dimension. An axis something already holds (the origin on a line,
+    a distance the agent dimensioned) is left: a tie that over defines the
+    sketch, or that SolidWorks makes a driven dimension, is taken back. The
+    dimensions stay on drawings: they place the shape, as a designer's would.
+    """
+    points = _points_and_centres(sketch)
+    if not points:
+        return None
+    origin = origin_point(model)
+    ox, oy = origin_in_sketch(adapter, sketch)
+    point = min(points, key=lambda p: (float(p.X) - ox) ** 2 + (float(p.Y) - oy) ** 2)
+    x, y, _z = _xyz(point)
+    dx, dy = x - ox, y - oy
+    app = adapter.swApp
+    for toggle in _QUIET_TOGGLES:  # no "make it driven?" box on a redundant one
+        attempt(adapter, lambda t=toggle: app.SetUserPreferenceToggle(t, False))
+    with_origin = lambda: origin.Select4(True, _null_callout())  # noqa: E731
+    if abs(dx) <= ON_PLANE_M and abs(dy) <= ON_PLANE_M:
+        _relate(model, "sgCOINCIDENT", point, with_origin)
+        if definition(sketch) == "over defined":
+            attempt(adapter, lambda: model.EditUndo2(1))
+            return "held already"
+        return "coincident"
+    made = []
+    for along, value in (("h", dx), ("v", dy)):
+        if definition(sketch) == "fully defined":
+            break
+        if abs(value) <= ON_PLANE_M:
+            # On the origin's vertical (or horizontal) line.
+            _relate(
+                model,
+                "sgVERTICALPOINTS2D" if along == "h" else "sgHORIZONTALPOINTS2D",
+                point,
+                with_origin,
+            )
+            if definition(sketch) == "over defined":
+                attempt(adapter, lambda: model.EditUndo2(1))
+                made.append("held")
+            else:
+                made.append("relation")
+            continue
+        model.ClearSelection2(True)
+        point.Select4(False, _null_callout())
+        with_origin()
+        display = (
+            model.AddHorizontalDimension2(ox + value / 2.0, y + _ANCHOR_TEXT_M, 0.0)
+            if along == "h"
+            else model.AddVerticalDimension2(x + _ANCHOR_TEXT_M, oy + value / 2.0, 0.0)
+        )
+        model.ClearSelection2(True)
+        if display is None:
+            made.append("refused")
+            continue
+        driven = attempt(
+            adapter,
+            lambda d=display: int(
+                _flagged(
+                    _flagged(d, "IDisplayDimension").GetDimension2(0), "IDimension"
+                ).DrivenState
+            ),
+            None,
+        )
+        if driven == _DRIVEN or definition(sketch) == "over defined":
+            _delete(model, [display])
+            made.append("held")
+        else:
+            made.append("dimension")
+    return " and ".join(made) or None
+
+
+def define_sketch(
+    adapter: Any, model: Any, manager: Any, sketch: Any
+) -> dict[str, Any]:
+    """Fully define the open 2D sketch, the way a designer finishes one.
+
+    ``ISketchManager.FullyDefineSketch`` (SolidWorks' Fully Define Sketch)
+    adds the relations that already hold and the sizes, then the point
+    nearest the part origin is tied to it. Checked live on SolidWorks 2025
+    SP4: Fully Define Sketch takes no datum from outside the sketch (the
+    origin given as datum, or selected with ``swAutodimMarkOriginDatum``,
+    still left the sketch free to slide), so it sizes the sketch against
+    itself; the one tie to the origin fixes the rest. A rectangle and a
+    circle, a centred rectangle, a circle on the origin, an L outline and a
+    lone inclined line each came out fully defined in 0.3-0.6 s. A sketch
+    already fully defined is left as it is.
+
+    Args:
+        adapter: The connected adapter.
+        model: The part's ``IModelDoc2``.
+        manager: Its ``ISketchManager``.
+        sketch: The open 2D ``ISketch``.
+
+    Returns:
+        dict[str, Any]: ``definition`` (``"fully defined"``, ``"under
+        defined"``...), ``anchor`` (how the sketch was tied to the origin,
+        when it was), ``skipped`` (why nothing was added) and ``seconds``.
+    """
+    started = time.perf_counter()
+    result: dict[str, Any] = {}
+    if definition(sketch) != "fully defined":
+        null = _null_callout()
+        model.ClearSelection2(True)
+        status = int(
+            manager.FullyDefineSketch(
+                True,
+                True,
+                DEFINE_RELATIONS,
+                True,
+                _BASELINE,
+                null,
+                _BASELINE,
+                null,
+                _ABOVE,
+                _LEFT,
+            )
+        )
+        if status in _AUTODIM_SKIPPED:
+            result["skipped"] = _AUTODIM_SKIPPED[status]
+        elif definition(sketch) == "under defined":
+            anchor = _anchor_to_origin(adapter, model, sketch)
+            if anchor:
+                result["anchor"] = anchor
+        if status not in (_AUTODIM_SUCCESS, *_AUTODIM_SKIPPED):
+            result["autodim_status"] = status
+    result["definition"] = definition(sketch)
+    result["seconds"] = round(time.perf_counter() - started, 2)
+    return result

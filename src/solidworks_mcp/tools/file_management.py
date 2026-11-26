@@ -131,6 +131,7 @@ class SaveAsInput(CompatInput):
         file_path (str): The file path value.
         format_type (str): The format type value.
         overwrite (bool): The overwrite value.
+        as_copy (bool): Write a copy; the open document keeps its name.
     """
 
     file_path: str = Field(description="Full path for the new file")
@@ -138,6 +139,13 @@ class SaveAsInput(CompatInput):
         default="solidworks", description="File format (solidworks, step, iges, etc.)"
     )
     overwrite: bool = Field(default=False, description="Overwrite existing file")
+    as_copy: bool = Field(
+        default=False,
+        description=(
+            "Write a copy: the open document, and assemblies using it, keep the "
+            "old file (SolidWorks formats only)"
+        ),
+    )
 
 
 class LoadPartInput(CompatInput):
@@ -702,16 +710,19 @@ async def register_file_management_tools(
     async def save_as(input_data: SaveAsInput) -> dict[str, Any]:
         """Save the active document under a new path, as a SolidWorks file or in an exchange format such as STEP or IGES.
 
-        For a SolidWorks format (solidworks, sldprt, sldasm, slddrw) it saves a copy
-        like File > Save As; any other `format_type` is passed to the exporter. For one
-        known format with its options, prefer `export_step`, `export_stl` and the other
-        `export_*` tools. Needs: an open, active document. Changes: writes the file. A
-        file already at `file_path` is kept and the call refused, unless `overwrite`
-        is on. Returns: `file_path` and `format`.
+        For a SolidWorks format (solidworks, sldprt, sldasm, slddrw) it is File > Save
+        As: the open document takes the new name, and an open assembly using it then
+        uses the new file. `as_copy: true` writes a copy instead (File > Save As > Save as
+        copy and continue): the open document and what references it keep the old file,
+        as for keeping a delivered revision. Any other `format_type` is passed to the
+        exporter; for one known format with its options, prefer `export_step`,
+        `export_stl` and the other `export_*` tools. Needs: an open, active document.
+        Changes: writes the file. A file already at `file_path` is kept and the call
+        refused, unless `overwrite` is on. Returns: `file_path`, `format` and `copy`.
 
         Args:
             input_data: The target. `file_path` is required; `format_type` defaults
-                to "solidworks", and `overwrite` is off.
+                to "solidworks"; `overwrite` and `as_copy` are off.
 
         Returns:
             dict[str, Any]: The path written.
@@ -728,13 +739,19 @@ async def register_file_management_tools(
             "sldasm",
             "slddrw",
         }:
-            result = await adapter.save_file(input_data.file_path)
+            result = await adapter.save_file(input_data.file_path, input_data.as_copy)
             require_success(result, "Failed to save file")
             return {
                 "status": "success",
-                "message": f"File saved as: {input_data.file_path}",
+                "message": (
+                    f"Copy saved as: {input_data.file_path}; the open document keeps "
+                    "its name"
+                    if input_data.as_copy
+                    else f"File saved as: {input_data.file_path}"
+                ),
                 "file_path": input_data.file_path,
                 "format": input_data.format_type,
+                "copy": input_data.as_copy,
                 "execution_time": result.execution_time,
             }
 

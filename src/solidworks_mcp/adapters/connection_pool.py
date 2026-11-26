@@ -522,7 +522,9 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             "close_model", lambda adapter: adapter.close_model(save)
         )
 
-    async def save_file(self, file_path: str | None = None) -> AdapterResult[None]:
+    async def save_file(
+        self, file_path: str | None = None, copy: bool = False
+    ) -> AdapterResult[None]:
         """Save model using pool.
 
         Args:
@@ -532,7 +534,7 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             AdapterResult[None]: The result produced by the operation.
         """
         return await self._execute_with_pool(
-            "save_file", lambda adapter: adapter.save_file(file_path)
+            "save_file", lambda adapter: adapter.save_file(file_path, copy)
         )
 
     async def create_base_flange(
@@ -1621,14 +1623,19 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             lambda adapter: adapter.check_sketch_fully_defined(sketch_name),
         )
 
-    async def exit_sketch(self) -> AdapterResult[None]:
+    async def exit_sketch(
+        self, define: bool = False
+    ) -> AdapterResult[dict[str, Any] | None]:
         """Exit sketch using pool.
 
+        Args:
+            define: Fully define the sketch before it closes.
+
         Returns:
-            AdapterResult[None]: The result produced by the operation.
+            AdapterResult[dict[str, Any] | None]: The result produced by the operation.
         """
         return await self._execute_with_pool(
-            "exit_sketch", lambda adapter: adapter.exit_sketch()
+            "exit_sketch", lambda adapter: adapter.exit_sketch(define)
         )
 
     # Analysis operations
@@ -1907,6 +1914,14 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
         """Cut holes, copes and notches in members, using pool."""
         return await self._execute_with_pool(
             "create_cuts", lambda adapter: adapter.create_cuts(params)
+        )
+
+    async def create_weld_beads(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Weld a weldment's joints, using pool."""
+        return await self._execute_with_pool(
+            "create_weld_beads", lambda adapter: adapter.create_weld_beads(params)
         )
 
     async def pattern_members(

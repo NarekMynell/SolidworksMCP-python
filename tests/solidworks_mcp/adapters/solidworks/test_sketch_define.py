@@ -374,3 +374,174 @@ def test_a_refused_plate_dimension_fixes_the_point_and_a_refused_diameter_counts
     assert result["fixed"] == 1
     assert result["failed_count"] == 1
     assert ("sgFIXED", (point,)) in model.relations
+
+
+# ---- define_sketch: Fully Define Sketch, then one tie to the origin ----------
+
+
+class _DefinedSketch(_Sketch):
+    """Under defined until its point is tied to the origin: two dimensions, or a relation and a dimension, or a coincident relation."""
+
+    def __init__(
+        self, model: _Model, segments: list[Any], points: list[_Point]
+    ) -> None:
+        super().__init__(segments, points, status=2)
+        self.model = model
+
+    def GetConstrainedStatus(self) -> int:
+        ties = len(self.model.dimensions) + len(self.model.relations)
+        coincident = any(name == "sgCOINCIDENT" for name, _ in self.model.relations)
+        return 3 if coincident or ties >= 2 else self.status
+
+
+class _Manager:
+    def __init__(self, status: int = 0) -> None:
+        self.status = status
+        self.calls: list[tuple[Any, ...]] = []
+
+    def FullyDefineSketch(self, *args: Any) -> int:
+        self.calls.append(args)
+        return self.status
+
+
+def _define(
+    points: list[tuple[float, float]], status: int = 0
+) -> tuple[dict, _Model, _Manager]:
+    model = _Model()
+    made = [_Point(x, y, 0.0, model) for x, y in points]
+    sketch = _DefinedSketch(model, [], made)
+    manager = _Manager(status)
+    return define.define_sketch(_Adapter(), model, manager, sketch), model, manager
+
+
+def test_a_sketch_fully_defined_already_is_left_alone() -> None:
+    model = _Model()
+    manager = _Manager()
+
+    result = define.define_sketch(_Adapter(), model, manager, _Sketch([], [], status=3))
+
+    assert manager.calls == []
+    assert result["definition"] == "fully defined"
+    assert "anchor" not in result
+
+
+def test_the_point_nearest_the_origin_gets_two_dimensions() -> None:
+    result, model, manager = _define([(0.07, 0.045), (0.01, 0.005), (0.07, 0.005)])
+
+    args = manager.calls[0]
+    assert args[:5] == (True, True, define.DEFINE_RELATIONS, True, 1)
+    assert args[6] == 1 and args[8:] == (1, -1)
+    assert result["anchor"] == "dimension and dimension"
+    assert result["definition"] == "fully defined"
+    # Both dimensions run from the nearest point, (10, 5) mm, to the origin.
+    assert all(
+        sel[0].X == 0.01 and sel[1] is model.origin for sel in model.dimensions.values()
+    )
+
+
+def test_a_point_on_the_origin_is_made_coincident() -> None:
+    result, model, _ = _define([(0.0, 0.0), (0.05, 0.0)])
+
+    assert result["anchor"] == "coincident"
+    assert model.relations[0][0] == "sgCOINCIDENT"
+    assert result["definition"] == "fully defined"
+
+
+def test_a_point_on_an_axis_gets_a_relation_and_one_dimension() -> None:
+    result, model, _ = _define([(0.02, 0.0), (0.06, 0.03)])
+
+    assert result["anchor"] == "dimension and relation"
+    assert [name for name, _ in model.relations] == ["sgHORIZONTALPOINTS2D"]
+    assert len(model.dimensions) == 1
+
+
+@pytest.mark.parametrize(
+    ("status", "skipped"), [(5, "3D sketch"), (6, "empty sketch"), (7, "over defined")]
+)
+def test_a_sketch_solidworks_cant_size_is_not_tied(status: int, skipped: str) -> None:
+    result, model, _ = _define([(0.01, 0.01)], status=status)
+
+    assert result["skipped"] == skipped
+    assert "anchor" not in result and not model.dimensions
+
+
+def test_a_failed_autodim_is_reported_and_the_sketch_still_tied() -> None:
+    result, _, _ = _define([(0.01, 0.01)], status=17)
+
+    assert result["autodim_status"] == 17
+    assert result["anchor"] == "dimension and dimension"
+
+
+def test_a_sketch_without_points_gets_no_anchor() -> None:
+    result, _, _ = _define([])
+
+    assert "anchor" not in result
+    assert result["definition"] == "under defined"
+
+
+def test_an_arc_centre_counts_as_a_point() -> None:
+    model = _Model()
+    centre = _Point(0.0, 0.0, 0.0, model)
+    sketch = _DefinedSketch(model, [_Circle(centre, 0.01)], [])
+
+    result = define.define_sketch(_Adapter(), model, _Manager(), sketch)
+
+    assert result["anchor"] == "coincident"
+
+
+def test_an_axis_held_already_is_left_untied() -> None:
+    """The point's y is held already: the y relation over defines and is taken back."""
+    model = _Model()
+    point = _Point(0.02, 0.0, 0.0, model)
+    sketch = _DefinedSketch(model, [], [point])
+    states = iter([2, 2, 2, 4, 3, 3])  # before, after FDS, ..., the h tie over defines
+    sketch.GetConstrainedStatus = lambda: next(states)  # type: ignore[method-assign]
+    undone: list[int] = []
+    model.EditUndo2 = lambda steps: undone.append(steps)  # type: ignore[attr-defined]
+
+    anchor = define._anchor_to_origin(_Adapter(), model, sketch)
+
+    assert anchor == "dimension and held"
+    assert undone == [1]
+
+
+def test_a_tie_that_over_defines_is_taken_back() -> None:
+    model = _Model()
+    point = _Point(0.0, 0.0, 0.0, model)
+    sketch = _DefinedSketch(model, [], [point])
+    sketch.GetConstrainedStatus = lambda: 4  # type: ignore[method-assign]
+    undone: list[int] = []
+    model.EditUndo2 = lambda steps: undone.append(steps)  # type: ignore[attr-defined]
+
+    assert define._anchor_to_origin(_Adapter(), model, sketch) == "held already"
+    assert undone == [1]
+
+
+def test_a_dimension_solidworks_made_driven_is_deleted() -> None:
+    model = _Model()
+    point = _Point(0.02, 0.01, 0.0, model)
+    sketch = _DefinedSketch(model, [], [point])
+    sketch.GetConstrainedStatus = lambda: 2  # type: ignore[method-assign]
+    _Display.DrivenState = 1  # swDimensionDriven  # type: ignore[attr-defined]
+    try:
+        anchor = define._anchor_to_origin(_Adapter(), model, sketch)
+    finally:
+        del _Display.DrivenState  # type: ignore[attr-defined]
+
+    assert anchor == "held and held"
+    assert model.dimensions == {}
+
+
+def test_a_driving_dimension_is_kept() -> None:
+    """swDimensionDriving is 2: such a dimension ties the sketch and stays."""
+    model = _Model()
+    point = _Point(0.02, 0.01, 0.0, model)
+    sketch = _DefinedSketch(model, [], [point])
+    _Display.DrivenState = 2  # type: ignore[attr-defined]
+    try:
+        anchor = define._anchor_to_origin(_Adapter(), model, sketch)
+    finally:
+        del _Display.DrivenState  # type: ignore[attr-defined]
+
+    assert anchor == "dimension and dimension"
+    assert len(model.dimensions) == 2

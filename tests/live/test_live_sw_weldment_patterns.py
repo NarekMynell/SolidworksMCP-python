@@ -221,3 +221,109 @@ async def test_facing_patterns_and_closed_ends(scratch: Any) -> None:
     assert trim["bodies_after"] == before
     joints = _ok(await tools["check_joints"]({"members": ["Floor"]}))["joints"]
     assert joints["overlaps"]["count"] == 0
+
+
+async def test_shop_welds_and_a_mirror_about_a_tilted_plane(scratch: Any) -> None:
+    """``create_weld_beads`` welds every shop joint once and measures it; a brace mirrors about any plane.
+
+    A 100x100 column on its base plate and under its cap plate is welded all
+    round its end (4 x 80 flats + four R10 corners = 382.8 mm each), a
+    mitred corner once, a fin plate along both sides and its ends (2 x 120 +
+    2 x 10 = 260 mm).
+    """
+    tools = await _tools(scratch.adapter)
+    _ok(await tools["create_part"]({"name": "welds"}))
+    _ok(
+        await tools["create_structural_members"](
+            {
+                **_SHS100,
+                "size": "RHS100x100x5",
+                "segments": [[0, 0, 0, 0, 2000, 0]],
+                "name": "Column",
+                "up": [1, 0, 0],
+            }
+        )
+    )
+    _ok(
+        await tools["create_structural_members"](
+            {
+                **_SHS100,
+                "size": "RHS100x100x5",
+                "segments": [
+                    [1000, 0, 0, 1000, 1500, 0],
+                    [1000, 1500, 0, 2500, 1500, 0],
+                ],
+                "name": "Frame",
+                "grouping": "auto",
+            }
+        )
+    )
+    _ok(
+        await tools["create_plates"](
+            {
+                "plates": [
+                    {
+                        "name": "Base plate",
+                        "mark": "BP1",
+                        "thickness": 15,
+                        "origin": [0, 0, 0],
+                        "normal": [0, -1, 0],
+                        "width": 250,
+                        "height": 250,
+                    },
+                    {
+                        "name": "Cap plate",
+                        "mark": "CP1",
+                        "thickness": 10,
+                        "origin": [0, 2000, 0],
+                        "normal": [0, 1, 0],
+                        "width": 150,
+                        "height": 150,
+                    },
+                    {
+                        "name": "Fin plate",
+                        "mark": "FP1",
+                        "thickness": 10,
+                        "origin": [100, 1500, 0],
+                        "normal": [0, 0, 1],
+                        "width": 100,
+                        "height": 120,
+                    },
+                ],
+                "folder": "Plates",
+            }
+        )
+    )
+
+    welds = _ok(await tools["create_weld_beads"]({"throat_mm": 4}))["welds"]
+
+    found = {(w["from"], w["to"]): w["length_mm"] for w in welds["welds"]}
+    assert welds["beads"] == 4, welds
+    assert found[("Column", "BP1 Base plate")] == pytest.approx(382.8, abs=1.0)
+    assert found[("Column", "CP1 Cap plate")] == pytest.approx(382.8, abs=1.0)
+    assert found[("FP1 Fin plate", "Column")] == pytest.approx(260.0, abs=1.0)
+    assert welds["leg_mm"] == pytest.approx(5.7)
+    assert "not_welded" not in welds and "failed" not in welds
+
+    brace = {"standard": "BSI", "profile_type": "rhs", "size": "RHS100x50x4"}
+    _ok(
+        await tools["create_structural_members"](
+            {
+                **brace,
+                "segments": [[3200, 0, 300, 3600, 1500, 300]],
+                "name": "Brace",
+                "define": "none",
+            }
+        )
+    )
+    mirrored = _ok(
+        await tools["pattern_members"](
+            {
+                "members": ["Brace"],
+                "mirror": {"point": [3800, 0, 0], "normal": [1, 0, 1]},
+                "name": "Brace mirror",
+            }
+        )
+    )["pattern"]
+    assert mirrored["bodies_added"] == 1
+    assert "Brace mirror mirror axis" in mirrored["references"]

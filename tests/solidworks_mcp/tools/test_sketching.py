@@ -714,9 +714,9 @@ class _SketchAdapterStub:
         """Test helper for add rectangle."""
         return _ok("Rect2")
 
-    async def exit_sketch(self):
+    async def exit_sketch(self, define: bool = False):
         """Test helper for exit sketch."""
-        return _ok(None)
+        return _ok({"definition": "fully defined"} if define else None)
 
     async def add_arc(self, *_args):
         """Test helper for add arc."""
@@ -1643,3 +1643,66 @@ async def test_a_construction_setting_that_fails_fails_the_drawing(
 
     assert reply["status"] == "error"
     assert "construction geometry" in reply["message"]
+
+
+class _DefiningStub:
+    """An adapter whose exit_sketch reports how defined the sketch closed."""
+
+    def __init__(self, defined: dict | None) -> None:
+        self.defined = defined
+        self.asked: list[bool] = []
+
+    async def exit_sketch(self, define: bool = False):
+        self.asked.append(define)
+        return _ok(self.defined)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("defined", "state", "warning"),
+    [
+        (
+            {"definition": "fully defined", "anchor": "coincident"},
+            "fully defined",
+            None,
+        ),
+        (
+            {"definition": "under defined"},
+            "under defined",
+            "The sketch is under defined",
+        ),
+        ({"define_error": "COM gone"}, None, "defining it failed (COM gone)"),
+        (
+            {"skipped": "3D sketch", "definition": "under defined"},
+            "under defined",
+            "under defined",
+        ),
+    ],
+)
+async def test_exit_sketch_reports_how_defined_the_sketch_closed(
+    mcp_server, mock_config, defined: dict, state: str | None, warning: str | None
+) -> None:
+    stub = _DefiningStub(defined)
+    await register_sketching_tools(mcp_server, stub, mock_config)
+
+    reply = await (await _tool(mcp_server, "exit_sketch"))()
+
+    assert stub.asked == [True]
+    assert reply.get("definition") == state
+    if warning:
+        assert warning in reply["warning"]
+    else:
+        assert "warning" not in reply
+
+
+@pytest.mark.asyncio
+async def test_exit_sketch_can_keep_the_sketch_as_drawn(
+    mcp_server, mock_config
+) -> None:
+    stub = _DefiningStub(None)
+    await register_sketching_tools(mcp_server, stub, mock_config)
+
+    reply = await (await _tool(mcp_server, "exit_sketch"))(input_data={"define": False})
+
+    assert stub.asked == [False]
+    assert "definition" not in reply

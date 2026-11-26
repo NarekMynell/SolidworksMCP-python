@@ -14,7 +14,13 @@ from ...exceptions import InputRefused
 from ...utils.sw_dependencies import dependency_paths
 from .. import sw_type_info as _sw_type_info
 from ..base import AdapterResult, AdapterResultStatus, MassProperties, SolidWorksModel
-from .configurations import THIS_CONFIGURATION, configuration_scope
+from .com_utils import as_list, string_array
+from .configurations import (
+    SPECIFY_CONFIGURATION,
+    THIS_CONFIGURATION,
+    configuration_names,
+    configuration_scope,
+)
 from .face_selection import mate_entity_label
 
 try:
@@ -149,6 +155,221 @@ def _view_names(adapter: Any, drawing: Any) -> list[str]:
             if name:
                 names.append(str(name))
     return names
+
+
+def _load_model_for_views(adapter: Any, path: str, shown_as: str) -> str | None:
+    """Load the model a drawing's views show, then give the drawing the focus back.
+
+    A view of a model needs it loaded: ``CreateDrawViewFromModelView3``
+    silently made no view of an unloaded one, and ``Create3rdAngleViews2``
+    returned False for a file that wasn't open (seen live, 2026-11-25).
+    ``OpenDoc6``'s errors/warnings out-params must be byref VARIANTs: with
+    ``pythoncom.Missing`` it returns None and the model stays unloaded.
+
+    Args:
+        adapter: The connected adapter; its ``currentModel`` is the drawing.
+        path: The model's absolute path.
+        shown_as: The path as the caller gave it, for the error.
+
+    Returns:
+        str | None: The model's title when this call gave it a window (close
+        it with :func:`_close_loaded_model` once the views are placed), or
+        ``None`` when it had a window of its own already.
+
+    Raises:
+        Exception: When SolidWorks won't open the model.
+    """
+    app = adapter.swApp
+    was_open = adapter._attempt(lambda: app.GetOpenDocumentByName(path), default=None)
+    doc_type = 2 if path.lower().endswith(".sldasm") else 1
+    opened = adapter._attempt(
+        lambda: app.OpenDoc6(path, doc_type, 1, "", _byref_int(), _byref_int()),
+        default=None,
+    )
+    if not opened:
+        raise Exception(f"Could not load '{shown_as}' - OpenDoc6 returned nothing.")
+    # Opening the model made it active; the drawing has to be active again
+    # before a view can be added to it.
+    drawing_title = adapter._attempt(
+        lambda: _sw_type_info.flagged(adapter.currentModel, "IModelDoc2").GetTitle(),
+        default=None,
+    )
+    if drawing_title:
+        adapter._attempt(
+            lambda: app.ActivateDoc3(drawing_title, False, 0, _byref_int()),
+            default=None,
+        )
+    # A model with a window of its own stays as it was; one loaded hidden (a
+    # drawing's or an assembly's reference) got a window from OpenDoc6, and
+    # that window is closed after the views like one this call opened.
+    shown = was_open is not None and bool(
+        adapter._attempt(lambda: bool(was_open.Visible), default=True)
+    )
+    if shown:
+        return None
+    title = adapter._attempt(
+        lambda: _sw_type_info.flagged(opened, "IModelDoc2").GetTitle(), default=None
+    )
+    return str(title) if title else None
+
+
+def _close_loaded_model(adapter: Any, title: str | None) -> None:
+    """Close the model window a view call opened.
+
+    The drawing keeps the model loaded for its views; a window left open per
+    view is what filled SolidWorks' memory on a long run (28 documents).
+    """
+    if title:
+        adapter._attempt(lambda: adapter.swApp.CloseDoc(title), default=None)
+
+
+#: ``swSaveAsOptions_e`` (values from the installed constants library): no
+#: dialogs; a copy, the open document keeping its name; the modified documents
+#: it uses saved with it.
+_SAVE_SILENT = 1
+_SAVE_AS_COPY = 2
+_SAVE_REFERENCED = 4
+#: Documents that use others: an assembly (2) and a drawing (3).
+_USES_OTHERS = frozenset({2, 3})
+
+
+def _save_options(adapter: Any, copy: bool = False) -> int:
+    """The options a save of the active document passes.
+
+    An assembly or a drawing saves the modified documents it uses with it:
+    without ``swSaveAsOptions_SaveReferenced`` SolidWorks asks "Component
+    documents must be saved" and the call waits for an answer. A whole
+    assembly's rebuild marks every component modified, so a save after it hung
+    a headless run for 30 minutes (SolidWorks 2025 SP4, seen live).
+    """
+    options = _SAVE_SILENT | (_SAVE_AS_COPY if copy else 0)
+    if _doc_type(adapter) in _USES_OTHERS:
+        options |= _SAVE_REFERENCED
+    return options
+
+
+def _save3(model: Any, options: int) -> bool:
+    """``IModelDoc2.Save3`` with byref ``Errors`` and ``Warnings``.
+
+    ``None`` for them is a type mismatch under late binding: the call raised and
+    the old ``Save``, without options, ran instead (seen live, SW 2025 SP4).
+    """
+    return bool(model.Save3(options, _byref_int(), _byref_int()))
+
+
+def _never_saved(adapter: Any) -> bool:
+    """Whether the active document has no file yet (``GetPathName`` empty).
+
+    Saving one opens SolidWorks' Save As dialog, even silently, and the call
+    waits for someone to answer it: every later tool hangs behind it (seen live
+    on a new drawing, SW 2025 SP4).
+    """
+    own_path = adapter._attempt(
+        lambda: adapter._get_attr_or_call(adapter.currentModel, "GetPathName"),
+        default=None,
+    )
+    return own_path is not None and not str(own_path)
+
+
+#: A note this close (mm) to where it was asked is there.
+_NOTE_PLACED_MM = 0.5
+
+
+def _note_extent_mm(
+    adapter: Any, note: Any
+) -> tuple[float, float, float, float] | None:
+    """A note's box on the sheet, mm: left, bottom, right, top (``INote.GetExtent``)."""
+    raw = as_list(
+        adapter._attempt(
+            lambda: _sw_type_info.flagged(note, "INote").GetExtent(), default=None
+        )
+    )
+    if len(raw) < 6:
+        return None
+    x1, y1, _z1, x2, y2, _z2 = (float(v) * 1000.0 for v in raw[:6])
+    return min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)
+
+
+def _dimension_mm(adapter: Any, dimension: Any) -> float | None:
+    """A dimension's value in the active configuration, mm (``None`` unreadable)."""
+    raw = adapter._attempt(lambda: float(dimension.SystemValue), default=None)
+    return None if raw is None else round(raw * 1000.0, 6)
+
+
+def _dimension_values(
+    adapter: Any, dimension: Any, names: list[str]
+) -> dict[str, float]:
+    """A dimension's value in each named configuration, mm; empty when unreadable.
+
+    ``IDimension.GetSystemValue3(swInSpecificConfigurations, names)`` reads
+    them all without activating any.
+    """
+    if not names:
+        return {}
+    raw = adapter._attempt(
+        lambda: dimension.GetSystemValue3(SPECIFY_CONFIGURATION, string_array(names)),
+        default=None,
+    )
+    values = as_list(raw)
+    if len(values) != len(names):
+        return {}
+    try:
+        read = {
+            config: round(float(v) * 1000.0, 6)
+            for config, v in zip(names, values, strict=True)
+        }
+    except (TypeError, ValueError):
+        return {}
+    # A derived configuration that inherits the value reads 0 (seen live: a
+    # child of Default read 0.0 while its model showed Default's 25 mm): it
+    # has its parent's value.
+    for config in names:
+        if read[config] == 0.0:
+            parent = _parent_name(adapter, config)
+            while parent is not None and read.get(parent) == 0.0:
+                parent = _parent_name(adapter, parent)
+            if parent in read:
+                read[config] = read[parent]
+    return read
+
+
+def _parent_name(adapter: Any, config: str) -> str | None:
+    """The configuration ``config`` derives from, or None."""
+    model = adapter.currentModel
+    parent = adapter._attempt(
+        lambda: _sw_type_info.flagged(
+            model.GetConfigurationByName(config), "IConfiguration"
+        ).GetParent(),
+        default=None,
+    )
+    name = adapter._attempt(lambda: str(parent.Name), default=None) if parent else None
+    return name or None
+
+
+def _derived_from(adapter: Any, config: str, parents: list[str]) -> bool:
+    """Whether ``config`` derives from one of ``parents`` (directly or further down)."""
+    current: str | None = config
+    for _ in range(16):  # derived configurations nest a few levels at most
+        current = _parent_name(adapter, current) if current else None
+        if current is None:
+            return False
+        if current in parents:
+            return True
+    return False
+
+
+def _put_back(adapter: Any, dimension: Any, config: str, old_mm: float) -> bool:
+    """Give ``config`` its old value back when the change reached it; whether it had to."""
+    now = _dimension_values(adapter, dimension, [config]).get(config)
+    if now is None or abs(now - old_mm) < 1e-6:
+        return False
+    adapter._attempt(
+        lambda: dimension.SetSystemValue3(
+            old_mm / 1000.0, SPECIFY_CONFIGURATION, string_array([config])
+        ),
+        default=None,
+    )
+    return True
 
 
 def _component_transforms(adapter: Any, assembly: Any) -> dict[str, tuple[float, ...]]:
@@ -1668,7 +1889,15 @@ class SolidWorksIOMixin:
             Read them through ``_get_attr_or_call`` which works either way.
             """
             if save:
-                adapter._get_attr_or_call(model, "Save")
+                if _never_saved(adapter):
+                    raise InputRefused(
+                        "The document has never been saved, so it has no path of "
+                        "its own: save_as it first, or close it without saving "
+                        "(SolidWorks would wait on a Save As dialog)."
+                    )
+                saved = adapter._attempt(lambda: _save3(model, _save_options(adapter)))
+                if saved is None:
+                    adapter._get_attr_or_call(model, "Save")
             title = adapter._get_attr_or_call(model, "GetTitle")
             app.CloseDoc(title)
             adapter.currentModel = None
@@ -1973,9 +2202,12 @@ class SolidWorksIOMixin:
     ) -> AdapterResult[dict[str, Any]]:
         """Set a named model dimension in millimetres and rebuild.
 
-        In the active configuration the proven ``SystemValue`` write is kept;
-        ``"all"`` or a list of names goes through
-        ``IDimension.SetSystemValue3(value, option, names)``.
+        The value goes in with ``IDimension.SetSystemValue3`` for the
+        configurations named, ``"this"`` being the active one by name: written
+        as ``swSetValue_InThisConfiguration`` (or ``SystemValue``), a
+        dimension not yet configured took the value in every configuration
+        (#266). Every configuration's value is read before and after; one the
+        change wasn't for that moved anyway gets its old value back.
 
         Args:
             name: Fully-qualified dimension name.
@@ -1983,8 +2215,10 @@ class SolidWorksIOMixin:
             configurations: ``"this"``, ``"all"`` or configuration names.
 
         Returns:
-            AdapterResult[dict[str, Any]]: ``configurations``, the names the
-            value was set in.
+            AdapterResult[dict[str, Any]]: ``configurations`` (the names the
+            value was set in), ``old_value`` and ``new_value`` (mm, the
+            active configuration), ``values`` (mm per configuration, when
+            SolidWorks gives them) and ``restored`` (configurations put back).
         """
         adapter = self._adapter(self)
         if not adapter.currentModel:
@@ -1998,11 +2232,16 @@ class SolidWorksIOMixin:
             dimension = adapter.currentModel.Parameter(name)
             if not dimension:
                 raise Exception(f"Dimension '{name}' not found")
+            every = configuration_names(adapter)
+            before = _dimension_values(adapter, dimension, every)
+            old_value = _dimension_mm(adapter, dimension)
+            if option == THIS_CONFIGURATION and names:
+                option, array = SPECIFY_CONFIGURATION, string_array(names)
 
             value_m = value / 1000.0
             if option == THIS_CONFIGURATION:
-                # SetValue3 has gen_py parameter mapping issues on SW 2025.
-                # SystemValue (in meters) is reliable.
+                # No configuration name to give (SolidWorks reported none
+                # active): the plain value is all there is.
                 adapter._attempt(
                     lambda: setattr(dimension, "SystemValue", value_m),
                     default=None,
@@ -2014,6 +2253,16 @@ class SolidWorksIOMixin:
                         f"SetSystemValue3 refused {name} in {', '.join(names)} "
                         f"(swSetValueReturnStatus_e {status})."
                     )
+            # A derived configuration follows its parent (a weldment's
+            # <As Welded>, a sheet-metal flat pattern): only others are put back.
+            restored = [
+                config
+                for config in every
+                if config not in names
+                and config in before
+                and not _derived_from(adapter, config, names)
+                and _put_back(adapter, dimension, config, before[config])
+            ]
 
             # Rebuild: try EditRebuild3 first, fall back to ForceRebuild3
             rebuilt = adapter._attempt(
@@ -2025,7 +2274,23 @@ class SolidWorksIOMixin:
                 )
             if rebuilt is None:
                 raise Exception("Failed to set dimension")
-            return {"configurations": names}
+            values = _dimension_values(adapter, dimension, every)
+            # Old and new values in the configuration the change was for: the
+            # active one may be another (a list naming "Long" while "Short" is
+            # active).
+            target = names[0] if names else None
+            result: dict[str, Any] = {
+                "configurations": names,
+                "old_value": before.get(target, old_value) if target else old_value,
+                "new_value": values.get(target)
+                if target in values
+                else (_dimension_mm(adapter, dimension) if not target else value),
+            }
+            if values:
+                result["values"] = values
+            if restored:
+                result["restored"] = restored
+            return result
 
         return cast(
             AdapterResult[dict[str, Any]],
@@ -2074,11 +2339,19 @@ class SolidWorksIOMixin:
             adapter._handle_com_operation("set_units", _apply),
         )
 
-    async def save_file(self, file_path: str | None = None) -> AdapterResult[None]:
+    async def save_file(
+        self, file_path: str | None = None, copy: bool = False
+    ) -> AdapterResult[None]:
         """Save the active model to its current path or to a new file path.
+
+        A new path is a real Save As: the open document takes the new name,
+        and an open assembly using it follows it. With ``copy`` the file is
+        written as a copy (``swSaveAsOptions_Copy``): the open document, and
+        what references it, keep the old name (#276).
 
         Args:
             file_path: Optional target path for Save As.
+            copy: Write a copy; the open document keeps its name.
 
         Returns:
             AdapterResult[None]: Result of the save operation.
@@ -2114,7 +2387,7 @@ class SolidWorksIOMixin:
                     # SaveAs3 on the now-closed doc. That wrote an empty part and
                     # lost the geometry.
                     save_result = adapter._attempt(
-                        lambda: adapter.currentModel.Save3(1, None, None)
+                        lambda: _save3(adapter.currentModel, _save_options(adapter))
                     )
                     if save_result is None:
                         save_fn = getattr(adapter.currentModel, "Save", None)
@@ -2133,9 +2406,15 @@ class SolidWorksIOMixin:
 
                 # Deliberately no os.remove here: SaveAs3 overwrites, and
                 # deleting first meant a failed save destroyed the old file too.
-                save_as3_result = adapter.currentModel.SaveAs3(resolved_path, 0, 0)
+                options = _save_options(adapter, copy)
+                save_as3_result = adapter.currentModel.SaveAs3(
+                    resolved_path, 0, options
+                )
                 if not self._is_success(save_as3_result):
-                    save_as = getattr(adapter.currentModel, "SaveAs", None)
+                    # The old SaveAs can't write a copy: with copy it isn't tried.
+                    save_as = (
+                        None if copy else getattr(adapter.currentModel, "SaveAs", None)
+                    )
                     if not callable(save_as) or not self._is_success(
                         save_as(resolved_path)
                     ):
@@ -2145,15 +2424,7 @@ class SolidWorksIOMixin:
                     raise Exception(f"File not written after save: {resolved_path}")
                 return
 
-            own_path = adapter._attempt(
-                lambda: adapter._get_attr_or_call(adapter.currentModel, "GetPathName"),
-                default=None,
-            )
-            if own_path is not None and not str(own_path):
-                # Save3 on a document that was never saved opens SolidWorks'
-                # Save As dialog, even with the silent option, and the call
-                # waits for someone to answer it: every later tool hangs
-                # behind it (seen live on a new drawing, SW 2025 SP4).
+            if _never_saved(adapter):
                 raise InputRefused(
                     "The document has never been saved, so it has no path of its "
                     "own; give file_path (SolidWorks would wait on a Save As "
@@ -2161,7 +2432,7 @@ class SolidWorksIOMixin:
                 )
 
             save_result = adapter._attempt(
-                lambda: adapter.currentModel.Save3(1, None, None)
+                lambda: _save3(adapter.currentModel, _save_options(adapter))
             )
             if save_result is None:
                 save_fn = getattr(adapter.currentModel, "Save", None)
@@ -3239,42 +3510,16 @@ class SolidWorksIOMixin:
             drawing = _sw_type_info.flagged(adapter.currentModel, "IDrawingDoc")
             before = _view_names(adapter, drawing)
 
-            # The model has to be loaded before a view of it can be placed,
-            # and OpenDoc6's errors/warnings out-params must be byref VARIANTs
-            # - with pythoncom.Missing it returns None, the model stays
-            # unloaded, and CreateDrawViewFromModelView3 then silently makes
-            # no view.
-            app = adapter.swApp
-            doc_type = 2 if path.lower().endswith(".sldasm") else 1
-            opened = adapter._attempt(
-                lambda: app.OpenDoc6(path, doc_type, 1, "", _byref_int(), _byref_int()),
-                default=None,
-            )
-            if not opened:
-                raise Exception(
-                    f"Could not load '{model_path}' - OpenDoc6 returned nothing."
-                )
-
-            # Opening the model made it active; the drawing has to be active
-            # again before a view can be added to it.
-            drawing_title = adapter._attempt(
-                lambda: _sw_type_info.flagged(
-                    adapter.currentModel, "IModelDoc2"
-                ).GetTitle(),
-                default=None,
-            )
-            if drawing_title:
-                adapter._attempt(
-                    lambda: app.ActivateDoc3(drawing_title, False, 0, _byref_int()),
+            loaded = _load_model_for_views(adapter, path, str(model_path))
+            try:
+                view = adapter._attempt(
+                    lambda: drawing.CreateDrawViewFromModelView3(
+                        path, view_name, x / 1000.0, y / 1000.0, 0.0
+                    ),
                     default=None,
                 )
-
-            view = adapter._attempt(
-                lambda: drawing.CreateDrawViewFromModelView3(
-                    path, view_name, x / 1000.0, y / 1000.0, 0.0
-                ),
-                default=None,
-            )
+            finally:
+                _close_loaded_model(adapter, loaded)
 
             after = _view_names(adapter, drawing)
             if len(after) <= len(before):
@@ -3421,14 +3666,18 @@ class SolidWorksIOMixin:
             drawing = _sw_type_info.flagged(adapter.currentModel, "IDrawingDoc")
             before = _view_names(adapter, drawing)
 
-            created = adapter._attempt(
-                lambda: (
-                    drawing.Create3rdAngleViews2(path)
-                    if third_angle
-                    else drawing.Create1stAngleViews2(path)
-                ),
-                default=False,
-            )
+            loaded = _load_model_for_views(adapter, path, str(model_path))
+            try:
+                created = adapter._attempt(
+                    lambda: (
+                        drawing.Create3rdAngleViews2(path)
+                        if third_angle
+                        else drawing.Create1stAngleViews2(path)
+                    ),
+                    default=False,
+                )
+            finally:
+                _close_loaded_model(adapter, loaded)
 
             after = _view_names(adapter, drawing)
             added = [n for n in after if n not in before]
@@ -3557,13 +3806,48 @@ class SolidWorksIOMixin:
                     height_mm = round(float(height) * 1000.0, 2)
 
             adapter._attempt(lambda: model.EditRebuild3(), default=None)
-            return {
+            extent = _note_extent_mm(adapter, note)
+            if positioned and extent is not None:
+                # The point is the text's upper-left corner. SolidWorks 2025
+                # puts it there; a report from 2024 had the text centred on
+                # it and running off the sheet (#275): measure, then move.
+                dx, dy = x - extent[0], y - extent[3]
+                if abs(dx) > _NOTE_PLACED_MM or abs(dy) > _NOTE_PLACED_MM:
+                    adapter._attempt(
+                        lambda: annotation.SetPosition(
+                            (x + dx) / 1000.0, (y + dy) / 1000.0, 0.0
+                        ),
+                        default=False,
+                    )
+                    adapter._attempt(lambda: model.EditRebuild3(), default=None)
+                    extent = _note_extent_mm(adapter, note) or extent
+            result: dict[str, Any] = {
                 "text": text,
                 "position": {"x": x, "y": y},
                 "positioned": positioned,
                 "font_size_points": font_points or None,
                 "text_height_mm": height_mm,
             }
+            if extent is not None:
+                result["extent_mm"] = [round(v, 1) for v in extent]
+                sheet = adapter._attempt(
+                    lambda: adapter._sheet_bounds(
+                        _sw_type_info.flagged(model, "IDrawingDoc")
+                    ),
+                    default=None,
+                )
+                if isinstance(sheet, (list, tuple)) and len(sheet) >= 4:
+                    width, height = sheet[2] * 1000.0, sheet[3] * 1000.0
+                    over = max(
+                        -extent[0], -extent[1], extent[2] - width, extent[3] - height
+                    )
+                    if over > _NOTE_PLACED_MM:
+                        result["warning"] = (
+                            f"The note runs {over:.0f} mm off the "
+                            f"{width:.0f} x {height:.0f} mm sheet: give a position "
+                            "further in (it is the text's upper-left corner)."
+                        )
+            return result
 
         return cast(
             AdapterResult[dict[str, Any]],

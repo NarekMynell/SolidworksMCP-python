@@ -265,6 +265,7 @@ SUPPORT_LEVELS: dict[str, Support] = {
     "create_plates": _STABLE,
     "create_cuts": _STABLE,
     "pattern_members": _STABLE,
+    "create_weld_beads": _STABLE,
     "create_vent_holes": _STABLE,
     "export_plate_dxfs": _STABLE,
     "set_feature_folders": _STABLE,
