@@ -1566,9 +1566,9 @@ def _add_sketch_dimension_impl(
       ``IModelDoc2.AddDiameterDimension2``.
 
     SolidWorks can otherwise enter the interactive ``Modify`` approval flow
-    during sketch dimension creation. The adapter keeps the relevant
-    sketch-input preferences disabled for the full automation session in
-    ``_ComSessionCoordinator.set_automation_preferences`` and uses the dedicated
+    during sketch dimension creation. The adapter switches the relevant
+    sketch-input options off for each operation and puts the user's values
+    back after (``user_settings.UserSettings``), and uses the dedicated
     radial/diameter APIs here because that path is more reliable in unattended
     COM sessions.
 
@@ -1628,10 +1628,10 @@ def _add_sketch_dimension_impl(
         """
         import math as _math_dim
 
-        # Re-assert per-call: SolidWorks resets swInputDimValOnCreate (10)
-        # when entering a new sketch, so the global connect-time suppression
-        # is not sufficient. Setting it to False here prevents the Modify
-        # dialog from blocking unattended automation.
+        # Again here: SolidWorks resets swInputDimValOnCreate (10) when
+        # entering a new sketch, so the operation's switch-off may be undone.
+        # Off, no Modify dialog blocks the call; the operation's UserSettings
+        # puts the user's values back when it ends.
         _sw = getattr(adapter, "swApp", None)
         if _sw:
             adapter._attempt(lambda: _sw.SetUserPreferenceToggle(10, False))

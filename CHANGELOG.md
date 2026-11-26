@@ -12,6 +12,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The user's SolidWorks options come back.** Connecting used to switch off
+  four sketch options for good (Input dimension value, on-screen numeric
+  input, Create dimension only when value is entered, Scale sketch on first
+  dimension creation) and the Fully Define helpers a fifth (Prompt to set
+  driven state); nothing put them back, so the user's own sketching lost
+  them for as long as any session had run. Now each outermost operation
+  switches off the ones that are on and puts exactly those back when it
+  ends (`user_settings.UserSettings`); a server killed mid-call leaves a
+  note in `~/.solidworks_mcp/user-settings/` that the next connect applies.
+  Connecting also no longer sets toggles 149 and 150: they are BOM options
+  (`swBOMControlIdFromAssembly`, `swBOMControlMissingRows`), not the dialog
+  switches the code took them for. Proven live on SolidWorks 2025 SP4
+  (`docs/proofs/user-settings.json`): off inside each call, on after it, a
+  dimension with no Modify box; 16 ms per call with the options off, 47 ms
+  with all five on.
+
 ### Changed
 
 - **Upstream 2.2.0 merged** (andrewbartels1/SolidworksMCP-python, 27 commits

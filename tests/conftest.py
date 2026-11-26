@@ -35,6 +35,11 @@ _REAL_INTEGRATION = os.getenv(
 if not _REAL_INTEGRATION:
     os.environ.setdefault("SOLIDWORKS_MCP_COM_SETTLE_SECONDS", "0")
     os.environ.setdefault("SOLIDWORKS_MCP_DOC_SETTLE_SECONDS", "0")
+    # Notes of the user's switched-off options (user_settings): a fake-COM
+    # test must never read or remove a real server's note.
+    os.environ.setdefault(
+        "SOLIDWORKS_MCP_USER_SETTINGS_DIR", tempfile.mkdtemp(prefix="sw-settings-")
+    )
 
 # A non-live run must never start SolidWorks. Creating SldWorks.Application
 # from a process outside the desktop session (an SSH shell, CI) starts a hidden

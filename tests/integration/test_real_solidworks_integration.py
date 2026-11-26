@@ -364,8 +364,9 @@ async def test_real_arc_measurements_smoke(
     """Smoke test: create a sketch with arcs/circles and dimension them without dialog.
 
     Covers radial dimensions on arcs and circles.  The preference toggle
-    swInputDimValOnCreate (62) must remain False for the full dimension
-    operation (including SetSystemValue3) so the Modify dialog never appears.
+    swInputDimValOnCreate (10) must remain False for the full dimension
+    operation (including SetSystemValue3) so the Modify dialog never appears;
+    the operation's UserSettings keeps it off until the call ends.
 
     This test intentionally relies on the popup-safe adapter path: direct COM
     dimension creation with minimal extra COM chatter.  Regressions here tend

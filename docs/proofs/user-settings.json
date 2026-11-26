@@ -1,0 +1,192 @@
+{
+  "checked_at": "2026-11-26T15:04:53.673914+00:00",
+  "users_options": {
+    "10": false,
+    "100": false,
+    "372": false,
+    "520": false,
+    "642": false
+  },
+  "users_options_after_test": {
+    "10": false,
+    "100": false,
+    "372": false,
+    "520": false,
+    "642": false
+  },
+  "steps": {
+    "create_part": {
+      "status": "success",
+      "error": null
+    },
+    "create_sketch": {
+      "status": "success",
+      "error": null
+    },
+    "add_sketch_dimension": {
+      "status": "success",
+      "error": null
+    },
+    "exit_sketch": {
+      "status": "success",
+      "error": null
+    }
+  },
+  "inside_calls": [
+    {
+      "call": "create_part",
+      "options": {
+        "10": false,
+        "100": false,
+        "372": false,
+        "520": false,
+        "642": false
+      }
+    },
+    {
+      "call": "create_sketch",
+      "options": {
+        "10": false,
+        "100": false,
+        "372": false,
+        "520": false,
+        "642": false
+      }
+    },
+    {
+      "call": "add_line",
+      "options": {
+        "10": false,
+        "100": false,
+        "372": false,
+        "520": false,
+        "642": false
+      }
+    },
+    {
+      "call": "add_line",
+      "options": {
+        "10": false,
+        "100": false,
+        "372": false,
+        "520": false,
+        "642": false
+      }
+    },
+    {
+      "call": "add_sketch_dimension",
+      "options": {
+        "10": false,
+        "100": false,
+        "372": false,
+        "520": false,
+        "642": false
+      }
+    },
+    {
+      "call": "exit_sketch",
+      "options": {
+        "10": false,
+        "100": false,
+        "372": false,
+        "520": false,
+        "642": false
+      }
+    }
+  ],
+  "after_calls": [
+    {
+      "call": "create_part",
+      "options": {
+        "10": true,
+        "100": true,
+        "372": true,
+        "520": true,
+        "642": true
+      }
+    },
+    {
+      "call": "create_sketch",
+      "options": {
+        "10": true,
+        "100": true,
+        "372": true,
+        "520": true,
+        "642": true
+      }
+    },
+    {
+      "call": "add_line",
+      "options": {
+        "10": true,
+        "100": true,
+        "372": true,
+        "520": true,
+        "642": true
+      }
+    },
+    {
+      "call": "add_sketch_dimension",
+      "options": {
+        "10": true,
+        "100": true,
+        "372": true,
+        "520": true,
+        "642": true
+      }
+    },
+    {
+      "call": "exit_sketch",
+      "options": {
+        "10": true,
+        "100": true,
+        "372": true,
+        "520": true,
+        "642": true
+      }
+    }
+  ],
+  "lengths": {
+    "first_mm": 50.0,
+    "second_mm": 80.0
+  },
+  "recover": {
+    "restored": {
+      "10": true,
+      "642": true
+    },
+    "options_after": {
+      "10": true,
+      "100": false,
+      "372": false,
+      "520": false,
+      "642": true
+    },
+    "note_left": false
+  },
+  "cost_per_call_ms": {
+    "options_on_ms": {
+      "median": 47.249,
+      "max": 70.011,
+      "calls": 20
+    },
+    "options_off_ms": {
+      "median": 16.067,
+      "max": 19.35,
+      "calls": 20
+    }
+  },
+  "options_on_after_timed_calls": true,
+  "checks": {
+    "every step succeeded": true,
+    "a call saw all five off": true,
+    "after every call all five on": true,
+    "first line dimensioned to 50": true,
+    "second line still 80": true,
+    "recover put back 10 and 642": true,
+    "recover removed the note": true,
+    "timed calls left them on": true,
+    "the user's own values back": true
+  },
+  "passed": true
+}

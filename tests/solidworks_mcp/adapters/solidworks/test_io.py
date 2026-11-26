@@ -2176,8 +2176,9 @@ class TestPyWin32AdapterBranches:
         await adapter.connect()
         assert adapter.swApp is fake_app
         assert fake_app.Visible is True
-        fake_app.SetUserPreferenceToggle.assert_any_call(150, False)
-        fake_app.SetUserPreferenceToggle.assert_any_call(149, False)
+        # Connecting changes none of the user's options: they are switched
+        # per operation (user_settings), and 149/150 are BOM options.
+        fake_app.SetUserPreferenceToggle.assert_not_called()
         # CoInitialize now runs on the ComExecutor thread, not in connect() directly.
 
         fake_open_model = SimpleNamespace(
@@ -3499,7 +3500,6 @@ class TestPyWin32AdapterBranches:
             uninitialize_com_apartment=Mock(),
             acquire_solidworks_application=AsyncMock(return_value="app"),
             wait_for_server_ready=AsyncMock(return_value=None),
-            set_automation_preferences=Mock(),
         )
         adapter._sketch_geometry = SimpleNamespace(
             select_entity=Mock(return_value=True),

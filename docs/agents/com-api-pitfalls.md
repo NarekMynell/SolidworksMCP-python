@@ -1437,3 +1437,31 @@ test repeats them.
   open. Keep a failure as its text (a unit test checks the part is let go
   without a collection); the batch stops on that error, as on a lost
   SolidWorks.
+
+## 49. Preference toggles are the user's own: switch them per call, by name
+
+`ISldWorks.SetUserPreferenceToggle` changes a system option in the user's
+Windows profile: it outlives the call, the connection and SolidWorks itself.
+The server switched five off on every connect (`swUserPreferenceToggle_e` 10,
+372, 520, 642, and 100 in the Fully Define helpers) and never put them back,
+so a designer's own sketching lost the Modify box on new dimensions for as
+long as any session had run; read on SolidWorks 2025 SP4, all five were off.
+It also set 149 and 150 on every connect, "to suppress popup dialogs": those
+are `swBOMControlIdFromAssembly` and `swBOMControlMissingRows`, BOM options.
+
+- Look a toggle up by name (`get_api_enum`), never by a number from memory.
+- Each outermost adapter operation now switches off the options that are on
+  and puts exactly those back after (`user_settings.UserSettings`, around
+  `_run_operation`). Disconnect still makes no preference call (RPC teardown
+  failures there).
+- Before switching, it writes `~/.solidworks_mcp/user-settings/<pid>.json`.
+  A server killed mid-call leaves it, and the next connect puts those back
+  once that process has ended.
+- Only a real `True` counts as on. A fake app's `Mock` answer is truthy, and
+  `SOLIDWORKS_MCP_USER_SETTINGS_DIR` points unit tests at a temporary folder,
+  so a test never writes, or consumes, a real server's note.
+- Cost, measured live (`tests/live/test_live_sw_user_settings.py`, receipt
+  `docs/proofs/user-settings.json`): a call that does nothing takes 16 ms
+  (median of 20) with the five off (five reads) and 47 ms with all five on
+  (five reads, ten writes, the note), beside the 250 ms pause every call
+  already takes.

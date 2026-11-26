@@ -60,6 +60,7 @@ from .solidworks.dialog_watch import DialogWatch, refused_message, waited_messag
 from .solidworks.feature_walk import walk_feature_tree
 from .solidworks.features import _null_callout, _select_feature_by_name
 from .solidworks.io import _byref_int
+from .solidworks.user_settings import UserSettings, notes_folder
 
 try:
     import pythoncom
@@ -439,45 +440,6 @@ class _ComSessionCoordinator:
             "Confirm SolidWorks is fully launched and dismiss any startup dialogs."
         )
 
-    @staticmethod
-    def set_automation_preferences(app: Any, *, interactive: bool) -> None:
-        """Toggle the SolidWorks warning and question dialog preferences.
-
-        Sets user preference toggles 150 and 149 to suppress (or restore)
-        popup dialogs during automated workflows. Also manages the
-        sketch-dimension input toggles so sketch dimensions do not require the
-        interactive Modify confirmation while automation is active.
-
-        Verified against the SolidWorks 2026 constants type library, the
-        relevant sketch-dimension toggles are:
-
-        * ``swInputDimValOnCreate`` = 10
-        * ``swSketchAcceptNumericInput`` = 372
-        * ``swSketchCreateDimensionOnlyWhenEntered`` = 520
-        * ``swScaleSketchOnFirstDimension`` = 642
-
-        These stay disabled for the full automation session instead of being
-        toggled around individual dimension calls, because once SolidWorks
-        enters the modal approval flow, extra COM cleanup chatter tends to make
-        recovery less reliable.
-
-        Should be called with ``interactive=False`` immediately after
-        connecting and ``interactive=True`` before disconnecting.
-
-        Args:
-            app: The live ``SldWorks.Application`` COM object.
-            interactive: When ``False``, dialogs are suppressed for
-                unattended operation.  When ``True``, normal interactive
-                behaviour is restored.
-        """
-        app.SetUserPreferenceToggle(150, interactive)
-        app.SetUserPreferenceToggle(149, interactive)
-        if not interactive:
-            app.SetUserPreferenceToggle(10, False)
-            app.SetUserPreferenceToggle(372, False)
-            app.SetUserPreferenceToggle(520, False)
-            app.SetUserPreferenceToggle(642, False)
-
     async def connect(self) -> None:
         """Orchestrate the full SolidWorks connection sequence.
 
@@ -488,7 +450,10 @@ class _ComSessionCoordinator:
         3. Wait for the server to become ready.
         4. Show the application window (hidden instead when
            ``SOLIDWORKS_MCP_HEADLESS`` is set).
-        5. Suppress interactive dialogs for automation.
+        5. Put back the user's options a server stopped mid-call left off
+           (:class:`~.solidworks.user_settings.UserSettings`). The options
+           automation needs off are switched per operation, not here, so the
+           user's own sketching keeps them while the server is connected.
 
         On any failure the adapter state is cleaned up (``swApp`` set to
         ``None``, COM apartment uninitialised) before re-raising.
@@ -504,7 +469,7 @@ class _ComSessionCoordinator:
             )
             await self.wait_for_server_ready(app)
             app.Visible = not _headless_requested()
-            self.set_automation_preferences(app, interactive=False)
+            self._adapter._attempt(lambda: self._adapter._user_settings.recover(app))
         except Exception as exc:
             self._adapter.swApp = None
             self.uninitialize_com_apartment()
@@ -517,10 +482,9 @@ class _ComSessionCoordinator:
         uninitialises the COM apartment via ``finally`` so the apartment is
         freed even if the SolidWorks process is already unstable.
 
-        Disconnect deliberately avoids additional UI preference COM calls.
-        Real SolidWorks sessions can hit RPC teardown failures when toggles are
-        restored during shutdown, so automation-safe preferences are applied on
-        connect and left untouched during disconnect.
+        Disconnect makes no preference COM calls (real sessions hit RPC
+        teardown failures there): each operation already put back the options
+        it switched off.
 
         Side Effects:
             Sets ``adapter.currentModel``, ``adapter.currentSketch``,
@@ -1854,6 +1818,8 @@ class PyWin32Adapter(
         # (set on connect), and whether an outer call is already watched.
         self._watch_pid: int | None = None
         self._watching = False
+        # The user's options automation needs off: off during each operation.
+        self._user_settings = UserSettings(notes_folder())
 
         # COM constants (equivalent to SolidWorks API constants)
         self.constants = {
@@ -2117,11 +2083,16 @@ class PyWin32Adapter(
         *operation_args: Any,
         **operation_kwargs: Any,
     ) -> AdapterResult[T]:
-        """Run one COM operation, timed, its failures turned into an error result."""
+        """Run one COM operation, timed, its failures turned into an error result.
+
+        The options that would hold a call on a dialog are off while it runs
+        and back as the user had them after (outermost operation only).
+        """
         start_time = time.time()
 
         try:
-            result = operation_func(*operation_args, **operation_kwargs)
+            with self._user_settings.automation(self.swApp):
+                result = operation_func(*operation_args, **operation_kwargs)
             execution_time = time.time() - start_time
             self.update_metrics(execution_time, True)
             return AdapterResult(
