@@ -14,6 +14,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`create_weld_beads`: a cosmetic fillet weld on every shop joint, with its
+  length.** Inside a weldment every member end landing on a plate or member,
+  and every plate edge landing on one, is a shop weld; the tool finds those
+  joints the way `check_joints` does, welds each once (a mitre once, joints
+  welded already left), names the beads and reports each weld's length and
+  the part's total, which SolidWorks measures, for costing and the weld note.
+  Stable, checked live on SolidWorks 2025 (a 100x100x5 column on its base
+  plate: 382.8 mm all round).
+- **Sketches come out fully defined.** `exit_sketch` runs SolidWorks' Fully
+  Define Sketch for the sizes, then ties the point nearest the origin to it,
+  one axis at a time, taking back a tie that over defines (#269). Relations
+  and dimensions take `origin` and `<id>.start/.end/.center`, and
+  `add_sketch_dimension` measures horizontal and vertical distances.
+- **A general arrangement of weldment pieces gets its overall width, height
+  and depth**, measured on the views from the extreme components.
+- **`pattern_members` mirrors about any plane.**
 - **`create_cuts`: bolt holes, copes and notches in weldment members in one
   call.** A platform built from a description spent about 100 calls on
   sketches, circles, Fix relations and cuts for its beams' end copes and web
@@ -126,6 +142,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`export_plate_dxfs` cut mirrored members as plates and left stale DXFs.**
+  A body mirrored or patterned from a member has no member feature, so two
+  mirrored web angles, alone in their cut-list items, came out as plate DXFs.
+  An item is now a member's when SolidWorks files it so
+  (`GetCutListType`); only a flat plate gets a DXF, anything else is skipped
+  with the reason; and a re-export removes the DXFs the same part's last
+  export listed and didn't write again (`PL-1_t6.35_x2.dxf` had stayed beside
+  `PL-1_t6.35_x4.dxf`: the shop would have cut six). Found building a truss
+  from a drawing; checked live.
+- **`create_weld_beads` gave negative weld lengths** (-4222 mm): SolidWorks
+  keeps one weld sub-folder per size, and a bead was measured as one folder's
+  total against another's. Each bead is now the change of every folder
+  together, and the total is the part's, from document units.
+- **`save_file` and `close_model(save)` could hang for 30 minutes.** `Save3`
+  got `None` for its by-reference Errors and Warnings, always failed, and the
+  old `Save` ran, whose "Component documents must be saved" dialog blocked
+  a headless run after an assembly rebuild. They are passed by reference; an
+  assembly or drawing saves the modified documents it uses with it, and
+  `close_model(save)` refuses a document never saved.
+- **Verified defects from the issue tracker:** `create_extrusion` and
+  `create_revolve` select the sketch closed last by name (#270);
+  `check_sketch_fully_defined` reads the real state (#268);
+  `sketch_linear_pattern` takes any direction (#272); `set_dimension` keeps
+  other configurations' values (#266); section and detail views honour their
+  position and warn when they land on another view (#273); `add_note` places
+  the text's corner where asked (#275); `add_cosmetic_thread` takes the size
+  as the thread table spells it (#274); `save_as` with `as_copy` writes a
+  copy (#276); `check_joints` measures a hollow end over its area.
 - **Drawings no longer fill with the generated sketches' dimensions.** Every
   dimension the skeleton and plate sketches get is unmarked for drawings,
   and `generate_drawing_package` leaves model dimensions off an assembly of
