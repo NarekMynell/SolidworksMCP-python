@@ -26,7 +26,7 @@ from .com_utils import as_list, string_array
 THIS_CONFIGURATION, ALL_CONFIGURATIONS, SPECIFY_CONFIGURATION = 1, 2, 3
 
 
-def _names(adapter: Any) -> list[str]:
+def configuration_names(adapter: Any) -> list[str]:
     """The active model's configuration names."""
     raw = adapter._attempt(lambda: adapter.currentModel.GetConfigurationNames(), None)
     return [str(name) for name in as_list(raw)]
@@ -43,7 +43,7 @@ def _active(adapter: Any) -> str | None:
 
 def _require(adapter: Any, name: str) -> list[str]:
     """The names, after checking ``name`` is one of them."""
-    names = _names(adapter)
+    names = configuration_names(adapter)
     if name not in names:
         raise LookupError(
             f"No configuration named '{name}'; the model has {', '.join(names) or 'none'}."
@@ -62,7 +62,7 @@ def configuration_scope(
     Raises:
         LookupError: For a name the model doesn't have, listing the names.
     """
-    names = _names(adapter)
+    names = configuration_names(adapter)
     if configurations == "this":
         active = _active(adapter)
         return THIS_CONFIGURATION, [active] if active else [], None
@@ -116,7 +116,7 @@ class SolidWorksConfigurationsMixin:
         adapter: Any = self
 
         def build() -> dict[str, Any]:
-            names = _names(adapter)
+            names = configuration_names(adapter)
             if name in names:
                 raise ValueError(f"A configuration named '{name}' already exists.")
             if parent is not None and parent not in names:
@@ -139,7 +139,7 @@ class SolidWorksConfigurationsMixin:
                 "name": name,
                 "parent": parent,
                 "active": _active(adapter),
-                "configurations": _names(adapter),
+                "configurations": configuration_names(adapter),
             }
 
         return self._run_on_model("create_configuration", build)
@@ -190,7 +190,7 @@ class SolidWorksConfigurationsMixin:
                 raise RuntimeError(
                     f"SolidWorks refused to delete configuration '{name}'."
                 )
-            return {"deleted": name, "configurations": _names(adapter)}
+            return {"deleted": name, "configurations": configuration_names(adapter)}
 
         return self._run_on_model("delete_configuration", build)
 

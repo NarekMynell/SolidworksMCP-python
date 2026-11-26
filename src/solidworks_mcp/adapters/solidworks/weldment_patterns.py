@@ -35,7 +35,13 @@ from .com_utils import as_list, long_array
 from .feature_tree import last_folder_of, move_into_folder
 from .features import _null_callout
 from .sketch_define import main_planes, merge_nodes, solve_on, tie_nodes_to_planes
-from .weldment_plates import _free_name, _plate_plane, main_axis, plate_frame
+from .weldment_plates import (
+    _draw_axes,
+    _free_name,
+    _plate_plane,
+    main_axis,
+    plate_frame,
+)
 from .weldments import _bodies, _mass, _named_bodies, _need_part
 
 #: Selection marks the pattern and mirror calls read.
@@ -475,14 +481,27 @@ def _mirror(
         plane = planes[_PLANE_NAMES[key]]
     else:
         frame = plate_frame(list(mirror["point"]), list(mirror["normal"]))
-        if main_axis(frame.n) is None:
-            raise InputRefused(
-                "mirror.normal must run along x, y or z; mirror about a tilted "
-                "plane with two calls along the main axes"
-            )
         features = _flagged(model.FeatureManager, "IFeatureManager")
+        axis_line = None
+        if main_axis(frame.n) is None:
+            # A tilted plane, made the way a tilted plate's is: square to a
+            # short line drawn along the normal from the point.
+            manager = _flagged(model.SketchManager, "ISketchManager")
+            sketch, lines = _draw_axes(
+                adapter, model, manager, [frame], True, name=f"{label} mirror axis"
+            )
+            made.append(sketch)
+            axis_line = lines[0]
         plane, new = _plate_plane(
-            adapter, model, features, planes, frame, None, label, {}, prefix="Mirror"
+            adapter,
+            model,
+            features,
+            planes,
+            frame,
+            axis_line,
+            label,
+            {},
+            prefix="Mirror",
         )
         if new:
             made.append(str(plane.Name))

@@ -131,6 +131,19 @@ def _cap_thread_depth(
     return cap
 
 
+def _thread_size(standard: str, size: str) -> tuple[str, str | None]:
+    """A thread size as the standard's table spells it, and a warning when it couldn't be checked.
+
+    Raises:
+        HoleSizeError: For a size the table doesn't have; names the nearest.
+    """
+    try:
+        library = find_library()
+    except HoleLibraryError as exc:
+        return size, f"The thread size wasn't checked: {exc}"
+    return library.thread_size(standard, size), None
+
+
 def _through_depth_m(adapter: Any, model: Any) -> float:
     """A blind depth that passes through the part: its box diagonal + 1 mm.
 
@@ -934,6 +947,8 @@ class SolidWorksPartFeaturesMixin:
         """
         adapter: Any = self
 
+        spelled, unread = _thread_size(standard, size)
+
         def build() -> dict[str, Any]:
             model = adapter.currentModel
             model.ClearSelection2(True)
@@ -942,24 +957,46 @@ class SolidWorksPartFeaturesMixin:
             feature = manager.InsertCosmeticThread3(
                 HOLE_STANDARDS[standard],  # Standard
                 "Machine Threads",  # StandardType
-                size,  # Size
+                spelled,  # Size
                 _mm(diameter),  # Diameter
                 THREAD_END_TYPES[end_type],  # EndType
                 _mm(depth) if depth is not None else 0.0,  # Depth
-                size,  # Note
+                spelled,  # Note
             )
             if feature is None:
                 raise RuntimeError(
                     "InsertCosmeticThread3 made no thread; pick a point on a "
                     "circular edge of a hole or shaft."
                 )
-            return {
+            # What SolidWorks stored, not what was asked: it falls back to the
+            # first row of the diameter when it finds no row of the size.
+            stored = adapter._attempt(
+                lambda: sw_type_info.flagged(
+                    sw_type_info.flagged(feature, "IFeature").GetDefinition(),
+                    "ICosmeticThreadFeatureData",
+                ),
+                default=None,
+            )
+            kept = adapter._attempt(lambda: str(stored.Size), default=None)
+            callout = adapter._attempt(lambda: str(stored.ThreadCallout), default=None)
+            data: dict[str, Any] = {
                 "name": _feature_name(adapter, feature),
-                "size": size,
+                "size": kept or spelled,
+                "asked": size,
                 "diameter_mm": float(diameter),
                 "end_type": end_type,
                 "depth_mm": depth,
             }
+            if callout:
+                data["callout"] = callout
+            if kept and kept != spelled:
+                data["warning"] = (
+                    f"SolidWorks stored the thread as {kept}, not {spelled}: check "
+                    "the size against list_hole_sizes (tapped)"
+                )
+            elif unread:
+                data["warning"] = unread
+            return data
 
         return await self._measured("add_cosmetic_thread", build, must_change=False)
 

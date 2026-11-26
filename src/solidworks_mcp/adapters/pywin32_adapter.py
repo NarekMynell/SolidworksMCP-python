@@ -44,7 +44,9 @@ from .solidworks import (
     SolidWorksWeldmentPlatesMixin,
     SolidWorksWeldmentsMixin,
     SolidWorksWeldmentVentsMixin,
+    SolidWorksWeldmentWeldsMixin,
     bitmap,
+    l10n,
 )
 from .solidworks.dialog_watch import DialogWatch, refused_message, waited_message
 from .solidworks.feature_walk import walk_feature_tree
@@ -382,6 +384,7 @@ class _ComSessionCoordinator:
                 app = _dynamic_dispatch(raw) if raw is not None else None
                 if app is not None:
                     self._adapter.swApp = app
+                    l10n.install(app)
                     return app
             except pywintypes.com_error as active_error:
                 last_error = active_error
@@ -390,6 +393,7 @@ class _ComSessionCoordinator:
                 app = _dynamic_dispatch("SldWorks.Application")
                 if app is not None:
                     self._adapter.swApp = app
+                    l10n.install(app)
                     return app
             except pywintypes.com_error as dispatch_error:
                 last_error = dispatch_error
@@ -525,6 +529,10 @@ class _ComSessionCoordinator:
             self._adapter.currentModel = None
             self._adapter.currentSketch = None
             self._adapter.currentSketchManager = None
+            # Every COM pointer goes before the apartment does: one released
+            # after CoUninitialize broke the next connections (RPC 0x800706b5).
+            self._adapter._last_sketch_model = None
+            l10n._app = None  # its learned-names source, the same application
             self._adapter._reset_sketch_entity_registry()
             self._adapter.swApp = None
         finally:
@@ -1742,6 +1750,7 @@ class PyWin32Adapter(
     SolidWorksWeldmentPatternsMixin,
     SolidWorksWeldmentPlatesMixin,
     SolidWorksWeldmentVentsMixin,
+    SolidWorksWeldmentWeldsMixin,
     SolidWorksWeldmentsMixin,
     SolidWorksFeatureTreeMixin,
     SolidWorksTemplatesMixin,
@@ -1819,6 +1828,7 @@ class PyWin32Adapter(
         self.currentSketch: Any | None = None
         self.currentSketchManager: Any | None = None
         self._last_sketch_name: str | None = None
+        self._last_sketch_model: Any = None
         self._sketch_count: int = 0  # incremented each time a sketch is created
         self._sketch_entities: dict[str, Any] = {}
         # Cached (center_x_mm, center_y_mm) for entities whose center can't be
@@ -2623,7 +2633,8 @@ class PyWin32Adapter(
         errors = _byref_long(0)
         warnings = _byref_long(0)
         try:
-            # swSaveAsCurrentVersion = 0, swSaveAsOptions_Silent = 2
+            # swSaveAsCurrentVersion = 0; swSaveAsOptions_Copy = 2: an export is
+            # a copy, the document keeps its name.
             ext.SaveAs2(resolved_path, 0, 2, export_data, "", False, errors, warnings)
         except Exception as exc:
             logger.warning(
@@ -2650,7 +2661,7 @@ class PyWin32Adapter(
             target_doc.SaveAs3(
                 resolved_path,
                 0,  # swSaveAsCurrentVersion
-                2,  # swSaveAsOptions_Silent
+                2,  # swSaveAsOptions_Copy: the document keeps its name
             )
         except Exception as exc:
             logger.warning(
@@ -2759,13 +2770,13 @@ class PyWin32Adapter(
             # ----------------------------------------------------------------
             _ = format_map[format_lower]  # validate format is known; value unused
             logger.debug(
-                "[pywin32.export_file] SaveAs3 {} (version=0, options=Silent)",
+                "[pywin32.export_file] SaveAs3 {} (version=0, options=Copy)",
                 resolved_path,
             )
             success = target_doc.SaveAs3(  # type: ignore[union-attr]
                 resolved_path,
                 0,  # swSaveAsCurrentVersion — format inferred from file extension
-                2,  # swSaveAsOptions_Silent
+                2,  # swSaveAsOptions_Copy: the document keeps its name
             )
 
             if not success and not os.path.exists(resolved_path):

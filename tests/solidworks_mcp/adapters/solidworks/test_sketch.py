@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
@@ -423,6 +424,28 @@ def test_sketch_linear_pattern_calls_com_with_converted_args() -> None:
     assert call_args[2] == 5.0 / 1000.0  # SpacingX in metres
     # AngleX == atan2(0, 1) == 0 for direction (1, 0)
     assert call_args[4] == 0.0
+
+
+@pytest.mark.parametrize(
+    ("direction", "angle_x_deg", "angle_y_deg"),
+    [
+        ((0, -1), 270.0, 0.0),  # down: SolidWorks refused -90 (#272)
+        ((-1, 0), 180.0, 270.0),
+        ((-1, -1), 225.0, 315.0),
+        ((0, 1), 90.0, 180.0),
+    ],
+)
+def test_sketch_linear_pattern_angles_stay_within_a_turn(
+    direction: tuple[int, int], angle_x_deg: float, angle_y_deg: float
+) -> None:
+    adapter, create_pattern, _, _, _ = _make_pattern_adapter()
+
+    result = sketch._sketch_linear_pattern_impl(adapter, ["Line_1"], *direction, 8.0, 3)
+
+    assert result.is_success
+    angle_x, angle_y = create_pattern.call_args.args[4:6]
+    assert math.degrees(angle_x) == pytest.approx(angle_x_deg)
+    assert math.degrees(angle_y) == pytest.approx(angle_y_deg)
 
 
 def test_sketch_linear_pattern_validates_inputs() -> None:
@@ -1159,6 +1182,17 @@ def test_add_sketch_dimension_returns_generated_id_when_model_missing() -> None:
     assert result.data.startswith("Dimension_")
 
 
+def _status_sketch(status: object) -> SimpleNamespace:
+    """A stand-in ``ISketch`` whose ``GetConstrainedStatus`` gives ``status``."""
+
+    def read() -> object:
+        if isinstance(status, Exception):
+            raise status
+        return status
+
+    return SimpleNamespace(GetConstrainedStatus=read)
+
+
 def test_check_sketch_fully_defined_variants() -> None:
     adapter = _FakeSketchAdapter()
 
@@ -1170,61 +1204,75 @@ def test_check_sketch_fully_defined_variants() -> None:
     assert missing_named.status == AdapterResultStatus.ERROR
     assert "Sketch not found" in (missing_named.error or "")
 
-    sketch_obj = SimpleNamespace(IsFullyDefined=lambda: True)
-    adapter.currentSketch = sketch_obj
+    adapter.currentSketch = _status_sketch(3)
     fully_defined = sketch._check_sketch_fully_defined_impl(adapter, None)
     assert fully_defined.is_success
     assert fully_defined.data["is_fully_defined"] is True
     assert fully_defined.data["definition_state"] == "fully_defined"
+    assert fully_defined.data["source"] == "ISketch.GetConstrainedStatus"
+    assert fully_defined.data["raw_status"] == 3
 
-    under_obj = SimpleNamespace(IsUnderDefined=lambda: True)
-    adapter.currentSketch = under_obj
+    adapter.currentSketch = _status_sketch(2)
     under_defined = sketch._check_sketch_fully_defined_impl(adapter, None)
-    assert under_defined.is_success
     assert under_defined.data["is_fully_defined"] is False
+    assert under_defined.data["definition_state"] == "under_defined"
 
-    unknown_obj = SimpleNamespace(GetStatus=lambda: "not-a-number")
-    adapter.currentSketch = unknown_obj
+    adapter.currentSketch = _status_sketch(RuntimeError("COM gone"))
     unknown = sketch._check_sketch_fully_defined_impl(adapter, None)
     assert unknown.is_success
     assert unknown.data["definition_state"] == "unknown"
+    assert unknown.data["is_fully_defined"] is None
+    assert unknown.data["raw_status"] is None
 
 
-def test_check_sketch_fully_defined_feature_fallback_and_over_defined_count() -> None:
+@pytest.mark.parametrize(
+    ("status", "state", "flag"),
+    [
+        (1, "unknown", None),
+        (2, "under_defined", False),
+        (3, "fully_defined", True),
+        (4, "over_defined", False),
+        (5, "no_solution", False),
+        (6, "invalid_solution", False),
+        (7, "auto_solve_off", None),
+        (42, "unknown", None),
+    ],
+)
+def test_definition_state_reads_swconstrainedstatus(
+    status: int, state: str, flag: bool | None
+) -> None:
+    assert sketch.definition_state(_status_sketch(status)) == (state, flag, status)
+
+
+def test_check_sketch_fully_defined_reads_the_last_closed_sketch() -> None:
     adapter = _FakeSketchAdapter()
-
-    sketch_specific = SimpleNamespace(GetOverDefinedCount=lambda: 1)
     feature_obj = SimpleNamespace(
-        Name="SketchFromFeature", GetSpecificFeature2=lambda: sketch_specific
+        Name="SK_Base", GetSpecificFeature2=lambda: _status_sketch(4)
     )
     adapter.currentSketch = None
-    adapter._last_sketch_name = "SketchFromFeature"
+    adapter._last_sketch_name = "SK_Base"
     adapter.currentModel = SimpleNamespace(
         GetActiveSketch2=lambda: None,
-        FeatureByName=lambda name: feature_obj if name == "SketchFromFeature" else None,
+        FeatureByName=lambda name: feature_obj if name == "SK_Base" else None,
     )
 
     result = sketch._check_sketch_fully_defined_impl(adapter, None)
+
     assert result.is_success
-    assert result.data["sketch_name"] == "SketchFromFeature"
+    assert result.data["sketch_name"] == "SK_Base"
+    assert result.data["definition_state"] == "over_defined"
     assert result.data["is_fully_defined"] is False
-    assert result.data["source"].startswith("sketch.") or result.data[
-        "source"
-    ].startswith("feature.")
 
 
-def test_check_sketch_fully_defined_handles_textual_probe_values() -> None:
+def test_check_sketch_fully_defined_names_the_open_sketch() -> None:
     adapter = _FakeSketchAdapter()
-    adapter.currentSketch = SimpleNamespace(
-        GetFullyDefinedStatus=lambda: "fully defined"
-    )
-    adapter.currentModel = SimpleNamespace(
-        GetActiveSketch2=lambda: adapter.currentSketch
-    )
+    adapter._last_sketch_name = "Sketch2"
+    adapter.currentModel = SimpleNamespace(GetActiveSketch2=lambda: _status_sketch(2))
 
     result = sketch._check_sketch_fully_defined_impl(adapter, None)
-    assert result.is_success
-    assert result.data["definition_state"] == "fully_defined"
+
+    assert result.data["sketch_name"] == "Sketch2"
+    assert result.data["definition_state"] == "under_defined"
 
 
 @pytest.mark.parametrize("platform", ["win32", "linux"])
@@ -1275,66 +1323,6 @@ def test_constraint_without_pythoncom(monkeypatch, platform: str) -> None:
         assert result.status == AdapterResultStatus.SUCCESS
         ents_arg, _rt = add_relation.call_args.args
         assert isinstance(ents_arg, list)
-
-
-# ---- sketch-definition probe helpers ------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("raw", "expected"),
-    [
-        (True, True),
-        (0, False),
-        (1.0, True),
-        (2, None),
-        (" Fully Defined ", True),
-        ("under_defined", False),
-        ("over defined", False),
-        ("maybe", None),
-        ([True], True),
-        ((), None),
-        (None, None),
-    ],
-)
-def test_to_bool(raw: object, expected: bool | None) -> None:
-    assert sketch._to_bool(raw) is expected
-
-
-@pytest.mark.parametrize(
-    ("raw", "expected"),
-    [(3, 3.0), (" 2.5 ", 2.5), ("abc", None), ([4], 4.0), ([], None), (None, None)],
-)
-def test_to_number(raw: object, expected: float | None) -> None:
-    assert sketch._to_number(raw) == expected
-
-
-@pytest.mark.parametrize(
-    ("source", "raw", "expected"),
-    [
-        ("IsUnderDefined", 0, True),  # numeric: zero under-defined entities
-        ("IsUnderDefined", 3, False),
-        ("IsUnderDefined", "yes", False),  # bool: under-defined -> not fully
-        ("IsUnderDefined", object(), None),  # neither number nor bool
-        ("GetOverDefinedCount", 2, False),
-        ("IsOverDefined", True, False),
-        ("IsOverDefined", 0, False),  # 0 -> falls through to _to_bool(0)
-        ("IsOverDefined", "yes", False),  # non-numeric over-defined flag
-        ("IsFullyDefined", "true", True),
-        ("Status", "Fully constrained", True),
-        ("Status", "under-constrained", False),
-        ("Status", 1, True),
-    ],
-)
-def test_probe_to_flag(source: str, raw: object, expected: bool | None) -> None:
-    assert sketch._probe_to_flag(source, raw) is expected
-
-
-@pytest.mark.parametrize(
-    ("flag", "state"),
-    [(True, "fully_defined"), (False, "not_fully_defined"), (None, "unknown")],
-)
-def test_state_from_bool(flag: bool | None, state: str) -> None:
-    assert sketch._state_from_bool(flag) == state
 
 
 # ---- adapter-level validation of sketch patterns / mirror / offset ----------
@@ -1540,8 +1528,9 @@ def test_exit_sketch_reports_insert_sketch_failure() -> None:
 
 def test_check_fully_defined_by_name_and_with_no_sketch_anywhere() -> None:
     adapter = _FakeSketchAdapter()
-    fully = SimpleNamespace(GetSketchStatus=lambda: True, IsFullyDefined=True)
-    feature = SimpleNamespace(GetSpecificFeature2=lambda: fully, Name="Sketch1")
+    feature = SimpleNamespace(
+        GetSpecificFeature2=lambda: _status_sketch(3), Name="Sketch1"
+    )
     adapter.currentModel = SimpleNamespace(
         FeatureByName=lambda name: feature if name == "Sketch1" else None,
         GetActiveSketch2=lambda: None,
@@ -3388,3 +3377,261 @@ async def test_the_mixin_passes_sketch_essentials_on() -> None:
     assert (await bound("set_construction_geometry")(["Line_1"])).is_success
     assert (await bound("add_rectangle")(0, 0, 1, 1, True)).is_success
     assert (await bound("add_arc")(0, 0, 1, 0, 0, 1, "tangent")).is_success
+
+
+@pytest.mark.parametrize(
+    ("is_3d", "defines", "expected"),
+    [
+        (
+            False,
+            lambda *_a: {"definition": "fully defined"},
+            {"definition": "fully defined"},
+        ),
+        (True, None, {"skipped": "3D sketch"}),
+        (
+            False,
+            Mock(side_effect=RuntimeError("COM gone")),
+            {"define_error": "COM gone"},
+        ),
+    ],
+)
+def test_exit_sketch_defines_the_open_sketch_first(
+    monkeypatch, is_3d: bool, defines: Any, expected: dict
+) -> None:
+    adapter = _FakeSketchAdapter()
+    manager = SimpleNamespace(InsertSketch=Mock())
+    open_sketch = SimpleNamespace(Is3D=lambda: is_3d)
+    adapter.currentModel = SimpleNamespace(GetActiveSketch2=lambda: open_sketch)
+    adapter.currentSketchManager = manager
+    if defines is not None:
+        monkeypatch.setattr(sketch, "define_sketch", defines)
+
+    result = sketch._exit_sketch_impl(adapter, define=True)
+
+    assert result.status == AdapterResultStatus.SUCCESS
+    assert result.data == expected
+    manager.InsertSketch.assert_called_once_with(True)
+
+
+def test_exit_sketch_without_define_leaves_the_sketch_as_drawn(monkeypatch) -> None:
+    adapter = _FakeSketchAdapter()
+    adapter.currentModel = SimpleNamespace(GetActiveSketch2=lambda: object())
+    adapter.currentSketchManager = SimpleNamespace(InsertSketch=Mock())
+    monkeypatch.setattr(sketch, "define_sketch", Mock(side_effect=AssertionError))
+
+    result = sketch._exit_sketch_impl(adapter)
+
+    assert result.is_success and result.data is None
+
+
+# ---- origin and point references (#269) --------------------------------------
+
+
+class _RefPoint(SimpleNamespace):
+    """A sketch point: where it is, and whether it was selected."""
+
+    def Select2(self, append: bool, _mark: int) -> bool:
+        self.model.selection = (self.model.selection if append else []) + [self]
+        return True
+
+
+class _RefModel(SimpleNamespace):
+    """An open sketch whose relations go in through the selection."""
+
+    def __init__(self, makes_relation: bool = True) -> None:
+        super().__init__()
+        self.selection: list[object] = []
+        self.relations: list[tuple[str, tuple[object, ...]]] = []
+        self.makes_relation = makes_relation
+        self.dimensions: list[tuple[str, tuple[float, ...], tuple[object, ...]]] = []
+        relations = self.relations
+        self.sketch = SimpleNamespace(
+            RelationManager=SimpleNamespace(
+                GetRelationsCount=lambda _kind: len(relations)
+            )
+        )
+        self.origin = _RefPoint(X=0.0, Y=0.0, Z=0.0, model=self)
+
+    def GetActiveSketch2(self) -> object:
+        return self.sketch
+
+    def ClearSelection2(self, _all: bool) -> None:
+        self.selection = []
+
+    def SketchAddConstraints(self, name: str) -> None:
+        if self.makes_relation:
+            self.relations.append((name, tuple(self.selection)))
+
+    def _dimension(self, kind: str) -> object:
+        def add(*text: float) -> object:
+            self.dimensions.append((kind, text, tuple(self.selection)))
+            return SimpleNamespace(
+                GetDimension2=lambda _i: SimpleNamespace(SystemValue=0.0)
+            )
+
+        return add
+
+    @property
+    def AddHorizontalDimension2(self) -> object:
+        return self._dimension("horizontal")
+
+    @property
+    def AddVerticalDimension2(self) -> object:
+        return self._dimension("vertical")
+
+
+def _ref_adapter(
+    monkeypatch, makes_relation: bool = True
+) -> tuple[_FakeSketchAdapter, _RefModel, SimpleNamespace]:
+    adapter = _FakeSketchAdapter()
+    model = _RefModel(makes_relation)
+    adapter.currentModel = model
+    adapter.currentSketchManager = object()
+    start = _RefPoint(X=0.01, Y=0.005, Z=0.0, model=model)
+    line = SimpleNamespace(
+        GetStartPoint2=lambda: start,
+        GetEndPoint2=lambda: _RefPoint(X=0.07, Y=0.005, Z=0.0, model=model),
+        Select2=lambda append, _mark: True,
+    )
+    adapter._sketch_entities = {"Line_1": line}
+    monkeypatch.setattr(sketch, "origin_point", lambda _model: model.origin)
+    monkeypatch.setattr(sketch, "origin_in_sketch", lambda _a, _s: (0.0, 0.0))
+    monkeypatch.setattr(sketch._sw_type_info, "flagged", lambda obj, *_i: obj)
+    return adapter, model, start
+
+
+def test_references_name_the_origin_and_entity_points(monkeypatch) -> None:
+    adapter, model, start = _ref_adapter(monkeypatch)
+
+    assert sketch._sketch_reference(adapter, "Line_1") == (
+        adapter._sketch_entities["Line_1"],
+        False,
+    )
+    assert sketch._sketch_reference(adapter, "ORIGIN") == (model.origin, True)
+    assert sketch._sketch_reference(adapter, "Line_1.start") == (start, True)
+    assert sketch._sketch_reference(adapter, "Line_1.end")[0].X == 0.07
+
+
+@pytest.mark.parametrize(
+    ("ref", "error"),
+    [
+        ("Line_9", "Unknown sketch entity 'Line_9'"),
+        ("Line_1.top", "Unknown sketch entity 'Line_1.top'"),
+        ("Line_1.center", "Sketch entity 'Line_1' has no center point."),
+    ],
+)
+def test_an_unknown_reference_lists_what_works(
+    monkeypatch, ref: str, error: str
+) -> None:
+    adapter, _, _ = _ref_adapter(monkeypatch)
+
+    with pytest.raises(Exception, match=error.replace("(", r"\(").replace(".", r"\.")):
+        sketch._sketch_reference(adapter, ref)
+
+
+def test_a_corner_is_made_coincident_with_the_origin(monkeypatch) -> None:
+    adapter, model, start = _ref_adapter(monkeypatch)
+
+    result = sketch._add_sketch_constraint_impl(
+        adapter, "Line_1.start", "origin", "coincident"
+    )
+
+    assert result.is_success, result.error
+    assert model.relations == [("sgCOINCIDENT", (start, model.origin))]
+    assert result.data.startswith("Constraint_")
+
+
+def test_the_origin_at_a_lines_middle(monkeypatch) -> None:
+    adapter, model, _ = _ref_adapter(monkeypatch)
+
+    result = sketch._add_sketch_constraint_impl(adapter, "origin", "Line_1", "midpoint")
+
+    assert result.is_success, result.error
+    assert model.relations[0][0] == "sgATMIDDLE"
+
+
+def test_a_relation_solidworks_didnt_make_is_an_error(monkeypatch) -> None:
+    adapter, _, _ = _ref_adapter(monkeypatch, makes_relation=False)
+
+    result = sketch._add_sketch_constraint_impl(
+        adapter, "Line_1.end", "origin", "coincident"
+    )
+
+    assert "SolidWorks added no coincident relation on 'Line_1.end' and 'origin'" in (
+        result.error or ""
+    )
+
+
+def test_a_relation_points_cant_take_is_refused(monkeypatch) -> None:
+    adapter, _, _ = _ref_adapter(monkeypatch)
+
+    result = sketch._add_sketch_constraint_impl(
+        adapter, "Line_1.start", "origin", "tangent"
+    )
+
+    assert "'tangent' can't take the origin or a point" in (result.error or "")
+
+
+@pytest.mark.parametrize(
+    ("kind", "text"),
+    [("horizontal", (0.005, 0.015, 0.0)), ("vertical", (0.02, 0.0025, 0.0))],
+)
+def test_a_distance_from_the_origin_along_an_axis(
+    monkeypatch, kind: str, text: tuple
+) -> None:
+    adapter, model, start = _ref_adapter(monkeypatch)
+
+    result = sketch._add_sketch_dimension_impl(
+        adapter, "Line_1.start", "origin", kind, 10.0
+    )
+
+    assert result.is_success, result.error
+    made, placed, selected = model.dimensions[0]
+    assert made == kind
+    assert placed == pytest.approx(text)
+    assert selected == (start, model.origin)
+
+
+def test_an_axis_dimension_needs_two_entities(monkeypatch) -> None:
+    adapter, _, _ = _ref_adapter(monkeypatch)
+
+    result = sketch._add_sketch_dimension_impl(
+        adapter, "Line_1", None, "horizontal", 10.0
+    )
+
+    assert "runs between two entities: give entity2" in (result.error or "")
+
+
+def test_a_point_reference_reads_the_point_without_flagging(monkeypatch) -> None:
+    """segment_point_objects reads GetStartPoint2 as a property: nothing may flag it."""
+    adapter, _model, _start = _ref_adapter(monkeypatch)
+    point = SimpleNamespace(_oleobj_=object(), X=0.0, Y=0.0, Z=0.0)
+    adapter._sketch_entities["Line_9"] = SimpleNamespace(GetStartPoint2=point)
+    flagged: list[object] = []
+    monkeypatch.setattr(
+        sketch._sw_type_info, "flag_members", lambda obj, *names: flagged.append(obj)
+    )
+
+    assert sketch._sketch_reference(adapter, "Line_9.start") == (point, True)
+    assert flagged == []
+
+
+def test_a_linear_dimension_from_the_origin_to_an_entity(monkeypatch) -> None:
+    adapter, model, _start = _ref_adapter(monkeypatch)
+    adapter._single_line_dimension_placement = lambda _entity: None
+    seen: list[tuple] = []
+    monkeypatch.setattr(
+        sketch,
+        "_two_entity_linear_dimension",
+        lambda _a, ids, e1, e2, direction: (
+            seen.append((ids, direction)) or SimpleNamespace()
+        ),
+    )
+    monkeypatch.setattr(sketch, "_set_dimension_value", lambda *_a: None)
+
+    result = sketch._add_sketch_dimension_impl(
+        adapter, "origin", "Line_1", "linear", 30.0
+    )
+
+    assert result.is_success, result.error
+    assert seen == [(("origin", "Line_1"), 1)]

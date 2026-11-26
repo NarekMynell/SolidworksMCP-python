@@ -1954,8 +1954,9 @@ async def register_modeling_tools(
         `verify_model`. The value is always millimetres. It changes the active
         configuration only, unless `configurations` is "all" or a list of names.
         Needs: an open part or assembly. Changes: the dimension and the geometry it
-        drives. Returns: `dimension_update` with `name`, `old_value`, `new_value`
-        and `configurations` (the names it was set in).
+        drives. Returns: `dimension_update` with `name`, `old_value`, `new_value`,
+        `configurations` (the names it was set in) and `values` (mm in every
+        configuration, read back).
 
         Args:
             input_data: The change. `value` (mm) is required, with `name` (or
@@ -1972,19 +1973,27 @@ async def register_modeling_tools(
         require_success(result, context="Failed to set dimension")
         payload = result.data
         where = _configurations_named(payload)
+        update: dict[str, Any] = {
+            "name": input_data.name,
+            "old_value": _result_value(payload, "old_value"),
+            "new_value": _result_value(payload, "new_value", default=input_data.value),
+            "units": input_data.units or "mm",
+            "configurations": where,
+        }
+        for key in ("values", "restored"):
+            if isinstance(payload, dict) and payload.get(key):
+                update[key] = payload[key]
+        restored = update.get("restored")
         return {
             "status": "success",
             "message": f"Set dimension {input_data.name} = {input_data.value} mm"
-            + (f" in {', '.join(where)}" if where else ""),
-            "dimension_update": {
-                "name": input_data.name,
-                "old_value": _result_value(payload, "old_value"),
-                "new_value": _result_value(
-                    payload, "new_value", default=input_data.value
-                ),
-                "units": input_data.units or "mm",
-                "configurations": where,
-            },
+            + (f" in {', '.join(where)}" if where else "")
+            + (
+                f"; SolidWorks also wrote it into {', '.join(restored)}, put back"
+                if restored
+                else ""
+            ),
+            "dimension_update": update,
             "execution_time": result.execution_time,
         }
 
@@ -3279,13 +3288,19 @@ async def register_modeling_tools(
             input_data.standard,
         )
         require_success(result, context="Failed to add cosmetic thread")
-        data = result.data if isinstance(result.data, dict) else {}
-        return {
+        data = dict(result.data) if isinstance(result.data, dict) else {}
+        warning = data.pop("warning", None)
+        stored = data.get("size") or input_data.size
+        reply: dict[str, Any] = {
             "status": "success",
-            "message": f"Added a {input_data.size} cosmetic thread",
+            "message": f"Added a {stored} cosmetic thread"
+            + (f" (asked {input_data.size})" if stored != input_data.size else ""),
             "thread": data,
             "execution_time": result.execution_time,
         }
+        if warning:
+            reply["warning"] = warning
+        return reply
 
     # Counted from the registry rather than hand-maintained. The literal that
     # used to live here had drifted: it read 15 while 16 tools were actually

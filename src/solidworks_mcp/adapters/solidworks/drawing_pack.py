@@ -131,6 +131,22 @@ def segment_crosses_box(start: list[float], end: list[float], box: Box) -> bool:
     return True
 
 
+def _sheet_name(adapter: Any, view: Any) -> str | None:
+    """The name of the sheet a view is on (``IView.Sheet``), or None."""
+    return cast(
+        "str | None",
+        adapter._attempt(
+            lambda: str(sw_type_info.flagged(view.Sheet, "ISheet").GetName()),
+            default=None,
+        ),
+    )
+
+
+def boxes_overlap(a: Box, b: Box) -> bool:
+    """Whether two sheet boxes (mm) share an area, not just an edge."""
+    return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
+
+
 def inside(point: list[float], box: Box) -> bool:
     """Whether ``point`` lies in ``box`` (edges included)."""
     return box[0] <= point[0] <= box[2] and box[1] <= point[1] <= box[3]
@@ -284,6 +300,64 @@ class SolidWorksDrawingPackMixin:
         if adapter._select_sketch_entity(entity, append=False):
             adapter._attempt(lambda: model.EditDelete(), default=None)
 
+    def _pack_place(self, created: Any, position: list[float]) -> bool:
+        """Put a new view's centre at ``position`` (sheet mm); whether it stayed aligned.
+
+        SolidWorks keeps a section view in line with its parent: asked for a
+        place beside it, it put the view on top of the parent and said
+        nothing (#273). A place off that line breaks the alignment, as a
+        drafter moving a labelled section does; one on it keeps it.
+
+        Raises:
+            RuntimeError: When the view won't move there.
+        """
+        adapter: Any = self
+        view = _as_com(adapter, created, "IView")
+        x, y = position[0] / 1000.0, position[1] / 1000.0
+        now = as_list(adapter._attempt(lambda: view.Position, default=None))
+        if len(now) >= 2 and math.dist((float(now[0]), float(now[1])), (x, y)) < 5e-4:
+            return True
+        adapter._attempt(lambda: view.RemoveAlignment())
+        if not adapter._set_view_position(view, x, y):
+            raise RuntimeError(
+                f"The new view wouldn't move to {list(position)} mm; it stays in "
+                "line with its parent."
+            )
+        return False
+
+    def _pack_report(
+        self, drawing: Any, head: dict[str, Any], made: dict[str, Any]
+    ) -> dict[str, Any]:
+        """A new view's reply, with a warning when it lands on another view."""
+        adapter: Any = self
+        result = {**head, **made}
+        outline = made.get("outline_mm")
+        if outline is None:
+            return result
+        new_view = adapter._attempt(
+            lambda: self._pack_view(drawing, str(made.get("name"))), default=None
+        )
+        sheet = _sheet_name(adapter, new_view)
+        hit = []
+        for name in _view_names(adapter, drawing):
+            if name == made.get("name"):
+                continue
+            found = adapter._attempt(
+                lambda n=name: self._pack_view(drawing, n), default=None
+            )
+            if found is None or _sheet_name(adapter, found) != sheet:
+                continue  # a view on another sheet doesn't lie on this one
+            other = self._pack_outline(found)
+            if other is not None and boxes_overlap(tuple(outline), other):
+                hit.append(name)
+        if hit:
+            result["overlaps"] = hit
+            result["warning"] = (
+                f"The view lands on {', '.join(hit)}: give a position clear of "
+                "them (read the outlines with check_drawing)."
+            )
+        return result
+
     async def create_section_view(
         self,
         view: str,
@@ -336,11 +410,12 @@ class SolidWorksDrawingPackMixin:
                 raise RuntimeError(
                     f"CreateSectionViewAt5 made no section view of '{view}'."
                 )
-            return {
-                "label": letter,
-                "parent": view,
-                **self._pack_new_view(created, before),
-            }
+            aligned = self._pack_place(created, position)
+            return self._pack_report(
+                drawing,
+                {"label": letter, "parent": view, "aligned": aligned},
+                self._pack_new_view(created, before),
+            )
 
         return self._pack_run("create_section_view", build)
 
@@ -408,12 +483,11 @@ class SolidWorksDrawingPackMixin:
             if created is None:
                 self._pack_discard(circle)
                 raise RuntimeError(f"CreateDetailViewAt4 made no detail of '{view}'.")
-            return {
-                "label": letter,
-                "parent": view,
-                "scale": f"{top:g}:{bottom:g}",
-                **self._pack_new_view(created, before),
-            }
+            return self._pack_report(
+                drawing,
+                {"label": letter, "parent": view, "scale": f"{top:g}:{bottom:g}"},
+                self._pack_new_view(created, before),
+            )
 
         return self._pack_run("create_detail_view", build)
 

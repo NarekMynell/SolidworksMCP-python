@@ -143,9 +143,17 @@ Draw a closed, axis-aligned rectangle in the open sketch from two opposite corne
 
 ### `exit_sketch`
 
-Close the open sketch so a feature can use it.
+Close the open sketch so a feature can use it, fully defined.
 
 **Prerequisite:** Active sketch edit mode
+
+**SolidWorks automation note:** Before the sketch closes, `ISketchManager.FullyDefineSketch` adds the horizontal, vertical, coincident, concentric and tangent relations that already hold and the sizes (baseline dimensions); it takes no datum from outside the sketch (the origin given as datum, or selected with `swAutodimMarkOriginDatum`, still left it free to slide), so the point nearest the part origin is then tied to it: a coincident relation on it, a horizontal or vertical relation and one dimension on one of its axes, two dimensions elsewhere. Checked live on 2025 SP4: a rectangle and a circle, a centred rectangle, a circle on the origin, an L outline and a lone inclined line each closed fully defined in 0.3–0.6 s.
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `define` | `bool` | — | `True` | Fully define the sketch before it closes; false keeps it as drawn |
 
 **Sample call:**
 

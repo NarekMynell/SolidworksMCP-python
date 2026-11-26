@@ -782,3 +782,92 @@ def test_normals_at_falls_back_without_vertex_normals() -> None:
     assert wj._normals_at(
         tri, [0.0, 0.0, 2.0] * 3, [(0.3, 0.3, 0.0)], (1.0, 0.0, 0.0)
     ) == [(0.0, 0.0, 1.0)]
+
+
+# ---- a hollow end's bore, measured over its area (a tube top half covered) ---
+
+
+def _ring_tess(lo: tuple, hi: tuple, wall: float, axis: int = 1) -> tuple:
+    """A square ring's tessellation: four trapezoids of two triangles, on the plane at lo[axis]."""
+    u, v = [k for k in range(3) if k != axis]
+    outer = [(lo[u], lo[v]), (hi[u], lo[v]), (hi[u], hi[v]), (lo[u], hi[v])]
+    inner = [
+        (a + (wall if a == lo[u] else -wall), b + (wall if b == lo[v] else -wall))
+        for a, b in outer
+    ]
+
+    def at(q: tuple) -> list[float]:
+        point = [0.0, 0.0, 0.0]
+        point[axis] = lo[axis]
+        point[u], point[v] = q
+        return point
+
+    out: list[float] = []
+    for i in range(4):
+        o1, o2, i1, i2 = outer[i], outer[(i + 1) % 4], inner[i], inner[(i + 1) % 4]
+        for tri in ((o1, o2, i2), (o1, i2, i1)):
+            for q in tri:
+                out.extend(at(q))
+    return tuple(out)
+
+
+class _RingFace(_Face):
+    """A tube's end: a ring, tessellated as one."""
+
+    def GetTessTriangles(self, _no_conversion: bool) -> tuple:
+        return _ring_tess(self.lo, self.hi, 5 * M)
+
+
+def _tube(name: str, lo_mm: tuple, hi_mm: tuple) -> _Box:
+    tube = _Box(name, lo_mm, hi_mm)
+    top = tube.faces[3]  # the +y face
+    tube.faces[3] = _RingFace(top.lo, top.hi, top.normal, tube)
+    return tube
+
+
+def test_boundary_loops_of_a_ring_are_its_outside_and_its_bore() -> None:
+    loops = wj.boundary_loops(list(_ring_tess((0, 0, 0), (0.1, 0, 0.1), 0.005)))
+
+    sizes = sorted(
+        round(abs(wj._area([(p[0], p[2]) for p in loop])), 6) for loop in loops
+    )
+    assert sizes == [0.0081, 0.01]  # 90 x 90 and 100 x 100 mm
+
+
+def test_bore_points_fill_the_bore_just_outside_the_end() -> None:
+    face = wj.Face(None, (0, 0, 0, 0.1, 0, 0.1), True, normal=(0.0, 1.0, 0.0))
+
+    points = wj.bore_points(face, list(_ring_tess((0, 0, 0), (0.1, 0, 0.1), 0.005)))
+
+    assert len(points) == wj.BORE_GRID**2
+    assert all(0.005 < p[0] < 0.095 and 0.005 < p[2] < 0.095 for p in points)
+    assert all(p[1] == pytest.approx(wj.PROBE_M) for p in points)
+
+
+def test_a_solid_end_has_no_bore() -> None:
+    face = wj.Face(None, (0, 0, 0, 0.1, 0, 0.1), True, normal=(0.0, 1.0, 0.0))
+    square = _Face((0, 0, 0), (0.1, 0, 0.1), (0.0, 1.0, 0.0), _beam())
+
+    assert wj.bore_points(face, list(square.GetTessTriangles(True))) == []
+
+
+def test_a_tube_top_half_under_a_beam_is_partly_open() -> None:
+    """The beam's edge on the tube's centre line covered three of five old probes."""
+    post = _tube("Post", (0, 0, 0), (100, 1000, 100))
+    beam = _Box("Beam", (50, 1000, -400), (150, 1040, 500), hollow=False)
+
+    result = _check(post, beam)
+
+    partly = [e for e in result["partly_open_ends"]["ends"] if e["body"] == "Post"]
+    assert partly, result["partly_open_ends"]
+    assert 40 <= partly[0]["opening_covered_percent"] <= 60
+
+
+def test_a_tube_top_under_a_plate_is_closed_over_its_whole_bore() -> None:
+    post = _tube("Post", (0, 0, 0), (100, 1000, 100))
+    # The plate covers the ring on three sides and the whole bore.
+    plate = _Box("Cap", (3, 1000, 3), (140, 1012, 140), hollow=False)
+
+    result = _check(post, plate)
+
+    assert not [e for e in result["partly_open_ends"]["ends"] if e["body"] == "Post"]

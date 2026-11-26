@@ -85,6 +85,14 @@ FULL_RING = 0.9
 OPENING_SHARE = 0.8
 #: How far toward the ring the opening probes sit (share of its extent).
 OPENING_SPREAD = 0.4
+#: A hollow end's bore is probed at the points of a grid this many a side
+#: that fall in it (about 30 for a rectangular tube), each looking straight
+#: out of the end: a point counts as covered only by a face over it, no
+#: further aside than its distance plus ``BORE_ASIDE_M``. Five points
+#: reaching 3 mm every way took a tube top half under a beam for closed
+#: (the beam's edge on the centre line reached three of them).
+BORE_GRID = 7
+BORE_ASIDE_M = 0.0005
 #: ``InsertEndCapFeature3``'s placement argument.
 CAP_PLACEMENT = {"outward": 0, "inward": 1, "internal": 2}
 
@@ -613,10 +621,152 @@ def _touches(adapter: Any, point: Vector, other: Body, reach: float) -> bool:
     return False
 
 
+def _covers(
+    adapter: Any, point: Vector, normal: Vector, other: Body, reach: float
+) -> bool:
+    """Whether a face of ``other`` lies over ``point``, looking out along ``normal``.
+
+    Its closest point must be ahead within ``reach`` and no further aside
+    than its distance plus ``BORE_ASIDE_M``: a beam whose edge passes beside
+    the point doesn't cover it.
+    """
+    if not in_box(point, other.box, reach):
+        return False
+    for face in read_faces(adapter, other):
+        if not in_box(point, face.box, reach):
+            continue
+        closest = as_list(
+            adapter._attempt(
+                lambda f=face: f.ref.GetClosestPointOn(point[0], point[1], point[2]),
+                default=None,
+            )
+        )
+        if len(closest) < 3:
+            continue
+        d = sub([float(c) for c in closest[:3]], point)
+        along = dot(d, normal)
+        aside = math.sqrt(max(0.0, dot(d, d) - along * along))
+        if -2 * PROBE_M <= along <= reach and aside <= max(along, 0.0) + BORE_ASIDE_M:
+            return True
+    return False
+
+
 def is_hollow(adapter: Any, face: Face) -> bool:
     """Whether a member's end face is a ring (a hollow section's end: two loops or more)."""
     loops = adapter._attempt(lambda: face.ref.GetLoopCount(), default=1)
     return int(loops or 1) > 1
+
+
+def plane_axes(n: Vector) -> tuple[Vector, Vector]:
+    """Two unit vectors square to ``n`` and to each other."""
+    helper = (1.0, 0.0, 0.0) if abs(n[0]) < 0.9 else (0.0, 1.0, 0.0)
+    u = unit(
+        (
+            n[1] * helper[2] - n[2] * helper[1],
+            n[2] * helper[0] - n[0] * helper[2],
+            n[0] * helper[1] - n[1] * helper[0],
+        )
+    )
+    v = (
+        n[1] * u[2] - n[2] * u[1],
+        n[2] * u[0] - n[0] * u[2],
+        n[0] * u[1] - n[1] * u[0],
+    )
+    return u, v
+
+
+def boundary_loops(tess: list[float]) -> list[list[Vector]]:
+    """A flat face's boundary loops: the tessellation's edges only one triangle has, chained.
+
+    Args:
+        tess: The face's triangles, 9 numbers each.
+
+    Returns:
+        list[list[Vector]]: Each loop's corners in order; a ring has two.
+    """
+
+    def key(p: Iterable[float]) -> tuple[float, ...]:
+        return tuple(round(c, 7) for c in p)
+
+    where: dict[tuple[float, ...], Vector] = {}
+    count: dict[tuple[tuple[float, ...], tuple[float, ...]], int] = {}
+    for i in range(0, len(tess) - 8, 9):
+        corners = [tuple(tess[i + 3 * k : i + 3 * k + 3]) for k in range(3)]
+        for a, b in ((0, 1), (1, 2), (2, 0)):
+            ka, kb = key(corners[a]), key(corners[b])
+            where[ka], where[kb] = corners[a], corners[b]  # type: ignore[assignment]
+            edge = (ka, kb) if ka < kb else (kb, ka)
+            count[edge] = count.get(edge, 0) + 1
+    links: dict[tuple[float, ...], list[tuple[float, ...]]] = {}
+    for start, end in (edge for edge, n in count.items() if n == 1):
+        links.setdefault(start, []).append(end)
+        links.setdefault(end, []).append(start)
+    loops: list[list[Vector]] = []
+    used: set[tuple[float, ...]] = set()
+    for start in links:
+        if start in used:
+            continue
+        loop, previous, current = [start], None, start
+        used.add(start)
+        while True:
+            onward = [n for n in links[current] if n != previous and n not in used]
+            if not onward:
+                break
+            previous, current = current, onward[0]
+            used.add(current)
+            loop.append(current)
+        if len(loop) >= 3:
+            loops.append([where[k] for k in loop])
+    return loops
+
+
+def _area(polygon: list[tuple[float, float]]) -> float:
+    """A polygon's signed area (shoelace)."""
+    return 0.5 * sum(
+        a[0] * b[1] - b[0] * a[1]
+        for a, b in zip(polygon, polygon[1:] + polygon[:1], strict=True)
+    )
+
+
+def _inside(point: tuple[float, float], polygon: list[tuple[float, float]]) -> bool:
+    """Whether a point lies inside a polygon (ray casting)."""
+    x, y = point
+    hit = False
+    for (x1, y1), (x2, y2) in zip(polygon, polygon[1:] + polygon[:1], strict=True):
+        if (y1 > y) != (y2 > y) and x < x1 + (y - y1) * (x2 - x1) / (y2 - y1):
+            hit = not hit
+    return hit
+
+
+def bore_points(face: Face, tess: list[float], grid: int = BORE_GRID) -> list[Vector]:
+    """Points over a ring's bore, ``PROBE_M`` out from the end: a grid's points inside its inner loop.
+
+    Returns:
+        list[Vector]: The points; none when the tessellation shows no inner loop.
+    """
+    loops = boundary_loops(tess)
+    if len(loops) < 2:
+        return []
+    n = face.normal
+    u, v = plane_axes(n)
+    base = loops[0][0]
+    flat = [
+        [(dot(sub(p, base), u), dot(sub(p, base), v)) for p in loop] for loop in loops
+    ]
+    bore = min(flat, key=lambda polygon: abs(_area(polygon)))
+    us, vs = [q[0] for q in bore], [q[1] for q in bore]
+    points = []
+    for i in range(grid):
+        for j in range(grid):
+            a = min(us) + (i + 0.5) / grid * (max(us) - min(us))
+            b = min(vs) + (j + 0.5) / grid * (max(vs) - min(vs))
+            if _inside((a, b), bore):
+                points.append(
+                    tuple(
+                        base[k] + a * u[k] + b * v[k] + PROBE_M * n[k] for k in range(3)
+                    )
+                )
+    return points  # type: ignore[return-value]
 
 
 def opening_points(face: Face, samples: list[Vector]) -> list[Vector]:
@@ -633,19 +783,7 @@ def opening_points(face: Face, samples: list[Vector]) -> list[Vector]:
     s0 = samples[0]
     lift = dot(sub(c0, s0), n)
     c = tuple(c0[k] - lift * n[k] for k in range(3))
-    helper = (1.0, 0.0, 0.0) if abs(n[0]) < 0.9 else (0.0, 1.0, 0.0)
-    u = unit(
-        (
-            n[1] * helper[2] - n[2] * helper[1],
-            n[2] * helper[0] - n[0] * helper[2],
-            n[0] * helper[1] - n[1] * helper[0],
-        )
-    )
-    v = (
-        n[1] * u[2] - n[2] * u[1],
-        n[2] * u[0] - n[0] * u[2],
-        n[0] * u[1] - n[1] * u[0],
-    )
+    u, v = plane_axes(n)
     eu = max(abs(dot(sub(p, c), u)) for p in samples)
     ev = max(abs(dot(sub(p, c), v)) for p in samples)
     points = [c]
@@ -797,11 +935,12 @@ def contacts(
     sample points moved ``PROBE_M`` outward (a curved face along its own
     normal at each point). A face touches a body when a probe point lies
     within ``reach`` of it. A hollow end whose ring lands only in part is
-    closed only when its opening is covered too: five points across the
-    opening must find a body within ``OPENING_REACH_M`` (the weld bridges
-    that), or it is partly open, like a column top a sloped beam covers a
-    sixth of (seen live). A ring landing whole is closed: its bore is
-    covered, or joined to another tube's (a mitre).
+    closed only when its bore is covered too: of the grid points over the
+    bore (:func:`bore_points`), ``OPENING_SHARE`` must have a face straight
+    ahead within ``OPENING_REACH_M`` (the weld bridges that), or it is
+    partly open, like a column top a sloped beam covers a sixth of (seen
+    live) or a beam covers half of. A ring landing whole is closed: its bore
+    is covered, or joined to another tube's (a mitre).
 
     Returns:
         tuple: Touching pairs, and the ends not closed: ``body``,
@@ -838,12 +977,23 @@ def contacts(
                 # A ring landing whole is closed: on a face or plate it covers
                 # the bore, on another tube's ring (a mitre, a butt splice) the
                 # bores join. Only a ring partly landed has its bore probed.
-                probes = opening_points(face, samples)
-                covered = sum(
-                    1
-                    for p in probes
-                    if any(_touches(adapter, p, o, opening_reach) for o in near)
-                )
+                probes = bore_points(face, _tessellation(adapter, face))
+                if probes:
+                    covered = sum(
+                        1
+                        for p in probes
+                        if any(
+                            _covers(adapter, p, face.normal, o, opening_reach)
+                            for o in near
+                        )
+                    )
+                else:  # no inner loop to read: five points across the opening
+                    probes = opening_points(face, samples)
+                    covered = sum(
+                        1
+                        for p in probes
+                        if any(_touches(adapter, p, o, opening_reach) for o in near)
+                    )
                 if covered < OPENING_SHARE * len(probes):
                     entry = {
                         "covered_percent": round(100.0 * ring),

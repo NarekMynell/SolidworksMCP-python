@@ -83,6 +83,7 @@ Save the active document under a new path, as a SolidWorks file or in an exchang
 | `file_path` | `str` | ✅ | `` | Full path for the new file |
 | `format_type` | `str` | — | `solidworks` | File format (solidworks, step, iges, etc.) |
 | `overwrite` | `bool` | — | `False` | Overwrite existing file |
+| `as_copy` | `bool` | — | `False` | Write a copy: the open document, and assemblies using it, keep the old file (SolidWorks formats only) |
 
 **Sample call:**
 

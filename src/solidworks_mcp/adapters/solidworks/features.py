@@ -558,13 +558,8 @@ def _create_extrusion_impl(
                 f"Unsupported thin_side {normalized.thin_side!r}; use one of: "
                 + ", ".join(_THIN_SIDES)
             )
-        # A named sketch is found and selected first; without a name the
-        # sketch exit_sketch just closed is still selected, as before.
-        requested = getattr(params, "sketch_name", None) or None
-        sketch_used = (
-            _resolve_profile_sketch(adapter, requested, purpose="extrude")
-            if requested
-            else None
+        sketch_used = _feature_sketch(
+            adapter, getattr(params, "sketch_name", None) or None, purpose="extrude"
         )
         feature_manager = adapter.currentModel.FeatureManager
         t0 = adapter.constants.get("swStartSketchPlane", 0)
@@ -710,12 +705,12 @@ def _create_extrusion_impl(
 
 
 def _select_revolve_inputs(adapter: Any, params: RevolveParameters) -> str | None:
-    """Select a revolve's sketch and axis when they are named.
+    """Select a revolve's sketch, and its axis when one is named.
 
-    With neither named, nothing is selected: the sketch ``exit_sketch`` just
-    closed and its centreline are used, as before. A named axis needs the
-    sketch selected first (mark 0), then the axis appended with mark 4, the
-    mark ``FeatureRevolve2`` reads the axis from.
+    The sketch is found as :func:`_feature_sketch` finds it; without an axis
+    the sketch's own centreline is used. A named axis needs the sketch
+    selected first (mark 0), then the axis appended with mark 4, the mark
+    ``FeatureRevolve2`` reads the axis from.
 
     Args:
         adapter: A connected adapter with a valid ``currentModel``.
@@ -729,8 +724,8 @@ def _select_revolve_inputs(adapter: Any, params: RevolveParameters) -> str | Non
     """
     sketch_name = getattr(params, "sketch_name", None)
     axis = getattr(params, "axis_entity", None)
-    if not sketch_name and not axis:
-        return None
+    if not axis:
+        return _feature_sketch(adapter, sketch_name, purpose="revolve")
     sketch = _resolve_profile_sketch(adapter, sketch_name, purpose="revolve")
     if axis:
         selected = adapter._attempt(
@@ -1352,6 +1347,65 @@ def _create_loft_impl(
     )
 
 
+def _same_document(first: Any, second: Any) -> bool:
+    """Whether two dispatches are one SolidWorks document (COM identity)."""
+    if first is second:
+        return True
+    try:
+        return bool(first._oleobj_ == second._oleobj_)
+    except Exception:  # not COM objects, or one is gone
+        return False
+
+
+def _tracked_sketch(adapter: Any) -> str | None:
+    """The sketch the session closed last, when it is in the active document."""
+    last = getattr(adapter, "_last_sketch_name", None)
+    drawn_in = getattr(adapter, "_last_sketch_model", None)
+    if (
+        last
+        and drawn_in is not None
+        and not _same_document(drawn_in, adapter.currentModel)
+    ):
+        return None
+    return last
+
+
+def _feature_sketch(adapter: Any, requested: str | None, *, purpose: str) -> str | None:
+    """Select the sketch a feature is built from; its tree name.
+
+    ``requested`` is found by name. Without it, the sketch the session closed
+    last is selected by name too: ``exit_sketch`` renames a sketch given a
+    ``sketch_name``, and the rename drops SolidWorks' selection, so relying
+    on it made ``create_extrusion`` fail right after a named sketch (#270).
+    A sketch still open is left to SolidWorks, which builds from it.
+
+    Args:
+        adapter: A connected adapter with a valid ``currentModel``.
+        requested: The sketch's name, or ``None``.
+        purpose: How errors name the use, e.g. ``"extrude"``.
+
+    Returns:
+        str | None: The sketch selected, or ``None`` when an open sketch (or
+        no tracked one) is left to SolidWorks.
+
+    Raises:
+        Exception: A named sketch isn't in the tree or can't be selected.
+    """
+    if requested:
+        return _resolve_profile_sketch(adapter, requested, purpose=purpose)
+    open_sketch = adapter._attempt(
+        lambda: adapter.currentModel.GetActiveSketch2(), default=None
+    )
+    last = _tracked_sketch(adapter)
+    if open_sketch is not None or not last:
+        return None
+    if not any(
+        name.lower() == last.lower() for name in _profile_feature_names(adapter)
+    ):
+        return None
+    return _resolve_profile_sketch(adapter, last, purpose=purpose)
+
+
 def _resolve_profile_sketch(
     adapter: Any, sketch_name: str | None, *, purpose: str
 ) -> str:
@@ -1397,7 +1451,7 @@ def _resolve_profile_sketch(
                 f"feature tree. Sketches available to {purpose}: {available}"
             )
     else:
-        last_tracked = getattr(adapter, "_last_sketch_name", None)
+        last_tracked = _tracked_sketch(adapter)
         target_sketch = _match_tree_name(last_tracked) if last_tracked else None
         if target_sketch is None:
             hint = (

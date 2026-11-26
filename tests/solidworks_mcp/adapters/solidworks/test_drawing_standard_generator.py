@@ -996,10 +996,10 @@ async def test_an_assembly_of_weldments_gets_no_model_dimensions(files) -> None:
     )
 
     assert result.is_success, result.error
-    assert result.data["dimensions"] == {
-        "dimensions_added": 0,
-        "note": std.WELDMENT_ASSEMBLY_DIMENSIONS,
-    }
+    dims = result.data["dimensions"]
+    assert dims["dimensions_added"] == 0
+    assert dims["note"] == std.WELDMENT_ASSEMBLY_DIMENSIONS
+    assert dims["overall"]["added"] == 0  # the fake view has no model to measure
     assert not [c for c in adapter.calls if c[0] == "import_dimensions"]
 
 
@@ -1363,3 +1363,81 @@ def test_a_title_with_no_readable_height_keeps_the_callers_cap(files) -> None:
     adapter = _adapter(files)
     assert adapter._add_subtitle(note, note.PropertyLinkedText, "Sub", 0.002) == 0.002
     assert adapter._add_subtitle(note, note.PropertyLinkedText, "Sub", None) is None
+
+
+# ---- overall dimensions of an assembly: its extreme components' vertices ----
+
+
+class _Measured(std.SolidWorksDrawingStandardMixin):
+    """Just what the assembly measurement uses."""
+
+    def _attempt(self, fn: Any, default: Any = None) -> Any:
+        try:
+            return fn()
+        except Exception:
+            return default
+
+
+def _transform(dx: float) -> SimpleNamespace:
+    """A component moved ``dx`` along x, unturned."""
+    return SimpleNamespace(ArrayData=(1, 0, 0, 0, 1, 0, 0, 0, 1, dx, 0, 0, 1, 0, 0, 0))
+
+
+def _component(name: str, box: tuple, dx: float = 0.0) -> SimpleNamespace:
+    return SimpleNamespace(
+        Name2=name, GetBox=lambda _r, _s: box, Transform2=_transform(dx)
+    )
+
+
+def _vertex(*xyz: float) -> SimpleNamespace:
+    return SimpleNamespace(GetPoint=lambda: xyz)
+
+
+def test_an_assemblys_size_comes_from_its_extreme_components_vertices(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(std._sw_type_info, "flagged", lambda obj, *_i: obj)
+    left = _component("Post-1", (0.0, 0.0, 0.0, 0.1, 2.0, 0.1))
+    middle = _component("Beam-1", (0.1, 1.9, 0.0, 2.9, 2.0, 0.1), dx=0.1)
+    right = _component("Post-2", (2.9, 0.0, 0.0, 3.0, 2.0, 0.1), dx=2.9)
+    doc = SimpleNamespace(GetComponents=lambda _top: (left, middle, right))
+    shown = {
+        "GA-1/Post-1": [_vertex(0.0, 0.0, 0.0), _vertex(0.1, 2.0, 0.0)],
+        "GA-1/Beam-1": [_vertex(0.0, 0.0, 0.0)],
+        "GA-1/Post-2": [_vertex(0.0, 0.0, 0.0), _vertex(0.1, 2.0, 0.1)],
+    }
+    asked: list[str] = []
+
+    def entities(component: Any, kind: int) -> list[Any]:
+        asked.append(component.Name2)
+        assert kind == std._VIEW_VERTICES
+        return shown[component.Name2]
+
+    view = SimpleNamespace(
+        GetVisibleComponents=lambda: [SimpleNamespace(Name2=n) for n in shown],
+        GetVisibleEntities2=entities,
+    )
+
+    vertices, lo, hi = _Measured()._assembly_vertices(view, doc, (1.0, 0.0, 0.0))
+
+    # Only the components at the two ends along x were read, not the beam.
+    assert asked == ["GA-1/Post-1", "GA-1/Post-2"]
+    xs = sorted(point[0] for _v, point in vertices)
+    assert xs[0] == pytest.approx(0.0) and xs[-1] == pytest.approx(3.0)
+    assert (lo[0], hi[0]) == (0.0, 3.0)
+
+
+def test_an_assembly_without_readable_components_has_nothing_to_measure() -> None:
+    doc = SimpleNamespace(GetComponents=lambda _top: None)
+
+    vertices, lo, hi = _Measured()._assembly_vertices(
+        SimpleNamespace(), doc, (0.0, 1.0, 0.0)
+    )
+
+    assert vertices == [] and lo == hi == [0.0] * 3
+
+
+def test_a_component_without_a_transform_keeps_its_points() -> None:
+    move = _Measured()._component_mapper(SimpleNamespace(Transform2=None))
+
+    assert move([0.1, 0.2, 0.3]) == (0.1, 0.2, 0.3)

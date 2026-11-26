@@ -374,3 +374,12 @@ def test_no_winreg_off_windows(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(sys.modules, "winreg", None)
     assert hl._registry_subkeys("HKCU", r"Software\SolidWorks") == []
     assert hl._registry_value("HKCU", r"Software\SolidWorks", "x") is None
+
+
+def test_thread_sizes_take_the_tables_spelling(library: SqliteHoleLibrary) -> None:
+    """ISO writes a coarse thread without its pitch: M8x1.25 is "M8" (#274)."""
+    assert library.thread_size("iso", "M8x1.25") == "M8"
+    assert library.thread_size("iso", "m8") == "M8"
+    assert library.thread_size("iso", "M8x1.0") == "M8x1.0"
+    with pytest.raises(HoleSizeError, match="nearest"):
+        library.thread_size("iso", "M8x0.75")

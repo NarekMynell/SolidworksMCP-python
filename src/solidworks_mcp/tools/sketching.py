@@ -282,12 +282,20 @@ class AddDimensionInput(BaseModel):
         value (float): The value value.
     """
 
-    entity1: str = Field(description="First entity name or ID")
+    entity1: str = Field(
+        description="First reference: an entity id, 'origin' (the part origin), or a point as '<id>.start', '<id>.end' or '<id>.center'"
+    )
     entity2: str | None = Field(
-        default=None, description="Second entity name or ID (for distance dimensions)"
+        default=None,
+        description="Second reference, for a distance: an entity id, 'origin' (the part origin), or a point as '<id>.start', '<id>.end' or '<id>.center'",
     )
     dimension_type: str = Field(
-        default="linear", description="Dimension type (linear, radial, angular, etc.)"
+        default="linear",
+        description=(
+            "linear (a line's length, or the distance between two references), "
+            "horizontal or vertical (between two references along x or y), "
+            "angular, radial, diameter, major_axis, minor_axis"
+        ),
     )
     value: float = Field(description="Dimension value in mm or degrees")
 
@@ -304,9 +312,12 @@ class AddRelationInput(BaseModel):
         relation_type (str): The relation type value.
     """
 
-    entity1: str = Field(description="First entity name or ID")
+    entity1: str = Field(
+        description="First reference: an entity id, 'origin' (the part origin), or a point as '<id>.start', '<id>.end' or '<id>.center'"
+    )
     entity2: str | None = Field(
-        default=None, description="Second entity name or ID (if required)"
+        default=None,
+        description="Second reference (if required): an entity id, 'origin' (the part origin), or a point as '<id>.start', '<id>.end' or '<id>.center'",
     )
     entity3: str | None = Field(
         default=None,
@@ -316,7 +327,11 @@ class AddRelationInput(BaseModel):
         ),
     )
     relation_type: str = Field(
-        description="Relation type (parallel, perpendicular, tangent, coincident, etc.)"
+        description=(
+            "horizontal, vertical, parallel, perpendicular, tangent, coincident, "
+            "concentric, equal, symmetric, collinear, midpoint or fix; with the "
+            "origin or a point: coincident, horizontal, vertical, midpoint or fix"
+        )
     )
 
 
@@ -362,6 +377,24 @@ class SetSketchTextInput(CompatInput):
         min_length=1,
         description='The new text; give the same $PRP:"name" text to re-read a '
         "linked property after the model changed",
+    )
+
+
+class ExitSketchInput(CompatInput):
+    """Input schema for closing the open sketch.
+
+    Attributes:
+        define (bool): Fully define the sketch before it closes.
+    """
+
+    define: bool = Field(
+        default=True,
+        description=(
+            "Fully define the sketch before it closes, as a designer would: "
+            "SolidWorks' Fully Define Sketch adds the relations that already "
+            "hold and the sizes, then the point nearest the origin is tied to "
+            "it. false keeps the sketch as drawn."
+        ),
     )
 
 
@@ -838,18 +871,28 @@ async def register_sketching_tools(
         }
 
     @mcp.tool()
-    async def exit_sketch() -> dict[str, Any]:
-        """Close the open sketch so a feature can use it.
+    async def exit_sketch(input_data: ExitSketchInput | None = None) -> dict[str, Any]:
+        """Close the open sketch so a feature can use it, fully defined.
 
         Call it after drawing and before `create_extrusion`, `create_revolve` or
-        `create_cut_extrude`; those use the sketch closed last. Needs: an open sketch.
+        `create_cut_extrude`; those use the sketch closed last. The sketch is fully
+        defined first (`define`, default true): the relations that already hold, its
+        sizes, and its point nearest the origin tied to the origin, so it can't be
+        dragged and a specialist can edit its dimensions. Needs: an open sketch.
         Changes: leaves sketch editing; the sketch stays in the feature tree, renamed
-        to the `sketch_name` `create_sketch` was given. Returns: a message, plus, after
-        a `sketch_name`, `sketch` with `name` (the name in the feature tree, which later
-        tools take as `sketch_name`) and a `warning` when the name couldn't be given
-        (another feature has it).
+        to the `sketch_name` `create_sketch` was given. Returns: a message,
+        `definition` ("fully defined", or what it is), plus, after a `sketch_name`,
+        `sketch` with `name` (the name later tools take as `sketch_name`) and a
+        `warning` when the name couldn't be given or the sketch isn't fully defined.
+
+        Args:
+            input_data: Nothing is required; `define` false keeps the sketch as drawn.
+
+        Returns:
+            dict[str, Any]: The closed sketch.
         """
-        result = await adapter.exit_sketch()
+        normalized = normalize_input(input_data or {}, ExitSketchInput)
+        result = await adapter.exit_sketch(normalized.define)
 
         require_success(result, context="Failed to exit sketch")
         reply: dict[str, Any] = {
@@ -857,6 +900,23 @@ async def register_sketching_tools(
             "message": "Exited sketch editing mode",
             "execution_time": result.execution_time,
         }
+        defined = result.data if isinstance(result.data, dict) else None
+        warnings: list[str] = []
+        if defined:
+            state = defined.get("definition") or defined.get("skipped")
+            if state:
+                reply["definition"] = state
+            if defined.get("define_error"):
+                warnings.append(
+                    f"The sketch closed as drawn: defining it failed "
+                    f"({defined['define_error']})."
+                )
+            elif defined.get("definition") not in (None, "fully defined"):
+                warnings.append(
+                    f"The sketch is {defined['definition']}: add the missing "
+                    "relations or dimensions with add_sketch_constraint and "
+                    "add_sketch_dimension after reopening it, or redraw it."
+                )
         if names_on_exit:
             current, wanted = names_on_exit.popitem()
             renamed = await adapter.rename_feature(current, wanted)
@@ -864,11 +924,13 @@ async def register_sketching_tools(
             if renamed.is_success:
                 name = (renamed.data or {}).get("new_name") or wanted
             else:
-                reply["warning"] = (
+                warnings.append(
                     f"The sketch keeps SolidWorks' name '{current}': it could "
                     f"not be named '{wanted}' ({renamed.error})."
                 )
             reply["sketch"] = {"name": name}
+        if warnings:
+            reply["warning"] = " ".join(warnings)
         return reply
 
     @mcp.tool()
@@ -1194,10 +1256,12 @@ async def register_sketching_tools(
 
     @mcp.tool()
     async def add_sketch_constraint(input_data: AddRelationInput) -> dict[str, Any]:
-        """Add a geometric relation between sketch entities: horizontal, vertical, parallel, perpendicular, tangent, coincident, concentric, equal, symmetric, collinear or fix.
+        """Add a geometric relation between sketch entities: horizontal, vertical, parallel, perpendicular, tangent, coincident, concentric, equal, symmetric, collinear, midpoint or fix.
 
         Use it to hold design intent, then check with `check_sketch_fully_defined`.
-        Entities are the `id`s the add_* tools returned. Needs: an open sketch
+        Entities are the `id`s the add_* tools returned, "origin" (the part origin),
+        or a point as "Line_1.start", ".end" or ".center": a corner coincident with
+        the origin, or the origin at a line's midpoint. Needs: an open sketch
         (`create_sketch`). Changes: adds the relation. Returns: `constraint` with `id`,
         `type` and the entities.
 
@@ -1237,8 +1301,11 @@ async def register_sketching_tools(
         """Add a driving dimension to sketch entities: linear, angular, radial, diameter or an ellipse axis.
 
         Use it to fix a size so the sketch is fully defined and can be changed later
-        with `set_dimension`. Entities are the `id`s the add_* tools returned; two
-        connected lines for angular, a circle or arc for radial or diameter, an
+        with `set_dimension`. Entities are the `id`s the add_* tools returned,
+        "origin", or a point as "Line_1.start", ".end" or ".center"; horizontal or
+        vertical for a distance along x or y between two of them (a corner's
+        distance from the origin); two connected lines for angular, a circle or
+        arc for radial or diameter, an
         ellipse for `major_axis` or `minor_axis` (`value` is the whole axis; the
         dimension runs from the centre, so it shows half). No dialog opens. Needs: an open sketch (`create_sketch`). Changes: adds the dimension and
         resizes the geometry to `value`. Returns: `dimension` with `id`, `type`, `value`

@@ -117,8 +117,12 @@ class AddNoteInput(BaseModel):
     """
 
     text: str = Field(description="Note text content")
-    position_x: float = Field(description="X position for note")
-    position_y: float = Field(description="Y position for note")
+    position_x: float = Field(
+        description="X of the note's upper-left corner, mm from the sheet's left edge"
+    )
+    position_y: float = Field(
+        description="Y of the note's upper-left corner, mm from the sheet's bottom edge"
+    )
     font_size: float | None = Field(
         default=None,
         gt=0,
@@ -525,14 +529,17 @@ async def register_drawing_tools(
 
         Use it for general notes such as material or finish. For a title block, use
         `generate_drawing_package`, which fills one. Needs: an open, active drawing.
-        Changes: adds a note to the sheet. Returns: `data` with `text`, `position`,
-        `positioned` (whether the position was applied), `font_size_points` and
-        `text_height_mm` (the height the note now has).
+        Changes: adds a note to the sheet; `position_x`/`position_y` is the text's
+        upper-left corner, measured and corrected after placing. Returns: `data` with
+        `text`, `position`, `positioned`, `extent_mm` (the note's box: left, bottom,
+        right, top), `font_size_points` and `text_height_mm`; a `warning` when the
+        note runs off the sheet.
 
         Args:
             input_data: The note. `text`, `position_x` and `position_y` (mm from
-                the sheet's lower-left corner) are required; `font_size` (points)
-                sets the text size, left out the drawing's own.
+                the sheet's lower-left corner to the text's upper-left corner) are
+                required; `font_size` (points) sets the text size, left out the
+                drawing's own.
 
         Returns:
             dict[str, Any]: The note placed.
@@ -544,12 +551,17 @@ async def register_drawing_tools(
         )
         result = await adapter.add_note(input_data.model_dump())
         require_success(result, "Failed to add note")
-        return {
+        data = dict(result.data) if isinstance(result.data, dict) else result.data
+        warning = data.pop("warning", None) if isinstance(data, dict) else None
+        reply: dict[str, Any] = {
             "status": "success",
             "message": f"Added note: {input_data.text[:30]}...",
-            "data": result.data,
+            "data": data,
             "execution_time": result.execution_time,
         }
+        if warning:
+            reply["warning"] = warning
+        return reply
 
     @mcp.tool()
     async def create_section_view(input_data: CreateSectionViewInput) -> dict[str, Any]:

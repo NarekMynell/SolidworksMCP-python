@@ -1715,7 +1715,7 @@ class MockSolidWorksAdapter(
         )
 
     async def save_file(
-        self, file_path: str | None = None
+        self, file_path: str | None = None, copy: bool = False
     ) -> AdapterResult[dict[str, Any]]:
         """Legacy compatibility save operation for tests.
 
@@ -2755,11 +2755,16 @@ class MockSolidWorksAdapter(
             execution_time=self._delays["sketch_operation"] / 2,
         )
 
-    async def exit_sketch(self) -> AdapterResult[None]:
+    async def exit_sketch(
+        self, define: bool = False
+    ) -> AdapterResult[dict[str, Any] | None]:
         """Mock exiting sketch mode.
 
+        Args:
+            define: Report the sketch fully defined, as the real adapter would.
+
         Returns:
-            AdapterResult[None]: The result produced by the operation.
+            AdapterResult[dict[str, Any] | None]: The result produced by the operation.
         """
         if not self._current_sketch:
             return AdapterResult(
@@ -2771,7 +2776,7 @@ class MockSolidWorksAdapter(
 
         return AdapterResult(
             status=AdapterResultStatus.SUCCESS,
-            data=None,
+            data={"definition": "fully defined"} if define else None,
             execution_time=self._delays["sketch_operation"] / 2,
         )
 

@@ -906,6 +906,7 @@ class TestCreateTechnicalDrawingNoViewsCreated:
         adapter = _build_adapter(monkeypatch)
         adapter.currentModel = MagicMock()
         adapter.currentModel.GetType.return_value = 3  # Drawing
+        adapter.swApp = MagicMock()
         # GetViews() defaults to a MagicMock, which _view_names treats as
         # "not a list/tuple" and reduces to [] both before and after, so
         # nothing appears to have been added.
@@ -1243,7 +1244,7 @@ class TestSaveFileLegacyFallback:
 
         model = MagicMock()
         model.GetPathName.return_value = target
-        model.Save3.return_value = None  # forces the legacy Save() fallback
+        model.Save3.side_effect = RuntimeError("no Save3")  # forces the legacy Save()
         adapter.currentModel = model
 
         result = await adapter.save_file(target)
@@ -1530,6 +1531,7 @@ class TestCreateTechnicalDrawingMoreErrors:
         adapter.currentModel = MagicMock()
         adapter.currentModel.GetType.return_value = 3
         adapter.currentModel.GetViews.return_value = None
+        adapter.swApp = MagicMock()
 
         result = await adapter.create_technical_drawing(
             {"model_path": __file__, "projection": "first_angle"}
@@ -1538,6 +1540,56 @@ class TestCreateTechnicalDrawingMoreErrors:
         assert result.is_error  # no views appear either way; that's fine here
         adapter.currentModel.Create1stAngleViews2.assert_called_once()
         adapter.currentModel.Create3rdAngleViews2.assert_not_called()
+
+
+class TestViewsOfAModelNotOpen:
+    """Views load the model they show and close only the window they opened."""
+
+    @staticmethod
+    def _drawing(monkeypatch, open_already: bool) -> PyWin32Adapter:
+        adapter = _build_adapter(monkeypatch)
+        adapter.currentModel = MagicMock()
+        adapter.currentModel.GetType.return_value = 3
+        adapter.currentModel.GetTitle.return_value = "Draw1"
+        adapter.swApp = MagicMock()
+        adapter.swApp.GetOpenDocumentByName.return_value = (
+            MagicMock() if open_already else None
+        )
+        adapter.swApp.OpenDoc6.return_value.GetTitle.return_value = "block.SLDPRT"
+        snapshots = iter([[], ["Drawing View1", "Drawing View2", "Drawing View3"]])
+        monkeypatch.setattr(_io_module, "_view_names", lambda _a, _d: next(snapshots))
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_a_closed_model_is_loaded_and_its_window_closed(
+        self, monkeypatch
+    ) -> None:
+        adapter = self._drawing(monkeypatch, open_already=False)
+
+        result = await adapter.create_technical_drawing({"model_path": __file__})
+
+        assert result.is_success, result.error
+        adapter.swApp.OpenDoc6.assert_called_once()
+        assert adapter.swApp.ActivateDoc3.call_args.args[0] == "Draw1"
+        adapter.swApp.CloseDoc.assert_called_once_with("block.SLDPRT")
+
+    @pytest.mark.asyncio
+    async def test_an_open_model_stays_open(self, monkeypatch) -> None:
+        adapter = self._drawing(monkeypatch, open_already=True)
+
+        result = await adapter.create_technical_drawing({"model_path": __file__})
+
+        assert result.is_success, result.error
+        adapter.swApp.CloseDoc.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_model_solidworks_wont_open_is_named(self, monkeypatch) -> None:
+        adapter = self._drawing(monkeypatch, open_already=False)
+        adapter.swApp.OpenDoc6.return_value = None
+
+        result = await adapter.create_technical_drawing({"model_path": __file__})
+
+        assert "OpenDoc6 returned nothing" in (result.error or "")
 
 
 class TestAddNoteMoreErrors:
@@ -4151,6 +4203,7 @@ class TestAssemblyAndDrawingSuccessPaths:
     @pytest.mark.asyncio
     async def test_technical_drawing_reports_the_new_views(self, monkeypatch) -> None:
         adapter = self._document(monkeypatch, 3)
+        adapter.swApp = MagicMock()
         snapshots = iter([[], ["Drawing View1", "Drawing View2", "Drawing View3"]])
         monkeypatch.setattr(_io_module, "_view_names", lambda _a, _d: next(snapshots))
 
@@ -4191,6 +4244,49 @@ class TestAssemblyAndDrawingSuccessPaths:
         assert text_format.CharHeight == pytest.approx(12 * 25.4 / 72 / 1000)
         annotation.SetTextFormat.assert_called_once_with(0, False, text_format)
         note.SetTextFormat.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_note_centred_on_its_point_is_moved_to_start_there(
+        self, monkeypatch
+    ) -> None:
+        """SolidWorks 2024 centred the text on the point (#275): measured and moved."""
+        adapter = self._document(monkeypatch, 3)
+        note = MagicMock()
+        annotation = note.GetAnnotation.return_value
+        annotation.SetPosition.return_value = True
+        boxes = iter(
+            [
+                (-0.040, 0.116, 0.0, 0.060, 0.124, 0.0),  # centred on (10, 120) mm
+                (0.010, 0.112, 0.0, 0.110, 0.120, 0.0),  # moved: starts at (10, 120)
+            ]
+        )
+        note.GetExtent.side_effect = lambda: next(boxes)
+        adapter.currentModel.InsertNote.return_value = note
+        adapter._sheet_bounds = lambda _drawing: (0.0, 0.0, 0.42, 0.297)
+
+        result = await adapter.add_note(
+            {"text": "NOTE", "position_x": 10.0, "position_y": 120.0}
+        )
+
+        moved = annotation.SetPosition.call_args_list[-1].args
+        assert moved == pytest.approx((0.06, 0.116, 0.0))
+        assert result.data["extent_mm"] == [10.0, 112.0, 110.0, 120.0]
+        assert "warning" not in result.data
+
+    @pytest.mark.asyncio
+    async def test_a_note_running_off_the_sheet_is_warned(self, monkeypatch) -> None:
+        adapter = self._document(monkeypatch, 3)
+        note = MagicMock()
+        note.GetAnnotation.return_value.SetPosition.return_value = True
+        note.GetExtent.return_value = (0.390, 0.112, 0.0, 0.450, 0.120, 0.0)
+        adapter.currentModel.InsertNote.return_value = note
+        adapter._sheet_bounds = lambda _drawing: (0.0, 0.0, 0.42, 0.297)
+
+        result = await adapter.add_note(
+            {"text": "A LONG NOTE", "position_x": 390.0, "position_y": 120.0}
+        )
+
+        assert "runs 30 mm off the 420 x 297 mm sheet" in result.data["warning"]
 
     @pytest.mark.asyncio
     async def test_add_note_without_a_size_keeps_the_drawings_own(
@@ -4609,11 +4705,107 @@ async def test_set_dimension_in_named_configurations(monkeypatch) -> None:
     unknown = await adapter.set_dimension("D1@Boss-Extrude1", 80.0, ["Short"])
 
     dimension.SetSystemValue3.assert_any_call(0.08, 3, ("ARRAY", "Long"))
-    assert done.data == {"configurations": ["Long"]}
+    assert done.data["configurations"] == ["Long"]
     assert "SetSystemValue3 refused D1@Boss-Extrude1 in Default, Long" in (
         refused.error or ""
     )
     assert "No configuration named 'Short'" in (unknown.error or "")
+
+
+class _ConfiguredDimension:
+    """A dimension with a value per configuration, as SolidWorks keeps it.
+
+    ``leaks`` makes the first write land in every configuration, the way
+    SolidWorks wrote a dimension not yet configured (#266).
+    """
+
+    def __init__(self, values: dict[str, float], active: str, leaks: bool = False):
+        self.values = dict(values)
+        self.active = active
+        self.leaks = leaks
+        self.calls: list[tuple[float, int, tuple[str, ...]]] = []
+
+    @property
+    def SystemValue(self) -> float:
+        return self.values[self.active]
+
+    def SetSystemValue3(self, value: float, option: int, names: tuple[str, ...]) -> int:
+        self.calls.append((value, option, tuple(names)))
+        targets = list(self.values) if self.leaks and len(self.calls) == 1 else names
+        for name in targets:
+            self.values[name] = value
+        return 0
+
+    def GetSystemValue3(
+        self, _option: int, names: tuple[str, ...]
+    ) -> tuple[float, ...]:
+        return tuple(self.values[name] for name in names)
+
+
+class _ActiveConfigModel(SimpleNamespace):
+    """Two configurations, ``Tall`` active."""
+
+    def GetConfigurationNames(self) -> tuple[str, ...]:
+        return ("Default", "Tall")
+
+    def GetActiveConfiguration(self) -> Any:
+        return SimpleNamespace(Name="Tall")
+
+    def EditRebuild3(self) -> bool:
+        return True
+
+
+@pytest.mark.asyncio
+async def test_set_dimension_this_names_the_active_configuration(monkeypatch) -> None:
+    """'this' is written for the active configuration by name, so Default keeps its value (#266)."""
+    adapter = _build_adapter(monkeypatch)
+    monkeypatch.setattr("solidworks_mcp.adapters.solidworks.io.string_array", tuple)
+    dimension = _ConfiguredDimension({"Default": 0.02, "Tall": 0.02}, active="Tall")
+    adapter.currentModel = _ActiveConfigModel(Parameter=Mock(return_value=dimension))
+
+    result = await adapter.set_dimension("D1@Boss-Extrude1", 25.0)
+
+    assert dimension.calls == [(0.025, 3, ("Tall",))]
+    assert result.data == {
+        "configurations": ["Tall"],
+        "old_value": 20.0,
+        "new_value": 25.0,
+        "values": {"Default": 20.0, "Tall": 25.0},
+    }
+
+
+@pytest.mark.asyncio
+async def test_set_dimension_puts_back_a_configuration_the_change_leaked_into(
+    monkeypatch,
+) -> None:
+    adapter = _build_adapter(monkeypatch)
+    monkeypatch.setattr("solidworks_mcp.adapters.solidworks.io.string_array", tuple)
+    dimension = _ConfiguredDimension(
+        {"Default": 0.02, "Tall": 0.02}, active="Tall", leaks=True
+    )
+    adapter.currentModel = _ActiveConfigModel(Parameter=Mock(return_value=dimension))
+
+    result = await adapter.set_dimension("D1@Boss-Extrude1", 25.0)
+
+    assert dimension.calls[-1] == (0.02, 3, ("Default",))
+    assert result.data["restored"] == ["Default"]
+    assert result.data["values"] == {"Default": 20.0, "Tall": 25.0}
+
+
+@pytest.mark.asyncio
+async def test_set_dimension_without_readable_values_still_sets(monkeypatch) -> None:
+    """No per-configuration read (an old SolidWorks): the value is still set, values left out."""
+    adapter = _build_adapter(monkeypatch)
+    dimension = SimpleNamespace(SetSystemValue3=Mock(return_value=0), SystemValue=0.03)
+    adapter.currentModel = _ActiveConfigModel(Parameter=Mock(return_value=dimension))
+
+    result = await adapter.set_dimension("D1@Boss-Extrude1", 30.0)
+
+    assert result.data == {
+        "configurations": ["Tall"],
+        "old_value": 30.0,
+        "new_value": 30.0,
+    }
 
 
 class TestExplodedDrawingView:
@@ -4745,3 +4937,220 @@ class TestViewScaleAndViewType:
 
         assert result.data["orientation"] == orientation
         assert result.data["scale_read"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("doc_type", "copy", "options"),
+    [(1, False, 1), (1, True, 3), (2, False, 5), (3, True, 7)],
+)
+async def test_save_as_a_copy_uses_swsaveasoptions_copy(
+    monkeypatch, tmp_path, doc_type: int, copy: bool, options: int
+) -> None:
+    """#276: a copy leaves the open document (and assemblies using it) on the old file.
+
+    Silent always; an assembly or a drawing saves the documents it uses with it.
+    """
+    adapter = _build_adapter(monkeypatch)
+    target = tmp_path / "rev-A.SLDPRT"
+    target.write_bytes(b"part")
+    model = MagicMock()
+    model.GetPathName.return_value = str(tmp_path / "part.SLDPRT")
+    model.GetType.return_value = doc_type
+    model.SaveAs3.return_value = 0
+    adapter.currentModel = model
+
+    result = await adapter.save_file(str(target), copy)
+
+    assert result.is_success, result.error
+    model.SaveAs3.assert_called_once_with(str(target), 0, options)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("doc_type", "options"), [(1, 1), (2, 5), (3, 5)])
+async def test_a_save_in_place_saves_the_modified_documents_used(
+    monkeypatch, tmp_path, doc_type: int, options: int
+) -> None:
+    """A rebuilt assembly's save waited on "Component documents must be saved"."""
+    adapter = _build_adapter(monkeypatch)
+    own = tmp_path / "frame.SLDASM"
+    own.write_bytes(b"asm")
+    model = MagicMock()
+    model.GetPathName.return_value = str(own)
+    model.GetType.return_value = doc_type
+    model.Save3.return_value = True
+    adapter.currentModel = model
+
+    assert (await adapter.save_file()).is_success
+    assert (await adapter.save_file(str(own))).is_success
+
+    assert [c.args[0] for c in model.Save3.call_args_list] == [options] * 2
+    # Errors and Warnings go by reference: None for them is a type mismatch.
+    assert all(
+        len(c.args) == 3 and None not in c.args for c in model.Save3.call_args_list
+    )
+
+
+@pytest.mark.asyncio
+async def test_close_model_saves_like_save_file(monkeypatch, tmp_path) -> None:
+    """close_model(save=True) passes the same options as save_file."""
+    adapter = _build_adapter(monkeypatch)
+    model = MagicMock()
+    model.GetPathName.return_value = str(tmp_path / "frame.SLDASM")
+    model.GetType.return_value = 2
+    model.GetTitle.return_value = "frame"
+    adapter.swApp = MagicMock(ActiveDoc=model)
+    adapter.currentModel = model
+
+    assert (await adapter.close_model(save=True)).is_success
+
+    assert model.Save3.call_count == 1
+    assert model.Save3.call_args.args[0] == 5
+    model.Save.assert_not_called()
+    adapter.swApp.CloseDoc.assert_called_once_with("frame")
+
+
+@pytest.mark.asyncio
+async def test_close_model_refuses_to_save_a_document_never_saved(
+    monkeypatch,
+) -> None:
+    """Saving a new document opens the Save As dialog: refused, left open."""
+    adapter = _build_adapter(monkeypatch)
+    model = MagicMock()
+    model.GetPathName.return_value = ""
+    adapter.swApp = MagicMock(ActiveDoc=model)
+    adapter.currentModel = model
+
+    result = await adapter.close_model(save=True)
+
+    assert not result.is_success
+    assert "never been saved" in (result.error or "")
+    model.Save3.assert_not_called()
+    adapter.swApp.CloseDoc.assert_not_called()
+
+
+class _DerivedConfigModel(_ActiveConfigModel):
+    """Default with a derived <As Welded>; Tall on its own."""
+
+    def GetConfigurationNames(self) -> tuple[str, ...]:
+        return ("Default", "Default<As Welded>", "Tall")
+
+    def GetActiveConfiguration(self) -> Any:
+        return SimpleNamespace(Name="Default")
+
+    def GetConfigurationByName(self, name: str) -> Any:
+        default = SimpleNamespace(Name="Default", GetParent=lambda: None)
+        return {
+            "Default": default,
+            "Default<As Welded>": SimpleNamespace(
+                Name="Default<As Welded>", GetParent=lambda: default
+            ),
+            "Tall": SimpleNamespace(Name="Tall", GetParent=lambda: None),
+        }[name]
+
+
+@pytest.mark.asyncio
+async def test_set_dimension_lets_a_derived_configuration_follow(monkeypatch) -> None:
+    """A weldment's <As Welded> follows Default; Tall, which leaked, is put back."""
+    adapter = _build_adapter(monkeypatch)
+    monkeypatch.setattr("solidworks_mcp.adapters.solidworks.io.string_array", tuple)
+    monkeypatch.setattr(
+        "solidworks_mcp.adapters.solidworks.io._sw_type_info.flagged",
+        lambda obj, *_i: obj,
+    )
+    dimension = _ConfiguredDimension(
+        {"Default": 0.02, "Default<As Welded>": 0.02, "Tall": 0.02},
+        active="Default",
+        leaks=True,
+    )
+    adapter.currentModel = _DerivedConfigModel(Parameter=Mock(return_value=dimension))
+
+    result = await adapter.set_dimension("D1@Boss-Extrude1", 25.0)
+
+    assert result.data["restored"] == ["Tall"]
+    assert result.data["values"] == {
+        "Default": 25.0,
+        "Default<As Welded>": 25.0,
+        "Tall": 20.0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_set_dimension_reports_the_configuration_it_was_for(monkeypatch) -> None:
+    """A list naming Long while Short is active: old and new are Long's."""
+    adapter = _build_adapter(monkeypatch)
+    monkeypatch.setattr("solidworks_mcp.adapters.solidworks.io.string_array", tuple)
+    monkeypatch.setattr(
+        "solidworks_mcp.adapters.solidworks.configurations.string_array", tuple
+    )
+    dimension = _ConfiguredDimension({"Default": 0.02, "Tall": 0.03}, active="Tall")
+    adapter.currentModel = _ActiveConfigModel(Parameter=Mock(return_value=dimension))
+
+    result = await adapter.set_dimension("D1@Boss-Extrude1", 40.0, ["Default"])
+
+    assert (result.data["old_value"], result.data["new_value"]) == (20.0, 40.0)
+
+
+class TestViewsOfAModelLoadedHidden:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("visible", "closed"), [(False, True), (True, False)])
+    async def test_a_hidden_reference_is_hidden_again(
+        self, monkeypatch, visible: bool, closed: bool
+    ) -> None:
+        """A drawing's reference is loaded but has no window: OpenDoc6 gives it one."""
+        adapter = TestViewsOfAModelNotOpen._drawing(monkeypatch, open_already=True)
+        adapter.swApp.GetOpenDocumentByName.return_value = SimpleNamespace(
+            Visible=visible
+        )
+
+        result = await adapter.create_technical_drawing({"model_path": __file__})
+
+        assert result.is_success, result.error
+        assert adapter.swApp.CloseDoc.called is closed
+
+
+@pytest.mark.asyncio
+async def test_a_copy_never_falls_back_to_a_plain_save_as(
+    monkeypatch, tmp_path
+) -> None:
+    adapter = _build_adapter(monkeypatch)
+    target = tmp_path / "rev-A.SLDPRT"
+    model = MagicMock()
+    model.GetPathName.return_value = str(tmp_path / "part.SLDPRT")
+    model.SaveAs3.return_value = 1  # refused
+    adapter.currentModel = model
+
+    result = await adapter.save_file(str(target), True)
+
+    assert result.is_error
+    model.SaveAs.assert_not_called()
+
+
+class _InheritingDimension(_ConfiguredDimension):
+    """A derived configuration reads 0 while it inherits its parent's value."""
+
+    def GetSystemValue3(
+        self, _option: int, names: tuple[str, ...]
+    ) -> tuple[float, ...]:
+        return tuple(0.0 if "<" in name else self.values[name] for name in names)
+
+
+@pytest.mark.asyncio
+async def test_a_derived_configuration_reports_the_value_it_inherits(
+    monkeypatch,
+) -> None:
+    adapter = _build_adapter(monkeypatch)
+    monkeypatch.setattr("solidworks_mcp.adapters.solidworks.io.string_array", tuple)
+    monkeypatch.setattr(
+        "solidworks_mcp.adapters.solidworks.io._sw_type_info.flagged",
+        lambda obj, *_i: obj,
+    )
+    dimension = _InheritingDimension(
+        {"Default": 0.02, "Default<As Welded>": 0.02, "Tall": 0.02}, active="Default"
+    )
+    adapter.currentModel = _DerivedConfigModel(Parameter=Mock(return_value=dimension))
+
+    result = await adapter.set_dimension("D1@Boss-Extrude1", 25.0)
+
+    assert result.data["values"]["Default<As Welded>"] == 25.0
+    assert "restored" not in result.data

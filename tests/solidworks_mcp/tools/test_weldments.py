@@ -998,3 +998,36 @@ async def test_patterns_around_and_mirrored_and_unknown_names(
     )
     assert missing["status"] == "error"
     assert "Nothing" in missing["message"]
+
+
+@pytest.mark.asyncio
+async def test_welds_on_every_joint_with_their_length(mcp_server, mock_adapter) -> None:
+    tools = await _tools(mcp_server, mock_adapter)
+    await mock_adapter.create_part()
+    await tools["create_structural_members"](
+        {
+            "standard": "BSI",
+            "profile_type": "shs",
+            "size": "RHS60x60x4",
+            "segments": [[0, 0, 0, 0, 1000, 0], [0, 1000, 0, 1000, 1000, 0]],
+            "name": "Frame",
+            "grouping": "each",
+        }
+    )
+
+    made = await tools["create_weld_beads"]({"throat_mm": 4})
+
+    assert made["status"] == "success", made
+    assert made["welds"]["beads"] == 1
+    assert made["welds"]["leg_mm"] == 5.7
+    assert "400.0 mm in all" in made["message"]
+    assert "warning" not in made
+
+
+@pytest.mark.asyncio
+async def test_welds_need_a_throat(mcp_server, mock_adapter) -> None:
+    tools = await _tools(mcp_server, mock_adapter)
+
+    refused = await tools["create_weld_beads"]({"throat_mm": 0})
+
+    assert refused["status"] == "error"

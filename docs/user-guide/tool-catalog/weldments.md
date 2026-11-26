@@ -226,7 +226,7 @@ Copy finished members, plates or caps in a row, a grid, around an axis, or mirro
 
 **Prerequisite:** An open weldment part with the original built, no sketch open
 
-**SolidWorks automation note:** `IFeatureManager.FeatureLinearPattern5` and `FeatureCircularPattern5` with the bodies selected under mark 256 and the direction (or axis) under mark 1, a second direction under mark 2; the same patterns built through `CreateDefinition` data came back `None`. A direction along x, y or z runs on a reference axis where two main planes meet (`InsertAxis2`, named `X axis`, made once); any other runs on a fully defined line in a 3D sketch named after the pattern. SolidWorks runs a pattern from the axis's first point to its second (`IRefAxis.GetRefAxisParams`); the first copy is measured against the original anyway and the pattern made again the other way when it went backwards. Skipped instances are pairs of 0-based indexes in `ILinearPatternFeatureData.SkippedItemArray` (`VT_I4`), set through `AccessSelections` and `ModifyDefinition` with a `VT_DISPATCH` null for the component. A mirror is `InsertMirrorFeature` with the bodies (mark 256) and a main plane or one offset from it (mark 2). Checked live on 2025 SP4: 25 balusters less two at a gate, a frame with its base plate 5 times along z, a mirrored brace and six spokes; every copy kept its cut-list length and end angles and joined its original's item. A pattern placed in a folder before a feature that changes its bodies (the trim of the original) would copy them untrimmed, so it goes in a new numbered folder instead.
+**SolidWorks automation note:** `IFeatureManager.FeatureLinearPattern5` and `FeatureCircularPattern5` with the bodies selected under mark 256 and the direction (or axis) under mark 1, a second direction under mark 2; the same patterns built through `CreateDefinition` data came back `None`. A direction along x, y or z runs on a reference axis where two main planes meet (`InsertAxis2`, named `X axis`, made once); any other runs on a fully defined line in a 3D sketch named after the pattern. SolidWorks runs a pattern from the axis's first point to its second (`IRefAxis.GetRefAxisParams`); the first copy is measured against the original anyway and the pattern made again the other way when it went backwards. Skipped instances are pairs of 0-based indexes in `ILinearPatternFeatureData.SkippedItemArray` (`VT_I4`), set through `AccessSelections` and `ModifyDefinition` with a `VT_DISPATCH` null for the component. A mirror is `InsertMirrorFeature` with the bodies (mark 256) and a main plane, one offset from it, or, for a tilted normal, a plane square to a short line drawn along the normal in a 3D sketch (mark 2), as a tilted plate's plane is made. Checked live on 2025 SP4: 25 balusters less two at a gate, a frame with its base plate 5 times along z, a mirrored brace and six spokes; every copy kept its cut-list length and end angles and joined its original's item. A pattern placed in a folder before a feature that changes its bodies (the trim of the original) would copy them untrimmed, so it goes in a new numbered folder instead.
 
 **Parameters:**
 
@@ -236,7 +236,7 @@ Copy finished members, plates or caps in a row, a grid, around an axis, or mirro
 | `along` | `object?` | — | `None` | Copies in a row: `direction` `[x, y, z]`, `spacing` (mm), `count` (the original included) |
 | `along2` | `object?` | — | `None` | With `along`: a second direction, for a grid |
 | `around` | `object?` | — | `None` | Copies around an axis: `axis` `[x, y, z]`, `point` on it, `count`, `angle` (total, 360 = evenly all round) |
-| `mirror` | `object?` | — | `None` | A mirrored copy: `plane` (`Front`, `Top`, `Right`) or `point` and `normal` along x, y or z |
+| `mirror` | `object?` | — | `None` | A mirrored copy: `plane` (`Front`, `Top`, `Right`) or `point` and `normal` (any direction) |
 | `skip` | `list?` | — | `None` | Instances of a row to leave out, 1-based (the original is 1): `[4, 5]`, on a grid `[[2, 3]]` |
 | `name` | `str?` | — | `None` | The pattern's name; default `<first member> pattern` |
 | `folder` | `str?` | — | `None` | Feature-tree folder; default the last folder holding the members |
@@ -245,6 +245,29 @@ Copy finished members, plates or caps in a row, a grid, around an axis, or mirro
 
 ```json
 {"members": ["Baluster"], "along": {"direction": [1, 0, 0], "spacing": 120, "count": 25}, "skip": [10, 11], "name": "Balusters"}
+```
+
+---
+
+### `create_weld_beads`
+
+Put a cosmetic fillet weld on every shop joint of a weldment, and measure the weld length.
+
+**Prerequisite:** An open weldment part, no sketch open
+
+**SolidWorks automation note:** The joints are found as `check_joints` finds contacts: every member end (flat or coped) landing on a body, and, for bodies touching otherwise, the face most of whose points land (a plate's edge on a member, not its side meeting the member along one line). Each joint is one `IFeatureManager.InsertCosmeticWeldBead` with the weld-from faces under mark 4 (the faces across the landing face's outer loop: a tube end's four flats and four corner radii, never its bore) and the weld-to faces under mark 8; `InsertCosmeticWeldBead2` with the face sets as arrays made nothing. The bead size is the leg, `throat_mm` × √2. Two mitred ends landing on each other are welded once. The length is the weld folder's `ICosmeticWeldBeadFolder.TotalLength` before and after each bead. Checked live on 2025 SP4: a 100×100×5 column on its base plate and under its cap plate (382.8 mm each, all round), a mitred RHS corner (462.7 mm) and a fin plate on the column (260 mm, both sides and the ends).
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `throat_mm` | `float` | ✅ | | Fillet weld throat a in mm (a4 = 4; the leg is a × 1.414) |
+| `members` | `list[str]?` | — | `None` | Only the joints of these members, bodies or plates; all when omitted |
+
+**Sample call:**
+
+```json
+{"throat_mm": 4}
 ```
 
 ---

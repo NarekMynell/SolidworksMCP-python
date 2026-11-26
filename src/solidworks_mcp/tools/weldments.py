@@ -823,13 +823,32 @@ class PatternAround(BaseModel):
         return self
 
 
+class CreateWeldBeadsInput(CompatInput):
+    """Input schema for ``create_weld_beads``.
+
+    Attributes:
+        throat_mm (float): The fillet weld's throat ``a`` (EN ISO 2553).
+        members (list[str] | None): Only these members' or plates' joints.
+    """
+
+    throat_mm: float = Field(
+        gt=0,
+        le=30,
+        description="Fillet weld throat a in mm (a4 = 4; the leg is a x 1.414)",
+    )
+    members: list[str] | None = Field(
+        default=None,
+        description="Only the joints of these members, bodies or plates; all when omitted",
+    )
+
+
 class PatternMirror(BaseModel):
     """A mirror plane: a main plane, or one through a point.
 
     Attributes:
         plane (str | None): ``Front``, ``Top`` or ``Right``.
         point (list[float] | None): A point on the plane, mm.
-        normal (list[float] | None): The plane's normal, along x, y or z.
+        normal (list[float] | None): The plane's normal, any direction.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -847,7 +866,7 @@ class PatternMirror(BaseModel):
         default=None,
         min_length=3,
         max_length=3,
-        description="With point: the plane's normal, along x, y or z",
+        description="With point: the plane's normal, any direction (a tilted plane too)",
     )
 
     @model_validator(mode="after")
@@ -1413,6 +1432,52 @@ async def register_weldment_tools(
         }
         if warning:
             reply["warning"] = warning
+        return reply
+
+    @mcp.tool()
+    async def create_weld_beads(input_data: CreateWeldBeadsInput) -> dict[str, Any]:
+        """Put a cosmetic fillet weld on every shop joint of a weldment, and measure the weld length.
+
+        Use it when a piece is finished and checked: every member end landing on a
+        plate or member, and every plate edge landing on a member or plate, gets a
+        fillet bead of throat `throat_mm` (a4: 4) all round where they meet. Inside a
+        piece every joint is a shop weld; site joints between pieces are bolted, in
+        the assembly. `members` limits it to their joints. The beads go in the
+        weld folder, with SolidWorks' weld symbols; `total_length_mm` is the weld
+        length for costing and the drawing's weld note. Needs: an open weldment
+        part, no sketch open. Changes: adds the beads. Returns: `welds` with
+        `beads`, `throat_mm`, `leg_mm`, `total_length_mm` and each weld's `from`,
+        `to` and `length_mm`; `failed` and `not_welded` (bodies touching side by
+        side only) when some joint got no bead.
+
+        Args:
+            input_data: `throat_mm` is required; `members` optional.
+
+        Returns:
+            dict[str, Any]: The welds made.
+        """
+        input_data = normalize_input(input_data, CreateWeldBeadsInput)
+        require_capability(
+            adapter, "create_weld_beads", "Active adapter can't add weld beads"
+        )
+        result = await adapter.create_weld_beads(
+            input_data.model_dump(exclude_none=True)
+        )
+        require_success(result, context="Failed to weld the joints")
+        data = dict(result.data or {})
+        reply: dict[str, Any] = {
+            "status": "success",
+            "message": f"{data.get('beads')} weld bead(s), throat a{data.get('throat_mm'):g}, "
+            f"{data.get('total_length_mm')} mm in all",
+            "welds": data,
+            "execution_time": result.execution_time,
+        }
+        missing = len(data.get("failed") or []) + len(data.get("not_welded") or [])
+        if missing:
+            reply["warning"] = (
+                f"{missing} joint(s) got no bead: see failed and not_welded; a lapped "
+                "member's side welds need a weld note on the drawing"
+            )
         return reply
 
     @mcp.tool()

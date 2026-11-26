@@ -489,6 +489,29 @@ class MockWeldmentsMixin:
             },
         )
 
+    async def create_weld_beads(
+        self, params: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock welds: one 400 mm bead where each member meets the next."""
+        if error := self._part_error("create_weld_beads"):
+            return error
+        bodies = [b[3] for b in self._weld_state()["bodies"]]
+        throat = float(params["throat_mm"])
+        welds = [
+            {"from": a, "to": b, "length_mm": 400.0}
+            for a, b in zip(bodies, bodies[1:], strict=False)
+        ]
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "beads": len(welds),
+                "throat_mm": throat,
+                "leg_mm": round(throat * 2**0.5, 1),
+                "total_length_mm": 400.0 * len(welds),
+                "welds": welds,
+            },
+        )
+
     async def pattern_members(
         self, params: dict[str, Any]
     ) -> AdapterResult[dict[str, Any]]:
