@@ -14,7 +14,6 @@ mitred); an end that meets nothing and isn't capped is open.
 
 from __future__ import annotations
 
-import csv
 import math
 import os
 import re
@@ -23,7 +22,13 @@ from typing import TYPE_CHECKING, Any
 from .base import AdapterResult, AdapterResultStatus
 from .solidworks.weldment_cuts import check_cut
 from .solidworks.weldment_library import chains, normalise
-from .solidworks.weldment_plates import check_plate, description, main_axis, plate_frame
+from .solidworks.weldment_plates import (
+    check_plate,
+    description,
+    main_axis,
+    plate_frame,
+    write_listing,
+)
 
 #: ``{standard: {type: {size: kg per metre}}}``, nominal masses.
 SAMPLE_PROFILES: dict[str, dict[str, dict[str, float]]] = {
@@ -675,25 +680,10 @@ class MockWeldmentsMixin:
                     "area_mm2": round(plates[0]["area_mm2"], 1),
                 }
             )
-        listing = os.path.join(out_dir, f"{prefix}plates.csv")
-        with open(listing, "w", newline="", encoding="utf-8") as handle:
-            writer = csv.DictWriter(
-                handle,
-                fieldnames=[
-                    "file",
-                    "mark",
-                    "description",
-                    "thickness_mm",
-                    "quantity",
-                    "area_mm2",
-                ],
-            )
-            writer.writeheader()
-            for row in files:
-                writer.writerow({**row, "file": os.path.basename(row["file"])})
+        listed = write_listing(out_dir, prefix, os.path.basename(path), files)
         return AdapterResult(
             status=AdapterResultStatus.SUCCESS,
-            data={"files": files, "csv": listing, "skipped": []},
+            data={"files": files, "skipped": [], **listed},
         )
 
     def _trim_bodies(self, names: list[str]) -> list[int] | str:

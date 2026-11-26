@@ -19,6 +19,12 @@ Checked live on SolidWorks 2025 SP4 before it was written:
   quarter circles of R10), the length the weld folder's ``TotalLength``
   gives. The bore's faces, across the inner loop, are left out: nobody
   welds inside a tube.
+- SolidWorks files the beads in one weld sub-folder per size under the Weld
+  Folder (``CosmeticWeldSubFolder`` under ``CosmeticWeldCutList``), each
+  folder's ``TotalLength`` the sum of its beads' reference edges (TR-02 truss,
+  55 beads in four folders, a3 to a6, within 0.02 mm). A bead's length is the
+  change of every folder's total together: one folder's total, read before a
+  bead of another size went into another, gave TR-02 lengths of -4222 mm.
 """
 
 from __future__ import annotations
@@ -43,10 +49,12 @@ from .weldment_joints import (
     read_faces,
     samples_of,
 )
-from .weldments import _named_bodies, _need_part
+from .weldments import _MM_PER_UNIT, _SW_UNITS_LINEAR, _named_bodies, _need_part
 
 #: Selection marks ``InsertCosmeticWeldBead`` reads: weld from, weld to.
 MARK_FROM, MARK_TO = 4, 8
+#: ``IFeature::GetTypeName2`` of the Weld Folder and of its sub-folders.
+WELD_FOLDER, WELD_SUB_FOLDER = "CosmeticWeldCutList", "CosmeticWeldSubFolder"
 #: A fillet weld's leg is its throat ``a`` times root 2 (EN ISO 2553).
 LEG_PER_THROAT = math.sqrt(2.0)
 #: Bodies this close (m) touch: a joint's faces are coincident.
@@ -222,18 +230,51 @@ def bead_features(adapter: Any, model: Any) -> list[Any]:
     return found
 
 
-def _weld_length_mm(adapter: Any, feature: Any) -> float | None:
-    """The weld folder's total length (mm) as a bead in it reports it."""
-    data = adapter._attempt(
-        lambda: _flagged(feature.GetDefinition(), "ICosmeticWeldBeadFeatureData"),
-        default=None,
-    )
-    folder = adapter._attempt(
-        lambda: _flagged(data.GetWeldBeadFolder(), "ICosmeticWeldBeadFolder"),
-        default=None,
-    )
-    total = adapter._attempt(lambda: float(folder.TotalLength), default=None)
-    return None if total is None else round(total, 1)
+def weld_total_mm(adapter: Any, model: Any, to_mm: float) -> float | None:
+    """Every cosmetic weld bead's length in the part (mm), as SolidWorks adds it up.
+
+    The Weld Folder's sub-folders (one per bead size) added up: 0 before the
+    first bead, ``None`` when a sub-folder can't be read.
+
+    Args:
+        adapter: The adapter (for ``_attempt``).
+        model: The part.
+        to_mm: Millimetres in one document length unit (``TotalLength`` is in
+            document units, like the cut list's lengths).
+    """
+    feature = adapter._attempt(lambda: model.FirstFeature(), default=None)
+    while feature is not None:
+        feature = _flagged(feature, "IFeature")
+        kind = adapter._attempt(lambda f=feature: str(f.GetTypeName2()), default="")
+        if kind == WELD_FOLDER:
+            return _sub_folders_mm(adapter, feature, to_mm)
+        feature = adapter._attempt(lambda f=feature: f.GetNextFeature(), default=None)
+    return 0.0
+
+
+def _sub_folders_mm(adapter: Any, folder: Any, to_mm: float) -> float | None:
+    """The weld sub-folders' total lengths added up (mm), or ``None``."""
+    total = 0.0
+    child = adapter._attempt(lambda: folder.GetFirstSubFeature(), default=None)
+    while child is not None:
+        child = _flagged(child, "IFeature")
+        if (
+            adapter._attempt(lambda c=child: str(c.GetTypeName2()), default="")
+            == WELD_SUB_FOLDER
+        ):
+            length = adapter._attempt(
+                lambda c=child: float(
+                    _flagged(
+                        c.GetSpecificFeature2(), "ICosmeticWeldBeadFolder"
+                    ).TotalLength
+                ),
+                default=None,
+            )
+            if length is None:
+                return None
+            total += length
+        child = adapter._attempt(lambda c=child: c.GetNextSubFeature(), default=None)
+    return round(total * to_mm, 1)
 
 
 def _select(model: Any, faces: list[Any], mark: int) -> bool:
@@ -311,13 +352,18 @@ class SolidWorksWeldmentWeldsMixin:
                 only = set(_named_bodies(adapter, model, part, list(params["members"])))
             bodies = read_bodies(adapter, part)
             seams, apart = find_seams(adapter, bodies, REACH_M, only)
-            # Beads there already (an earlier call) count in the folder's
-            # total and their joints are not welded twice.
+            # Beads there already (an earlier call) count in the part's total
+            # and their joints are not welded twice.
             there = bead_features(adapter, model)
             names = {
                 str(adapter._attempt(lambda f=f: f.Name, default="")) for f in there
             }
-            total: float | None = _weld_length_mm(adapter, there[0]) if there else 0.0
+            unit = adapter._attempt(
+                lambda: int(model.GetUserPreferenceIntegerValue(_SW_UNITS_LINEAR)),
+                default=0,
+            )
+            to_mm = _MM_PER_UNIT.get(int(unit or 0), 1.0)
+            total = weld_total_mm(adapter, model, to_mm)
             welds: list[dict[str, Any]] = []
             failed: list[dict[str, Any]] = []
             existing: list[dict[str, str]] = []
@@ -332,7 +378,7 @@ class SolidWorksWeldmentWeldsMixin:
                         {"from": seam.from_body, "to": seam.to_body, "reason": why}
                     )
                     continue
-                now = _weld_length_mm(adapter, feature)
+                now = weld_total_mm(adapter, model, to_mm)
                 length = None if now is None or total is None else round(now - total, 1)
                 total = now
                 welds.append(
@@ -343,7 +389,7 @@ class SolidWorksWeldmentWeldsMixin:
                 "beads": len(welds),
                 "throat_mm": throat,
                 "leg_mm": round(throat * LEG_PER_THROAT, 1),
-                "total_length_mm": total if (welds or existing) else 0.0,
+                "total_length_mm": total,
                 "welds": welds,
             }
             if existing:

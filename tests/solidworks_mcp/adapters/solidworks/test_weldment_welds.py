@@ -213,12 +213,12 @@ async def test_create_weld_beads_reports_each_weld_and_the_total(
         ww.Seam("Brace", "Post", wj.Face(None, (0,) * 6, True)),
     ]
     monkeypatch.setattr(ww, "find_seams", lambda *_a: (seams, [("Strap", "Post")]))
-    totals = iter([382.8, 642.8])
+    totals = iter([0.0, 382.8, 642.8])
     made = iter(
         [(object(), None), (object(), None), (None, "SolidWorks made no weld bead")]
     )
     monkeypatch.setattr(ww, "weld", lambda *_a: next(made))
-    monkeypatch.setattr(ww, "_weld_length_mm", lambda _a, _f: next(totals))
+    monkeypatch.setattr(ww, "weld_total_mm", lambda _a, _m, _k: next(totals))
 
     result = await _Welding().create_weld_beads({"throat_mm": 4})
 
@@ -247,13 +247,79 @@ async def test_create_weld_beads_refuses_an_open_sketch(monkeypatch) -> None:
     assert "A sketch is open" in (result.error or "")
 
 
-def test_the_weld_folder_length_or_nothing(unflagged) -> None:
-    folder = SimpleNamespace(TotalLength=382.83)
-    data = SimpleNamespace(GetWeldBeadFolder=lambda: folder)
-    feature = SimpleNamespace(GetDefinition=lambda: data)
+class _Feature(SimpleNamespace):
+    """A feature-tree node: its type, its sub-features and its next sibling."""
 
-    assert ww._weld_length_mm(_A(), feature) == 382.8
-    assert ww._weld_length_mm(_A(), SimpleNamespace()) is None
+    def __init__(self, kind: str, subs: list[Any] | None = None, **kw: Any) -> None:
+        super().__init__(kind=kind, subs=list(subs or []), next=None, **kw)
+        for a, b in zip(self.subs, self.subs[1:], strict=False):
+            a.next = b
+
+    def GetTypeName2(self) -> str:
+        return self.kind
+
+    def GetFirstSubFeature(self) -> Any:
+        return self.subs[0] if self.subs else None
+
+    def GetNextSubFeature(self) -> Any:
+        return self.next
+
+    def GetNextFeature(self) -> Any:
+        return self.next
+
+
+def _sub_folder(total: float | None) -> _Feature:
+    folder = SimpleNamespace() if total is None else SimpleNamespace(TotalLength=total)
+    return _Feature(ww.WELD_SUB_FOLDER, GetSpecificFeature2=lambda: folder)
+
+
+def _tree(*features: _Feature) -> Any:
+    for a, b in zip(features, features[1:], strict=False):
+        a.next = b
+    return SimpleNamespace(FirstFeature=lambda: features[0] if features else None)
+
+
+def test_the_part_total_adds_every_weld_sub_folder(unflagged) -> None:
+    """TR-02: SolidWorks filed a3, a4, a5 and a6 beads in four sub-folders."""
+    welds = _Feature(ww.WELD_FOLDER, [_sub_folder(6499.32), _sub_folder(1612.81)])
+    model = _tree(_Feature("CommentsFolder"), welds, _Feature("WeldMemberFeat"))
+
+    assert ww.weld_total_mm(_A(), model, 1.0) == 8112.1
+    assert ww.weld_total_mm(_A(), model, 25.4) == round(8112.13 * 25.4, 1)
+    assert ww.weld_total_mm(_A(), _tree(_Feature("WeldMemberFeat")), 1.0) == 0.0
+    unreadable = _Feature(ww.WELD_FOLDER, [_sub_folder(10.0), _sub_folder(None)])
+    assert ww.weld_total_mm(_A(), _tree(unreadable), 1.0) is None
+
+
+@pytest.mark.asyncio
+async def test_a_bead_of_another_size_is_measured_in_its_own_folder(
+    monkeypatch, unflagged
+) -> None:
+    """TR-02: an a5 bead after the a4 ones came out -4222 mm (one folder minus another)."""
+    monkeypatch.setattr(ww, "_need_part", lambda _a, _n: None)
+    monkeypatch.setattr(ww, "read_bodies", lambda _a, _p: [])
+    seams = [ww.Seam("PL1", "BC1", wj.Face(None, (0,) * 6, True))]
+    monkeypatch.setattr(ww, "find_seams", lambda *_a: (seams, []))
+    a4 = _Feature("CosmeticWeldBead", Name="Weld V1 to BC1")
+    a4_folder = _sub_folder(4422.0)
+    welds = _Feature(ww.WELD_FOLDER, [a4_folder])
+    welding = _Welding()
+    welding.currentModel.FirstFeature = lambda: welds
+    welding.currentModel.GetUserPreferenceIntegerValue = lambda _pref: 0
+
+    def bead(*_a: Any) -> tuple[Any, None]:
+        welds.subs.append(_sub_folder(200.0))  # SolidWorks opens an a5 folder
+        a4_folder.next = welds.subs[-1]
+        return SimpleNamespace(Name=""), None
+
+    monkeypatch.setattr(ww, "weld", bead)
+    monkeypatch.setattr(ww, "bead_features", lambda _a, _m: [a4])
+
+    result = await welding.create_weld_beads({"throat_mm": 5})
+
+    assert result.is_success, result.error
+    assert result.data["welds"] == [{"from": "PL1", "to": "BC1", "length_mm": 200.0}]
+    assert result.data["total_length_mm"] == 4622.0
 
 
 @pytest.mark.asyncio
@@ -269,11 +335,10 @@ async def test_a_second_call_leaves_welded_joints_and_counts_the_folder(
     monkeypatch.setattr(ww, "find_seams", lambda *_a: (seams, []))
     earlier = SimpleNamespace(Name="Weld Post to Plate")
     monkeypatch.setattr(ww, "bead_features", lambda _a, _m: [earlier])
-    totals = {id(earlier): 382.8}
     made = SimpleNamespace(Name="")
-    totals[id(made)] = 642.8
+    totals = iter([382.8, 642.8])
     monkeypatch.setattr(ww, "weld", lambda *_a: (made, None))
-    monkeypatch.setattr(ww, "_weld_length_mm", lambda _a, f: totals[id(f)])
+    monkeypatch.setattr(ww, "weld_total_mm", lambda _a, _m, _k: next(totals))
 
     result = await _Welding().create_weld_beads({"throat_mm": 4})
 

@@ -493,11 +493,45 @@ class _Part(_Model):
         return True
 
 
+class _Solid(_Body):
+    """A body ``depth_m`` deep along z, its largest flat face facing z."""
+
+    normal = (0.0, 0.0, 1.0)
+
+    def __init__(
+        self, name: str, kind: str, area_m2: float, volume_m3: float, depth_m: float
+    ) -> None:
+        super().__init__(name, kind, area_m2, volume_m3)
+        self.depth = depth_m
+
+    def GetExtremePoint(self, _x: float, _y: float, z: float, *outs: Any) -> bool:
+        for out, value in zip(
+            outs, (0.1, 0.2, self.depth if z > 0 else 0.0), strict=True
+        ):
+            out.value = value
+        return True
+
+
+def _typed_folder(
+    name: str, bodies: list[Any], kind: int, values: dict[str, str] | None = None
+) -> Any:
+    """A cut-list folder whose ``GetCutListType`` is ``kind`` (3 member, 1 solid body)."""
+    return SimpleNamespace(
+        Name=name,
+        GetSpecificFeature2=lambda: SimpleNamespace(
+            GetBodies=lambda: bodies, GetCutListType=lambda: kind
+        ),
+        CustomPropertyManager=_Properties(values),
+    )
+
+
 class _DxfAdapter(_Adapter):
     def _largest_flat_face(self, body: Any) -> Any:
         if body.area is None:
             return None
-        face = SimpleNamespace(Select4=lambda _append, _data: True)
+        face = SimpleNamespace(
+            Select4=lambda _append, _data: True, Normal=getattr(body, "normal", None)
+        )
         return (body.area, face)
 
 
@@ -522,11 +556,183 @@ async def test_each_distinct_plate_gets_a_dxf_and_a_line_in_the_list(
     assert files[0]["quantity"] == 4
     assert files[0]["thickness_mm"] == 15.0
     assert files[0]["area_mm2"] == 60979.5
-    assert result.data["skipped"] == ["Item3"]
+    assert result.data["skipped"] == [{"item": "Item3", "reason": "no flat face"}]
+    assert result.data["removed"] == []
     with open(result.data["csv"], encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
     assert rows[0]["file"] == "OP-14_BP-1_t15_x4.dxf"
     assert rows[0]["mark"] == "BP-1"
+    assert rows[0]["part"] == "frame.SLDPRT"
+
+
+@pytest.mark.asyncio
+async def test_mirrored_members_are_no_plates(
+    fake: dict[str, Any], tmp_path: Path
+) -> None:
+    """TR-01: two mirrored web angles, alone in their cut-list items, were cut as plates.
+
+    A mirrored body has no member feature (its features are the MirrorSolid
+    alone); SolidWorks still files it under a member item (GetCutListType 3).
+    """
+    angle = _Solid("Mirror to right half[10]", "MirrorSolid", 0.0686, 0.000803, 0.0508)
+    gusset = _Solid("PL-1 Gusset B1", "Extrusion", 0.039, 0.039 * 0.00635, 0.00635)
+    fake["cut_list"] = [
+        _typed_folder("L2x2x0.25<7>", [angle], 3),
+        _typed_folder(
+            "PL6.35 279x140<1>",
+            [gusset] * 4,
+            1,
+            {"MARK": "PL-1", "Description": "PL6.35 279x140"},
+        ),
+    ]
+    part = _Part(str(tmp_path / "truss.SLDPRT"))
+    result = await _DxfAdapter(part).export_plate_dxfs(
+        {"output_dir": str(tmp_path / "dxf")}
+    )
+    assert result.status == AdapterResultStatus.SUCCESS, result.error
+    assert [Path(f["file"]).name for f in result.data["files"]] == ["PL-1_t6.35_x4.dxf"]
+    assert result.data["files"][0]["thickness_mm"] == 6.35
+    assert result.data["skipped"] == []
+
+
+@pytest.mark.asyncio
+async def test_without_the_cut_list_type_any_member_body_makes_a_member_item(
+    fake: dict[str, Any], tmp_path: Path
+) -> None:
+    mirrored = _Body("Mirror1[1]", "MirrorSolid", 0.01, 0.001)
+    fake["cut_list"] = [
+        _folder(
+            "RHS<1>", [mirrored, _Body("Columns[1]", "WeldMemberFeat", 0.01, 0.001)]
+        )
+    ]
+    part = _Part(str(tmp_path / "frame.SLDPRT"))
+    result = await _DxfAdapter(part).export_plate_dxfs({"output_dir": str(tmp_path)})
+    assert result.status == AdapterResultStatus.SUCCESS, result.error
+    assert result.data["files"] == [] and result.data["skipped"] == []
+    assert part.exported == []
+
+
+@pytest.mark.asyncio
+async def test_a_body_that_is_not_flat_is_skipped_with_the_reason(
+    fake: dict[str, Any], tmp_path: Path
+) -> None:
+    """An angle's leg face: 50.8 mm deep across it, 11.7 mm on average."""
+    angle = _Solid("Odd[1]", "Extrusion", 0.068618, 0.068618 * 0.0117119, 0.0508)
+    fake["cut_list"] = [_typed_folder("Cut-List-Item9", [angle], 1)]
+    part = _Part(str(tmp_path / "frame.SLDPRT"))
+    result = await _DxfAdapter(part).export_plate_dxfs({"output_dir": str(tmp_path)})
+    assert result.status == AdapterResultStatus.SUCCESS, result.error
+    assert result.data["files"] == []
+    assert result.data["skipped"] == [
+        {
+            "item": "Cut-List-Item9",
+            "reason": "not a flat plate: 50.8 mm deep across its largest flat face, "
+            "11.7 mm on average",
+        }
+    ]
+    assert part.exported == []
+
+
+@pytest.mark.asyncio
+async def test_a_bevelled_plate_is_as_thick_as_it_is_deep(
+    fake: dict[str, Any], tmp_path: Path
+) -> None:
+    """A weld-prep bevel takes 1.25 % of the steel: still a 20 mm plate, not 19.75."""
+    plate = _Solid("BP-2 Base plate", "Extrusion", 0.06, 0.06 * 0.01975, 0.020)
+    fake["cut_list"] = [_typed_folder("Item1", [plate], 1, {"MARK": "BP-2"})]
+    part = _Part(str(tmp_path / "frame.SLDPRT"))
+    result = await _DxfAdapter(part).export_plate_dxfs({"output_dir": str(tmp_path)})
+    assert result.status == AdapterResultStatus.SUCCESS, result.error
+    assert [Path(f["file"]).name for f in result.data["files"]] == ["BP-2_t20_x1.dxf"]
+    assert result.data["files"][0]["thickness_mm"] == 20.0
+
+
+def _dxf(folder: Path, name: str) -> dict[str, Any]:
+    path = folder / name
+    path.write_text("0\nEOF\n", encoding="ascii")
+    return {
+        "file": str(path),
+        "mark": "",
+        "description": "",
+        "thickness_mm": 6.35,
+        "quantity": 1,
+        "area_mm2": 1.0,
+    }
+
+
+def test_a_re_export_removes_the_dxfs_its_last_export_left(tmp_path: Path) -> None:
+    """TR-01: PL-1_t6.35_x2.dxf stayed beside PL-1_t6.35_x4.dxf; the shop would cut six."""
+    first = [_dxf(tmp_path, "PL-1_t6.35_x2.dxf"), _dxf(tmp_path, "L2x2_t11.7_x1.dxf")]
+    assert (
+        plates.write_listing(str(tmp_path), "", "truss.SLDPRT", first)["removed"] == []
+    )
+    (tmp_path / "notes.txt").write_text("mine", encoding="utf-8")
+    second = [_dxf(tmp_path, "PL-1_t6.35_x4.dxf")]
+    data = plates.write_listing(str(tmp_path), "", "TRUSS.sldprt", second)
+    assert sorted(Path(p).name for p in data["removed"]) == [
+        "L2x2_t11.7_x1.dxf",
+        "PL-1_t6.35_x2.dxf",
+    ]
+    assert sorted(p.name for p in tmp_path.iterdir()) == [
+        "PL-1_t6.35_x4.dxf",
+        "notes.txt",
+        "plates.csv",
+    ]
+    assert "listing_was" not in data and "kept_stale" not in data
+
+
+def test_another_parts_list_is_replaced_and_its_dxfs_left(tmp_path: Path) -> None:
+    plates.write_listing(
+        str(tmp_path), "J1_", "frame.SLDPRT", [_dxf(tmp_path, "J1_BP-1_t15_x2.dxf")]
+    )
+    data = plates.write_listing(
+        str(tmp_path), "J1_", "truss.SLDPRT", [_dxf(tmp_path, "J1_PL-1_t6.35_x4.dxf")]
+    )
+    assert data["listing_was"] == "frame.SLDPRT"
+    assert data["removed"] == []
+    assert (tmp_path / "J1_BP-1_t15_x2.dxf").exists()
+
+
+def test_only_plain_dxf_names_a_part_listed_are_removed(tmp_path: Path) -> None:
+    outside = tmp_path / "outside.dxf"
+    outside.write_text("x", encoding="ascii")
+    folder = tmp_path / "dxf"
+    folder.mkdir()
+    (folder / "old.dxf").write_text("x", encoding="ascii")
+    (folder / "notes.txt").write_text("x", encoding="ascii")
+    listing = folder / "plates.csv"
+    for text in (
+        "file,mark\nold.dxf,PL-1\n",  # from before the part column: no owner
+        "file,part\nold.dxf,a.SLDPRT\nnew.dxf,b.SLDPRT\n",  # two parts
+        "file,part\n../outside.dxf,truss.SLDPRT\nnotes.txt,truss.SLDPRT\n",
+    ):
+        listing.write_text(text, encoding="utf-8")
+        data = plates.write_listing(str(folder), "", "truss.SLDPRT", [])
+        assert data == {"csv": str(listing), "removed": []}
+    listing.write_bytes(b"\xff\xfe\x00 not text")
+    assert plates.write_listing(str(folder), "", "truss.SLDPRT", [])["removed"] == []
+    assert outside.exists()
+    assert sorted(p.name for p in folder.iterdir()) == [
+        "notes.txt",
+        "old.dxf",
+        "plates.csv",
+    ]
+
+
+def test_a_dxf_open_elsewhere_is_kept_and_reported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plates.write_listing(
+        str(tmp_path), "", "truss.SLDPRT", [_dxf(tmp_path, "PL-1_t6.35_x2.dxf")]
+    )
+
+    def refuse(path: str) -> None:
+        raise PermissionError(path)
+
+    monkeypatch.setattr(plates.os, "remove", refuse)
+    data = plates.write_listing(str(tmp_path), "", "truss.SLDPRT", [])
+    assert data["removed"] == []
+    assert [Path(p).name for p in data["kept_stale"]] == ["PL-1_t6.35_x2.dxf"]
 
 
 @pytest.mark.asyncio

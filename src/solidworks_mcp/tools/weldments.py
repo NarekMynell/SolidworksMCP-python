@@ -1443,8 +1443,8 @@ async def register_weldment_tools(
         fillet bead of throat `throat_mm` (a4: 4) all round where they meet. Inside a
         piece every joint is a shop weld; site joints between pieces are bolted, in
         the assembly. `members` limits it to their joints. The beads go in the
-        weld folder, with SolidWorks' weld symbols; `total_length_mm` is the weld
-        length for costing and the drawing's weld note. Needs: an open weldment
+        weld folder, with SolidWorks' weld symbols; `total_length_mm` is every
+        bead in the part, for costing and the drawing's weld note. Needs: an open weldment
         part, no sketch open. Changes: adds the beads. Returns: `welds` with
         `beads`, `throat_mm`, `leg_mm`, `total_length_mm` and each weld's `from`,
         `to` and `length_mm`; `failed` and `not_welded` (bodies touching side by
@@ -1465,10 +1465,11 @@ async def register_weldment_tools(
         )
         require_success(result, context="Failed to weld the joints")
         data = dict(result.data or {})
+        added = sum(w.get("length_mm") or 0.0 for w in data.get("welds") or [])
         reply: dict[str, Any] = {
             "status": "success",
             "message": f"{data.get('beads')} weld bead(s), throat a{data.get('throat_mm'):g}, "
-            f"{data.get('total_length_mm')} mm in all",
+            f"{round(added, 1):g} mm; {data.get('total_length_mm')} mm in the part",
             "welds": data,
             "execution_time": result.execution_time,
         }
@@ -1531,10 +1532,11 @@ async def register_weldment_tools(
         that is a flat plate (plates, end caps, gussets; not the members) gives
         one DXF of its face at 1:1 with every hole, named
         '<mark or description>_t<thickness>_x<quantity>.dxf', and plates.csv
-        lists file, mark, description, thickness, quantity and area. Needs: an
-        open weldment part saved to disk. Changes: writes files only. Returns:
-        `files` (each `file`, `mark`, `description`, `thickness_mm`, `quantity`,
-        `area_mm2`), `csv` and `skipped`.
+        lists them. Needs: an open weldment part saved to disk. Changes: writes
+        files; removes the DXFs this part's last export listed and this one
+        didn't write. Returns: `files` (each `file`, `mark`, `description`,
+        `thickness_mm`, `quantity`, `area_mm2`), `csv`, `skipped` (each `item`,
+        `reason`) and `removed`.
 
         Args:
             input_data: `output_dir`, and optionally `prefix`.
@@ -1552,13 +1554,36 @@ async def register_weldment_tools(
         require_success(result, context="Failed to export the plates")
         data = result.data or {}
         files = data.get("files") or []
-        return {
+        message = (
+            f"Wrote {len(files)} plate DXF(s), "
+            f"{sum(f.get('quantity', 0) for f in files)} plate(s) to cut"
+        )
+        if data.get("removed"):
+            message += f"; removed {len(data['removed'])} DXF(s) the last export left"
+        reply: dict[str, Any] = {
             "status": "success",
-            "message": f"Wrote {len(files)} plate DXF(s), "
-            f"{sum(f.get('quantity', 0) for f in files)} plate(s) to cut",
+            "message": message,
             "dxfs": data,
             "execution_time": result.execution_time,
         }
+        notes = []
+        if data.get("skipped"):
+            notes.append(
+                f"{len(data['skipped'])} cut-list item(s) not exported; see skipped for why"
+            )
+        if data.get("kept_stale"):
+            notes.append(
+                f"{len(data['kept_stale'])} DXF(s) of the last export could not be "
+                "removed (open in another program?); see kept_stale"
+            )
+        if data.get("listing_was"):
+            notes.append(
+                f"the list named {data['listing_was']}'s plates and now names this "
+                "part's; their DXFs are left: give each part its own prefix"
+            )
+        if notes:
+            reply["warning"] = "; ".join(notes)
+        return reply
 
     @mcp.tool()
     async def get_cut_list(input_data: GetCutListInput | None = None) -> dict[str, Any]:
