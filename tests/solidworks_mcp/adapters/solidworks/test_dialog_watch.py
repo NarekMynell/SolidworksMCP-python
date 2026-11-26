@@ -405,3 +405,48 @@ def test_win32_windows_imports_pywin32_by_default(monkeypatch) -> None:
     windows = Win32Windows()
 
     assert (windows._gui, windows._process) == (gui, process)
+
+
+@pytest.mark.parametrize(
+    ("buttons", "posted", "answer"),
+    [
+        (
+            [(101, "Button", "&Yes"), (102, "Button", "&No")],
+            [(1, WM_COMMAND, 2, 102)],
+            "No",
+        ),
+        (
+            [
+                (101, "Button", "&Abort"),
+                (102, "Button", "&Retry"),
+                (103, "Button", "&Ignore"),
+            ],
+            [(1, WM_COMMAND, 1, 101)],
+            "Abort",
+        ),
+        (
+            [(101, "Button", "Replace"), (102, "Button", "Keep both")],
+            [(1, WM_CLOSE, 0, 0)],
+            "closed",
+        ),
+        (
+            [(101, "Button", "OK"), (102, "Button", "&Cancel")],
+            [(1, WM_COMMAND, 2, 102)],
+            "Cancel",
+        ),
+    ],
+)
+def test_declining_leaves_no_dialog_waiting(
+    buttons: list[tuple[int, str, str]],
+    posted: list[tuple[int, int, int, int]],
+    answer: str,
+) -> None:
+    windows, clock = FakeWindows({1: ("Question", buttons)}), Clock()
+    watch = DialogWatch(42, timeout=5, windows=windows, clock=clock, decline=True)
+
+    watch.check()
+    clock.now = 6
+    watch.check()
+
+    assert windows.posted == posted
+    assert watch.seen[0].answer == answer

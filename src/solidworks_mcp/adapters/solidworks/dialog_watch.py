@@ -17,6 +17,9 @@ dialog and answers it:
   buttons** (a VBA user form), it closes the window. A dialog with several
   buttons and no Cancel (Yes/No) is left for the user and logged: pressing
   Yes or No could change the model.
+- with ``decline`` (work that owns all it changes, such as a throwaway part
+  ``build_weldment_profiles`` makes) nothing is left waiting: Cancel, else
+  **No**, else **Abort**, else the only button, else the window is closed.
 """
 
 from __future__ import annotations
@@ -182,6 +185,8 @@ class DialogWatch:
         poll: Seconds between looks.
         clock: The time source, in seconds.
         only_known: Answer only the dialogs in ``KNOWN_ANSWERS``.
+        decline: Answer every dialog by refusing it: Cancel, No, Abort, the
+            only button, or closing the window; never left for the user.
         name: What is watched, for the log and the thread's name.
         seen: Every dialog answered or left, in the order found.
     """
@@ -192,6 +197,7 @@ class DialogWatch:
     poll: float = 0.5
     clock: Callable[[], float] = time.monotonic
     only_known: bool = False
+    decline: bool = False
     name: str = "macro"
     seen: list[DialogSeen] = field(default_factory=list)
 
@@ -280,13 +286,24 @@ class DialogWatch:
             if label.lower() == wanted.lower()
         ]
         cancel = [(h, label) for h, label in buttons if label.lower() == "cancel"]
+        refusals = [
+            (h, label)
+            for wanted in ("no", "abort")
+            for h, label in buttons
+            if self.decline and label.lower() == wanted
+        ]
         answer: str | None = None
         if safe or (not self.only_known and (cancel or len(buttons) == 1)):
             button, label = (safe or cancel or buttons)[0]
             if self._press(hwnd, button, label):
                 answer = label
                 self._pressed[hwnd] = (button, label, 1)
-        elif not self.only_known and not buttons:
+        elif not self.only_known and refusals:
+            button, label = refusals[0]
+            if self._press(hwnd, button, label):
+                answer = label
+                self._pressed[hwnd] = (button, label, 1)
+        elif not self.only_known and (not buttons or self.decline):
             answer = "closed"
             self.windows.post(hwnd, _WM_CLOSE, 0, 0)
         elif hwnd in self._before:

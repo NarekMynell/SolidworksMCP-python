@@ -48,7 +48,13 @@ from .solidworks import (
     bitmap,
     default_entities,
 )
-from .solidworks.com_utils import SAVE_AS_COPY, SAVE_AS_CURRENT_VERSION
+from .solidworks.com_utils import (
+    DEFAULT_COM_SETTLE_SECONDS,
+    DEFAULT_DOC_SETTLE_SECONDS,
+    SAVE_AS_COPY,
+    SAVE_AS_CURRENT_VERSION,
+    settle_seconds,
+)
 from .solidworks.dialog_watch import DialogWatch, refused_message, waited_message
 from .solidworks.feature_walk import walk_feature_tree
 from .solidworks.features import _null_callout, _select_feature_by_name
@@ -189,8 +195,8 @@ _DOCUMENT_OPERATIONS = frozenset(
     }
 )
 # Defaults in seconds; override with the environment variables below.
-_DEFAULT_COM_SETTLE_SECONDS = 0.25
-_DEFAULT_DOC_SETTLE_SECONDS = 1.0
+_DEFAULT_COM_SETTLE_SECONDS = DEFAULT_COM_SETTLE_SECONDS
+_DEFAULT_DOC_SETTLE_SECONDS = DEFAULT_DOC_SETTLE_SECONDS
 
 #: swUserPreferenceToggle_e.swViewDisplayHideAllTypes and
 #: swUserPreferenceOption_e.swDetailingNoOptionSpecified (get_api_enum, SW 2025).
@@ -198,12 +204,8 @@ _SW_VIEW_DISPLAY_HIDE_ALL_TYPES = 198
 _SW_NO_OPTION_SPECIFIED = 0
 
 
-def _settle_seconds(variable: str, default: float) -> float:
-    """Read a non-negative settle pause from the environment."""
-    try:
-        return max(0.0, float(os.getenv(variable, default)))
-    except ValueError:
-        return default
+#: Read a non-negative settle pause from the environment (shared with the mixins).
+_settle_seconds = settle_seconds
 
 
 #: Seconds a dialog SolidWorks opens during a call waits before the watch

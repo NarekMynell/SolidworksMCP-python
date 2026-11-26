@@ -6,6 +6,8 @@ between modules.
 
 from __future__ import annotations
 
+import os
+import time
 from typing import Any
 
 from .. import sw_type_info as _sw_type_info
@@ -19,6 +21,33 @@ SAVE_AS_CURRENT_VERSION = 0
 #: the file and the open document keeps its own path, as an export does.
 SAVE_AS_SILENT = 1
 SAVE_AS_COPY = 2
+
+#: The pauses after a COM operation, seconds (``pywin32_adapter._settle_after``):
+#: every operation (``SOLIDWORKS_MCP_COM_SETTLE_SECONDS``) and one that opens,
+#: makes or closes a document (``SOLIDWORKS_MCP_DOC_SETTLE_SECONDS``).
+DEFAULT_COM_SETTLE_SECONDS = 0.25
+DEFAULT_DOC_SETTLE_SECONDS = 1.0
+
+
+def settle_seconds(variable: str, default: float) -> float:
+    """A non-negative pause from the environment variable, else ``default``."""
+    try:
+        return max(0.0, float(os.getenv(variable, default)))
+    except ValueError:
+        return default
+
+
+def pause_after_document() -> None:
+    """The pause after SolidWorks makes, opens or closes a document (COM pitfall #26).
+
+    For work that makes a document inside one operation, which the adapter
+    pauses after only at its end.
+    """
+    pause = settle_seconds(
+        "SOLIDWORKS_MCP_DOC_SETTLE_SECONDS", DEFAULT_DOC_SETTLE_SECONDS
+    )
+    if pause > 0:
+        time.sleep(pause)
 
 
 def attempt(adapter: Any, fn: Any, default: Any = None) -> Any:

@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from solidworks_mcp.adapters.solidworks import com_utils
 from solidworks_mcp.adapters.solidworks.com_utils import (
     as_list,
     dispatch_array,
@@ -128,3 +129,18 @@ class TestLongArray:
 
         monkeypatch.setattr(builtins, "__import__", no_pythoncom)
         assert long_array([0, 1]) == (0, 1)
+
+
+@pytest.mark.parametrize(
+    ("setting", "pause"), [("0.5", 0.5), ("soon", 1.0), ("-2", None)]
+)
+def test_the_document_pause(
+    monkeypatch: pytest.MonkeyPatch, setting: str, pause: float | None
+) -> None:
+    slept: list[float] = []
+    monkeypatch.setenv("SOLIDWORKS_MCP_DOC_SETTLE_SECONDS", setting)
+    monkeypatch.setattr(com_utils.time, "sleep", slept.append)
+
+    com_utils.pause_after_document()
+
+    assert slept == ([] if pause is None else [pause])
